@@ -1,0 +1,47 @@
+# Python & uv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environment & Secrets
+.env
+.env.local
+
+# Audio & Session Working Data (keep source code & configs only in Git)
+data/raw/*
+data/processed/*
+data/references/*
+data/outputs/*
+!data/**/README.md
+workspace/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+!tests/fixtures/*.wav
+
+# DAW & Binary States (exclude generated sessions; allow base templates if explicitly tracked)
+data/outputs/*.song
+data/outputs/*.vstpreset
+
+# Model Weights & Checkpoints
+models/weights/
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.safetensors
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

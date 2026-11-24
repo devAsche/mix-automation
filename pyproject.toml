@@ -1,0 +1,50 @@
+[project]
+name = "mix-automation"
+version = "0.1.0"
+description = "Reference-grade automated vocal mixing engine tailored for Studio One 5 & professional VST3 chains"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy>=1.26.0",
+    "scipy>=1.13.0",
+    "soundfile>=0.12.1",
+    "librosa>=0.10.2",
+    "pyloudnorm>=0.1.1",
+    "pedalboard>=0.9.14",
+    "optuna>=4.0.0",
+    "cmaes>=0.11.0",
+    "pydantic>=2.9.0",
+    "typer>=0.12.5",
+    "rich>=13.9.0",
+]
+
+[project.optional-dependencies]
+ml = [
+    "torch>=2.4.0",
+    "torchaudio>=2.4.0",
+    "auraloss>=0.4.0",
+    "dasp-pytorch>=0.0.1",
+    "audio-separator[gpu]>=0.24.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.7.0",
+]
+
+[project.scripts]
+mix-auto = "mix_automation.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mix_automation"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.uv]
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+
