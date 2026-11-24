@@ -63,8 +63,8 @@ def inspect_plugin(plugin_key: str) -> None:
         console.print(f"[red]Plugin file not found on disk: {spec.path}[/red]")
         raise typer.Exit(code=1)
 
-    console.print(f"Loading [bold]{spec.name}[/bold] ({spec.path}) ...")
-    plugin = load_plugin(str(spec.path))
+    console.print(f"Loading [bold]{spec.name}[/bold] ({spec.loadable_path}) ...")
+    plugin = load_plugin(str(spec.loadable_path))
     raw_len = len(plugin.raw_state)
     console.print(f"Loaded successfully. Raw VST3 binary state size: [cyan]{raw_len} bytes[/cyan]")
 
