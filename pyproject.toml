@@ -1,7 +1,7 @@
 [project]
 name = "mix-automation"
-version = "0.1.0"
-description = "Reference-grade automated vocal mixing engine tailored for Studio One 5 & professional VST3 chains"
+version = "0.2.0"
+description = "Reference-grade automated vocal mixing engine tailored for Studio One 5 & commercial VST3 chains"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -11,6 +11,8 @@ dependencies = [
     "librosa>=0.10.2",
     "pyloudnorm>=0.1.1",
     "pedalboard>=0.9.14",
+    "praat-parselmouth>=0.4.5",
+    "psola>=0.0.1",
     "optuna>=4.0.0",
     "cmaes>=0.11.0",
     "pydantic>=2.9.0",
@@ -25,6 +27,9 @@ ml = [
     "auraloss>=0.4.0",
     "dasp-pytorch>=0.0.1",
     "audio-separator[gpu]>=0.24.0",
+    "onnxruntime-gpu>=1.19.0",
+    "audioread>=3.0.0",
+    "omegaconf>=2.3.0",
 ]
 dev = [
     "pytest>=8.3.0",
@@ -47,4 +52,3 @@ target-version = "py312"
 
 [tool.uv]
 environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
-

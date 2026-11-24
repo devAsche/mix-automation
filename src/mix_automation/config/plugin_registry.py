@@ -231,6 +231,14 @@ DEFAULT_PLUGIN_CATALOG: tuple[PluginSpec, ...] = (
         path=VST3_ROOT / "MeldaProduction" / "Pitch Shift" / "MAutoPitch.vst3",
         notes="Hard-tune / robotic pitch quantization & formant shift.",
     ),
+    PluginSpec(
+        key="izotope_nectar3",
+        name="iZotope Nectar 3",
+        role=PluginRole.PITCH_FX,
+        path=VST3_ROOT / "iZotope" / "Nectar 3.vst3",
+        offline_render_only=True,
+        notes="Formant-preserving vocal harmony engine (solo harmony + chromatic interval selection).",
+    ),
     # --- Stage 4: Mastering ---
     PluginSpec(
         key="ozone9_elements",

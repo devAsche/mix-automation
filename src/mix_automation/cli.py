@@ -1,4 +1,4 @@
-"""Command-line interface for MIX Automation."""
+"""v2 Command-line interface for MIX Automation."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from mix_automation.analysis.relative_profile import compute_section_relative_pr
 from mix_automation.config.plugin_registry import audit_installed_plugins, get_plugin_map
 from mix_automation.io.studio_one import extract_vst3_processor_cid, inspect_studio_one_song
 
-app = typer.Typer(help="Reference-grade automated vocal mixing engine for Studio One 5.")
+app = typer.Typer(help="v2 Reference-grade automated vocal mixing & Studio One 5 session engine.")
 console = Console()
 
 PROJECT_ROOT = Path(r"C:\MIX_automation")
@@ -29,7 +29,7 @@ def doctor() -> None:
     s1_status = "[green]FOUND[/green]" if STUDIO_ONE_EXE.exists() else "[red]MISSING[/red]"
     console.print(f"\n[bold]Studio One 5 Executable:[/bold] {STUDIO_ONE_EXE} ({s1_status})\n")
 
-    table = Table(title="Registered VST3 Mixing Chain Audit")
+    table = Table(title="Registered VST3 Mixing Chain Audit (v2)")
     table.add_column("Key", style="cyan", no_wrap=True)
     table.add_column("Role", style="magenta")
     table.add_column("Plugin Name")
@@ -89,25 +89,35 @@ def inspect_plugin(plugin_key: str) -> None:
 @app.command("build-references")
 def build_references(
     references_dir: Path = typer.Option(PROJECT_ROOT / "data" / "references", help="References root"),
-    cache_dir: Path = typer.Option(PROJECT_ROOT / "data" / "processed" / "reference_stems", help="Stem cache"),
+    cache_dir: Path = typer.Option(PROJECT_ROOT / "data" / "processed" / "roformer_stems", help="BS-RoFormer stem cache"),
     out_json: Path = typer.Option(DEFAULT_PROFILES_JSON, help="Output target profiles JSON"),
 ) -> None:
-    """Separate all pro reference tracks on GPU and build engineer target profiles."""
+    """Separate all 35 pro reference tracks on GPU via BS-RoFormer and build v2 stratified profiles."""
     from mix_automation.analysis.reference_extractor import build_all_reference_profiles
 
     res = build_all_reference_profiles(references_dir, cache_dir, out_json)
-    console.print(f"[green]Built target profiles from {res['num_reference_songs']} songs -> {out_json}[/green]")
+    console.print(f"[green]Built v2 target profiles from {res['num_reference_songs']} songs -> {out_json}[/green]")
 
 
 @app.command("mix")
 def mix_song(
     song_folder: Path = typer.Argument(..., exists=True, help="Raw song folder containing stems/ and off-vocal"),
-    style: str = typer.Option("consensus", "--style", "-s", help="Target style: consensus | azusagawa | toy | saburou"),
+    style: str = typer.Option(
+        "auto",
+        "--style",
+        "-s",
+        help="Target style: auto | consensus | azusagawa | toy | saburou | aokiyo | aoru | hoshirubesho | nanadakiima",
+    ),
+    auto_pitch: bool = typer.Option(
+        False,
+        "--auto-pitch",
+        help="Force Praat TD-PSOLA micro-pitch tuning even if stem appears Melodyne-edited",
+    ),
     template_song: Path = typer.Option(DEFAULT_TEMPLATE_SONG, "--template", "-t", help="Base Studio One 5 .song"),
     profiles_json: Path = typer.Option(DEFAULT_PROFILES_JSON, "--profiles", "-p", help="Target profiles JSON"),
     output_root: Path = typer.Option(PROJECT_ROOT / "data" / "outputs", "--out-dir", "-o", help="Output directory"),
 ) -> None:
-    """Run full automated vocal mixing (Stages ①-④) and generate Studio One 5 .song + Master WAV."""
+    """Run full v2 automated vocal mixing (Stages ①-④) and generate Studio One 5 .song + Master WAV."""
     from mix_automation.pipeline import run_full_automix_for_song
 
     report = run_full_automix_for_song(
@@ -116,8 +126,10 @@ def mix_song(
         profiles_json_path=profiles_json,
         output_root=output_root,
         style=style,
+        force_auto_pitch=auto_pitch,
     )
-    console.print("\n[bold green]Auto-MIX Complete![/bold green]")
+    console.print("\n[bold green]v2 Auto-MIX Complete![/bold green]")
+    console.print(f"  Archetype & Target   : [magenta]{report['optimized_chain_params']['archetype_chain']} -> {report['resolved_target_profile']}[/magenta]")
     console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan]")
     console.print(f"  Mastered 2mix WAV    : [cyan]{report['master_wav']}[/cyan]")
     console.print(f"  Processed Vocal Bus  : [cyan]{report['vocal_bus_wav']}[/cyan]\n")
@@ -141,14 +153,14 @@ def analyze_pair(
     inst_path: Path = typer.Argument(..., exists=True, help="Instrumental (off-vocal) WAV/FLAC"),
     output_json: Path | None = typer.Option(None, "--out", "-o", help="Optional JSON output path"),
 ) -> None:
-    """Compute the song-invariant relative vocal-to-instrumental acoustic profile."""
-    vocal, sr_v = sf.read(str(vocal_path), always_2d=False)
-    inst, sr_i = sf.read(str(inst_path), always_2d=False)
+    """Compute the v2 song-invariant relative vocal-to-instrumental acoustic profile."""
+    vocal, sr_v = sf.read(str(vocal_path), always_2d=True)
+    inst, sr_i = sf.read(str(inst_path), always_2d=True)
     if sr_v != sr_i:
         console.print(f"[red]Sample rate mismatch: vocal={sr_v}Hz vs instrumental={sr_i}Hz.[/red]")
         raise typer.Exit(code=1)
 
-    profile = compute_section_relative_profile(vocal, inst, sr=sr_v)
+    profile = compute_section_relative_profile(vocal.T, inst.T, sr=sr_v)
     formatted = json.dumps(profile.to_dict(), indent=2, ensure_ascii=False)
     console.print_json(formatted)
     if output_json is not None:

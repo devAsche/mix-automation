@@ -132,8 +132,10 @@ def inspect_studio_one_song(song_path: Path) -> SongInspectionSummary:
 
         for xml_name in xml_entries:
             try:
-                raw_bytes = zf.read(xml_name)
-                root = ET.fromstring(raw_bytes)
+                raw_text = zf.read(xml_name).decode("utf-8", errors="ignore").lstrip("\ufeff")
+                if "xmlns:x=" not in raw_text:
+                    raw_text = re.sub(r"^<([A-Za-z0-9_]+)(\s|>)", r'<\1 xmlns:x="http://www.presonus.com/xml"\2', raw_text, count=1)
+                root = ET.fromstring(raw_text)
                 for elem in root.iter():
                     if elem.attrib.get("classId") or "Plugin" in elem.tag or "Vendor" in elem.attrib:
                         dev_name = elem.attrib.get("name") or elem.attrib.get("deviceName")

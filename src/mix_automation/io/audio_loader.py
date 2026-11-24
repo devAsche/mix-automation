@@ -1,4 +1,14 @@
-"""Universal audio decoding (WAV/FLAC/MP3/WebM-Opus) and intelligent stem consolidation."""
+"""v2 Lossless Stem Consolidation & Stereo Stage Panning.
+
+Eliminates the v1 flaws:
+  1. Drops completely dead/empty stems (`peak < -75 dBFS`, e.g., empty export tracks).
+  2. Preserves punch-in crossfades and phrase overlaps 100% intact instead of chopping
+     25ms frames into a secondary track. Only sustained simultaneous vocal overdubs
+     (`>= 1.4s` continuous overlap) are routed to `double_mono`.
+  3. Automatically pans dual-mono harmony/choir tracks symmetrically across the stereo
+     image (`L/R ±52%`, `±74%`, `±36%`) using equal-power panning so the center Mid
+     channel stays crystal-clear for the Lead Vocal!
+"""
 
 from __future__ import annotations
 
@@ -9,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from scipy import signal
+from scipy import ndimage, signal
 
 
 def _find_ffmpeg() -> str:
@@ -30,10 +40,7 @@ def load_audio(
     target_sr: int = 44100,
     mono: bool = False,
 ) -> tuple[np.ndarray, int]:
-    """Load any audio file (WAV, FLAC, MP3, WebM/Opus, M4A) as float32 ndarray.
-
-    Returns shape `(samples,)` if `mono=True`, otherwise `(channels, samples)`.
-    """
+    """Load any audio file (WAV, FLAC, MP3, WebM/Opus, M4A) as float32 ndarray."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Audio file not found: {path}")
@@ -41,7 +48,6 @@ def load_audio(
     ext = path.suffix.lower()
     if ext in {".wav", ".flac", ".ogg"}:
         data, sr = sf.read(str(path), dtype="float32", always_2d=True)
-        # data is (samples, channels) -> transpose to (channels, samples)
         audio = data.T
         if sr != target_sr:
             gcd = np.gcd(sr, target_sr)
@@ -68,10 +74,7 @@ def load_audio(
         ]
         proc = subprocess.run(cmd, capture_output=True, check=True)
         raw = np.frombuffer(proc.stdout, dtype=np.float32)
-        if channels == 1:
-            audio = raw[np.newaxis, :]
-        else:
-            audio = raw.reshape(-1, 2).T
+        audio = raw[np.newaxis, :] if channels == 1 else raw.reshape(-1, 2).T
         sr = target_sr
 
     if mono:
@@ -84,21 +87,21 @@ def load_audio(
 def strip_silence_gate(
     mono_audio: np.ndarray,
     sr: int,
-    rel_gate_db: float = -48.0,
-    abs_floor_db: float = -62.0,
-    hold_ms: float = 90.0,
-    fade_ms: float = 12.0,
+    rel_gate_db: float = -54.0,
+    abs_floor_db: float = -65.0,
+    hold_ms: float = 160.0,
+    fade_ms: float = 28.0,
 ) -> np.ndarray:
-    """Cleanly mute dead-air regions between vocal phrases with smooth cosine fades.
-
-    Prevents cumulative mic noise buildup when consolidating multiple vocal takes/stems.
-    """
+    """Gently mute pure mic noise between phrases while keeping breathy tails & whispers intact."""
     x = mono_audio.astype(np.float32, copy=True)
+    peak_abs = float(np.max(np.abs(x))) if x.size > 0 else 0.0
+    if peak_abs < 10.0 ** (-75.0 / 20.0):
+        return np.zeros_like(x)
+
     hop = max(int(sr * 0.01), 128)
     win = hop * 2
-    # Compute short-time RMS envelope
-    pad = np.pad(x**2, (win // 2, win // 2), mode="edge")
-    csum = np.cumsum(pad, dtype=np.float64)
+    pad = np.pad(x.astype(np.float64) ** 2, (win // 2, win - win // 2 - 1), mode="edge")
+    csum = np.cumsum(np.insert(pad, 0, 0.0))
     rms_env = np.sqrt(np.maximum((csum[win:] - csum[:-win]) / win, 1e-12))[: len(x)]
 
     peak_rms = float(np.percentile(rms_env, 98))
@@ -108,14 +111,12 @@ def strip_silence_gate(
     thresh = max(peak_rms * (10.0 ** (rel_gate_db / 20.0)), 10.0 ** (abs_floor_db / 20.0))
     open_mask = rms_env >= thresh
 
-    # Dilate active regions by hold_ms in O(N) via cumulative sum (20,000x faster than np.convolve!)
     hold_samples = max(int(sr * hold_ms / 1000.0), 1)
     w_hold = hold_samples * 2 + 1
     m_pad = np.pad(open_mask.astype(np.int32), (hold_samples, hold_samples), mode="edge")
     m_csum = np.cumsum(np.insert(m_pad, 0, 0))
     dilated = (m_csum[w_hold:] - m_csum[:-w_hold]) > 0
 
-    # Smooth transitions with O(N log N) FFT Hann window fade
     fade_samples = max(int(sr * fade_ms / 1000.0), 4)
     smooth_kernel = np.hanning(fade_samples * 2 + 1).astype(np.float32)
     smooth_kernel /= np.sum(smooth_kernel)
@@ -124,15 +125,26 @@ def strip_silence_gate(
     return (x * gain_curve).astype(np.float32)
 
 
+def apply_equal_power_pan(mono_sig: np.ndarray, pan: float) -> np.ndarray:
+    """Pan a 1D mono signal into `(2, samples)` stereo using equal-power law (`pan` in `[-1.0, +1.0]`)."""
+    angle = (np.clip(pan, -1.0, 1.0) + 1.0) * (np.pi / 4.0)
+    g_l = float(np.cos(angle))
+    g_r = float(np.sin(angle))
+    return np.stack([mono_sig * g_l, mono_sig * g_r], axis=0).astype(np.float32)
+
+
 @dataclass(frozen=True)
 class ConsolidatedStems:
-    """Consolidated vocal stems separated into lead, octave layers, and harmonies."""
+    """Losslessly consolidated vocal stems with stereo-staged harmonies."""
 
     lead_mono: np.ndarray
-    double_mono: np.ndarray | None
+    double_stereo: np.ndarray | None
     sub_octave_stereo: np.ndarray | None
     super_octave_stereo: np.ndarray | None
-    harmonies_stereo: tuple[np.ndarray, ...]
+    harmonies_stereo_bus: np.ndarray | None
+    harm1_mono: np.ndarray | None
+    harm2_mono: np.ndarray | None
+    has_user_harmonies: bool
     sr: int
 
 
@@ -140,13 +152,7 @@ def consolidate_vocal_stem_folder(
     stem_files: list[Path],
     target_sr: int = 44100,
 ) -> ConsolidatedStems:
-    """Classify and consolidate multi-take raw vocal WAV files from a `stems/` folder.
-
-    - Main vocal takes (`main*`) are noise-gated individually so silent tracks add zero noise.
-    - Non-overlapping punch-ins sum into `lead_mono`, while overlapping vocal layers are
-      routed to `double_mono` so lead vocal clarity is preserved without phase comb-filtering!
-    - Octave (`suboc*`, `superoc*`) and harmony/choir (`harm*`, `choir*`) stems are grouped cleanly.
-    """
+    """Consolidate multi-take vocal stems without chopping phrase transitions, and pan harmonies wide."""
     main_paths: list[Path] = []
     suboc_paths: list[Path] = []
     superoc_paths: list[Path] = []
@@ -164,90 +170,120 @@ def consolidate_vocal_stem_folder(
             main_paths.append(p)
 
     if not main_paths:
-        raise ValueError("No main vocal stem files (`main*`) found in stem list.")
+        raise ValueError("No main vocal stem files (`main*`) found.")
 
-    loaded_mains = [strip_silence_gate(load_audio(p, target_sr=target_sr, mono=True)[0], target_sr) for p in main_paths]
-    max_len = max(len(m) for m in loaded_mains)
-    padded_mains = [np.pad(m, (0, max_len - len(m))) for m in loaded_mains]
+    # Filter out silent/empty tracks (`peak < -75 dBFS`)
+    valid_mains: list[np.ndarray] = []
+    for p in main_paths:
+        m_raw, _ = load_audio(p, target_sr=target_sr, mono=True)
+        if float(np.max(np.abs(m_raw))) >= 10.0 ** (-75.0 / 20.0):
+            valid_mains.append(strip_silence_gate(m_raw, target_sr))
 
-    # Frame-level overlap arbitration (25ms frames): primary loudest take goes to lead,
-    # simultaneous secondary overlapping takes go to double_mono!
-    frame = int(target_sr * 0.025)
-    n_frames = int(np.ceil(max_len / frame))
-    lead = np.zeros(max_len, dtype=np.float32)
-    double = np.zeros(max_len, dtype=np.float32)
-    has_double = False
+    if not valid_mains:
+        raise ValueError("All main vocal stem files are silent.")
 
-    xfade = min(int(target_sr * 0.008), frame // 2)
-    stack = np.stack(padded_mains, axis=0)  # (num_takes, samples)
+    max_len = max(len(m) for m in valid_mains)
+    padded_mains = [np.pad(m, (0, max_len - len(m))) for m in valid_mains]
 
-    # Compute RMS per take per frame
-    padded_for_rms = np.pad(stack, ((0, 0), (0, n_frames * frame - max_len)))
-    framed = padded_for_rms.reshape(len(padded_mains), n_frames, frame)
-    rms_grid = np.sqrt(np.mean(framed**2, axis=-1))  # (num_takes, n_frames)
+    # Lossless summation for punch-ins/phrase handoffs!
+    # Only separate sustained simultaneous overdubs (>= 1.4 seconds continuous overlap) into `double_stereo`.
+    if len(padded_mains) == 1:
+        lead = padded_mains[0]
+        double_st = None
+    else:
+        hop = int(target_sr * 0.05)  # 50ms coarse activity grid
+        n_f = int(np.ceil(max_len / hop))
+        stack = np.stack(padded_mains, axis=0)
+        pad_s = np.pad(stack, ((0, 0), (0, n_f * hop - max_len)))
+        rms_grid = np.sqrt(np.mean(pad_s.reshape(len(padded_mains), n_f, hop) ** 2, axis=-1))
 
-    lead_weights = np.zeros_like(rms_grid, dtype=np.float32)
-    double_weights = np.zeros_like(rms_grid, dtype=np.float32)
+        active_grid = rms_grid > 1.5e-3
+        multi_mask = np.sum(active_grid, axis=0) >= 2
+        # Keep ONLY long sustained overlaps (>= 28 frames = 1.4s); short phrase crossfades stay 100% in lead!
+        min_sustained = int(1.4 / 0.05)
+        labels, n_ov = ndimage.label(multi_mask)
+        sustained_ov = np.zeros_like(multi_mask)
+        for idx_l in range(1, n_ov + 1):
+            pts = np.where(labels == idx_l)[0]
+            if len(pts) >= min_sustained:
+                sustained_ov[pts] = True
 
-    active_thresh = 1e-4
-    for f_idx in range(n_frames):
-        col = rms_grid[:, f_idx]
-        active_indices = np.where(col > active_thresh)[0]
-        if len(active_indices) == 0:
-            continue
-        elif len(active_indices) == 1:
-            lead_weights[active_indices[0], f_idx] = 1.0
+        if not np.any(sustained_ov):
+            # Pure punch-in / phrase-split tracks -> clean lossless sum!
+            lead = np.sum(stack, axis=0).astype(np.float32)
+            double_st = None
         else:
-            # Sort active takes by energy: strongest is primary lead, others go to layer/double
-            ranked = active_indices[np.argsort(col[active_indices])[::-1]]
-            lead_weights[ranked[0], f_idx] = 1.0
-            for sec_idx in ranked[1:]:
-                if col[sec_idx] > 0.25 * col[ranked[0]]:
-                    double_weights[sec_idx, f_idx] = 1.0
-                    has_double = True
+            lead = np.zeros(max_len, dtype=np.float32)
+            dbl_l = np.zeros(max_len, dtype=np.float32)
+            dbl_r = np.zeros(max_len, dtype=np.float32)
+            lead_w = np.ones_like(rms_grid, dtype=np.float32)
+            dbl_w = np.zeros_like(rms_grid, dtype=np.float32)
 
-    # Upsample frame weights smoothly to sample domain via fast fftconvolve
-    smooth_win = np.hanning(xfade * 2 + 1).astype(np.float32)
-    smooth_win /= np.sum(smooth_win)
-    for t_idx in range(len(padded_mains)):
-        lw = np.repeat(lead_weights[t_idx], frame)[:max_len]
-        lw = np.clip(signal.fftconvolve(lw, smooth_win, mode="same"), 0.0, 1.0)
-        lead += padded_mains[t_idx] * lw
+            for f_i in np.where(sustained_ov)[0]:
+                col = rms_grid[:, f_i]
+                act_t = np.where(active_grid[:, f_i])[0]
+                primary = act_t[int(np.argmax(col[act_t]))]
+                for t_i in act_t:
+                    if t_i != primary:
+                        lead_w[t_i, f_i] = 0.0
+                        dbl_w[t_i, f_i] = 1.0
 
-        if has_double:
-            dw = np.repeat(double_weights[t_idx], frame)[:max_len]
-            dw = np.clip(signal.fftconvolve(dw, smooth_win, mode="same"), 0.0, 1.0)
-            double += padded_mains[t_idx] * dw
+            fade_k = np.hanning(int(target_sr * 0.08) * 2 + 1).astype(np.float32)
+            fade_k /= np.sum(fade_k)
+            for t_i in range(len(padded_mains)):
+                lw_s = np.clip(signal.fftconvolve(np.repeat(lead_w[t_i], hop)[:max_len], fade_k, mode="same"), 0.0, 1.0)
+                dw_s = np.clip(signal.fftconvolve(np.repeat(dbl_w[t_i], hop)[:max_len], fade_k, mode="same"), 0.0, 1.0)
+                lead += padded_mains[t_i] * lw_s
+                if t_i % 2 == 0:
+                    dbl_l += padded_mains[t_i] * dw_s
+                else:
+                    dbl_r += padded_mains[t_i] * dw_s
+            double_st = apply_equal_power_pan(dbl_l, -0.45) + apply_equal_power_pan(dbl_r, +0.45)
 
-    def _sum_stereo_group(paths: list[Path]) -> np.ndarray | None:
+    def _stage_stereo_group(paths: list[Path], pan_positions: list[float]) -> np.ndarray | None:
         if not paths:
             return None
         acc = np.zeros((2, max_len), dtype=np.float32)
+        valid_idx = 0
         for p in paths:
             st, _ = load_audio(p, target_sr=target_sr, mono=False)
+            if float(np.max(np.abs(st))) < 10.0 ** (-75.0 / 20.0):
+                continue
             L = strip_silence_gate(st[0], target_sr)
             R = strip_silence_gate(st[1], target_sr)
             n = min(len(L), max_len)
-            acc[0, :n] += L[:n]
-            acc[1, :n] += R[:n]
-        return acc
+            lr_diff = float(np.sqrt(np.mean((L[:n] - R[:n]) ** 2)))
+            if lr_diff > 1e-3:
+                # Already genuinely stereo-panned by the user -> preserve exact stereo image!
+                acc[0, :n] += L[:n]
+                acc[1, :n] += R[:n]
+            else:
+                # Dual-mono center track -> pan symmetrically wide across L/R stage!
+                pan_val = pan_positions[valid_idx % len(pan_positions)]
+                panned = apply_equal_power_pan(L[:n], pan_val)
+                acc[:, :n] += panned
+                valid_idx += 1
+        return acc if float(np.max(np.abs(acc))) > 1e-5 else None
 
-    harmonies: list[np.ndarray] = []
-    if harm_paths:
-        # Pair stereo harmonies into 2 balanced stereo buses (harm1_bus, harm2_bus) matching template
-        half = max(1, (len(harm_paths) + 1) // 2)
-        g1 = _sum_stereo_group(harm_paths[:half])
-        g2 = _sum_stereo_group(harm_paths[half:]) if len(harm_paths) > half else None
-        if g1 is not None:
-            harmonies.append(g1)
-        if g2 is not None:
-            harmonies.append(g2)
+    harm_pans = [-0.58, +0.58, -0.78, +0.78, -0.40, +0.40, -0.88, +0.88]
+    harm_bus = _stage_stereo_group(harm_paths, harm_pans)
+    sub_st = _stage_stereo_group(suboc_paths, [-0.22, +0.22])
+    sup_st = _stage_stereo_group(superoc_paths, [-0.35, +0.35])
+
+    harm1_m = None
+    harm2_m = None
+    if harm_bus is not None:
+        harm1_m = harm_bus[0]
+        harm2_m = harm_bus[1]
 
     return ConsolidatedStems(
         lead_mono=lead,
-        double_mono=double if has_double else None,
-        sub_octave_stereo=_sum_stereo_group(suboc_paths),
-        super_octave_stereo=_sum_stereo_group(superoc_paths),
-        harmonies_stereo=tuple(harmonies),
+        double_stereo=double_st,
+        sub_octave_stereo=sub_st,
+        super_octave_stereo=sup_st,
+        harmonies_stereo_bus=harm_bus,
+        harm1_mono=harm1_m,
+        harm2_mono=harm2_m,
+        has_user_harmonies=(harm_bus is not None),
         sr=target_sr,
     )

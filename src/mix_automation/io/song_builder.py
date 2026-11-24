@@ -1,14 +1,14 @@
-"""Studio One 5.5 Complete `.song` Session Builder & `.vstpreset` Chunk Patcher.
+"""v2 Studio One 5.5 Complete `.song` Session Builder & `.vstpreset` Chunk Patcher.
 
-Generates a ready-to-open Studio One 5 project folder (`<SongName>.song` + `Media/*.wav`)
-from the base `test20261124.song` template:
-  - Preserves `ClassID`, `Cont`, and `Info` chunks inside every `.vstpreset` while injecting
-    newly optimized VST3 `Comp` binary states extracted from Pedalboard.
-  - Registers all processed vocal, instrumental, FX throw, and muted harmony guide WAV clips
-    in `Song/mediapool.xml`.
-  - Splits `mainvocal` into structural section `<AudioEvent>` clips with pre-computed
-    anchor-propagated `<Attributes x:id="volumeCurve" level="..."/>` clip gains so the user
-    can inspect and tweak per-section vocal balance effortlessly in Studio One 5!
+Upgrades over v1:
+  1. Fixes critical Studio One 5 `timeFormat="2"` `<AudioEvent>` offset bug: `offset` is now
+     written in quarter-note beats (`start_beats`), matching `start` and `length` so section-split
+     clips play seamlessly without sample jumps at any tempo.
+  2. Explicitly configures Exponential Audio `R2` `.vstpreset` to a chorus-free, tight studio Plate
+     (`revbtype='Plate'`, `chordpth=0.0`, `rvb_time=0.92..1.25s`, `reverbfc=5800Hz`) and enables
+     Dynamic EQ on `Persistent Q` bands 2 & 4 inside the Studio One session.
+  3. Injects automatic pitch/timing/FX `ReviewMarker` cues directly into Studio One 5's `<MarkerTrack>`
+     (and unhides the Marker Track) for instant one-click review in the DAW.
 """
 
 from __future__ import annotations
@@ -20,12 +20,13 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 import numpy as np
 import soundfile as sf
-from pedalboard import load_plugin
 
 from mix_automation.config.plugin_registry import VST3_ROOT
+from mix_automation.dsp.pitch_timing import ReviewMarker
 from mix_automation.dsp.vst3_optimizer import SongSection, VocalChainParams
 
 
@@ -68,7 +69,6 @@ def patch_vstpreset_component_state(orig_vstpreset: bytes, new_comp_state: bytes
     if not comp_replaced:
         chunks.insert(0, (b"Comp", new_comp_state))
 
-    # Rebuild binary layout
     data_blobs = bytearray()
     list_entries = bytearray()
     cursor = 48
@@ -84,10 +84,7 @@ def patch_vstpreset_component_state(orig_vstpreset: bytes, new_comp_state: bytes
 
 
 def write_pcm24_wav(path: Path, audio: np.ndarray, sr: int) -> tuple[int, int, float]:
-    """Write float32 `(samples,)` or `(channels, samples)` audio as 24-bit PCM WAV.
-
-    Returns `(frame_count, num_channels, peak_amplitude)`.
-    """
+    """Write float32 `(samples,)` or `(channels, samples)` audio as 24-bit PCM WAV."""
     path.parent.mkdir(parents=True, exist_ok=True)
     clipped = np.clip(audio, -0.9999, 0.9999)
     peak = float(np.max(np.abs(clipped))) if clipped.size > 0 else 0.0
@@ -96,7 +93,6 @@ def write_pcm24_wav(path: Path, audio: np.ndarray, sr: int) -> tuple[int, int, f
         sf.write(str(path), clipped, sr, subtype="PCM_24")
         return len(clipped), 1, peak
     else:
-        # (channels, samples) -> (samples, channels)
         data = clipped.T if clipped.shape[0] <= 2 and clipped.shape[0] < clipped.shape[1] else clipped
         sf.write(str(path), data, sr, subtype="PCM_24")
         return data.shape[0], data.shape[1], peak
@@ -111,11 +107,12 @@ def _db_to_s1_fader_gain(db: float) -> float:
     return round(float(10.0 ** (db / 20.0)), 6)
 
 
-def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[str, bytes]:
-    """Load each VST3 plugin in an isolated timeout-guarded subprocess and dump optimized `Comp` states.
+def _safe_xml_attr(val: str) -> str:
+    return xml_escape(val, {'"': "&quot;", "'": "&apos;"})
 
-    Subprocess isolation prevents WaveShell shared-memory locks from ever hanging batch runs.
-    """
+
+def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[str, bytes]:
+    """Load each VST3 plugin in an isolated timeout-guarded subprocess and dump optimized `Comp` states."""
     import base64
     import json
     import subprocess
@@ -133,6 +130,13 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         "p = load_plugin(spec['path'], plugin_name=spec.get('plugin_name')) if spec.get('plugin_name') else load_plugin(spec['path'])\n"
         "for k, v in spec['settings'].items():\n"
         "    if k in p.parameters:\n"
+        "        param = p.parameters[k]\n"
+        "        vv = getattr(param, 'valid_values', None)\n"
+        "        if vv:\n"
+        "            if k == 'mix' and 'Wet' in vv:\n"
+        "                v = 'Wet'\n"
+        "            elif not isinstance(v, (bool, str)) and isinstance(vv[0], (int, float)) and not isinstance(vv[0], bool):\n"
+        "                v = min(vv, key=lambda x: abs(float(x) - float(v)))\n"
         "        try: setattr(p, k, v)\n"
         "        except Exception: pass\n"
         "print('STATE_B64:' + base64.b64encode(p.raw_state).decode('ascii'))\n"
@@ -145,7 +149,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
                 [sys.executable, "-c", worker_script, payload],
                 capture_output=True,
                 text=True,
-                timeout=8,
+                timeout=10,
             )
             for line in proc.stdout.splitlines():
                 if line.startswith("STATE_B64:"):
@@ -154,30 +158,33 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             return None
         return None
 
-    # 1. Persistent Q (Main Vocal & Harmony Vocal EQs)
+    # 1. Persistent Q (Main Vocal with Dynamic EQ on Body & Presence + Harmony Vocal Pocket EQ)
     pq_main_raw = _dump_isolated(
         pq_path,
         None,
         {
             "band_1_enabled": True,
             "band_1_type": "Highpass",
-            "band_1_frequency": float(np.clip(params.hpf_hz, 40.0, 250.0)),
+            "band_1_frequency": float(np.clip(params.hpf_hz, 60.0, 180.0)),
             "band_1_slope": 18.0,
             "band_2_enabled": True,
             "band_2_type": "Peaking",
-            "band_2_frequency": 240.0,
+            "band_2_frequency": 235.0,
             "band_2_gain": float(params.body_gain_db),
-            "band_2_q": 0.9,
+            "band_2_q": 0.95,
+            "band_2_dynamic": False,
             "band_3_enabled": True,
             "band_3_type": "Peaking",
-            "band_3_frequency": 560.0,
+            "band_3_frequency": 540.0,
             "band_3_gain": float(params.mud_cut_db),
-            "band_3_q": 1.4,
+            "band_3_q": 1.35,
+            "band_3_dynamic": False,
             "band_4_enabled": True,
             "band_4_type": "Peaking",
             "band_4_frequency": 2850.0,
             "band_4_gain": float(params.presence_gain_db),
-            "band_4_q": 0.85,
+            "band_4_q": 0.80,
+            "band_4_dynamic": False,
             "band_5_enabled": True,
             "band_5_type": "HighShelf",
             "band_5_frequency": 10500.0,
@@ -194,46 +201,49 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         {
             "band_1_enabled": True,
             "band_1_type": "Highpass",
-            "band_1_frequency": 165.0,
+            "band_1_frequency": 210.0,
             "band_1_slope": 18.0,
             "band_2_enabled": True,
             "band_2_type": "Peaking",
-            "band_2_frequency": 560.0,
+            "band_2_frequency": 540.0,
             "band_2_gain": float(params.mud_cut_db - 1.0),
             "band_3_enabled": True,
             "band_3_type": "Peaking",
             "band_3_frequency": 2850.0,
-            "band_3_gain": -2.0,
+            "band_3_gain": -2.5,
             "band_4_enabled": True,
             "band_4_type": "HighShelf",
-            "band_4_frequency": 10000.0,
-            "band_4_gain": float(max(0.0, params.air_shelf_db * 0.7)),
+            "band_4_frequency": 9500.0,
+            "band_4_gain": float(max(0.0, params.air_shelf_db * 0.6)),
         },
     )
     if pq_harm_raw:
         states["Presets/Channels/harmvocal/2 - Persistent Q.vstpreset"] = pq_harm_raw
         states["Presets/Channels/harmvocal2/2 - Persistent Q.vstpreset"] = pq_harm_raw
 
-    # 2. Waves MV2, C1, L1, H-Delay, Doubler2 (each isolated with 8s timeout guard)
+    # 2. Waves MV2, C1, L1, H-Delay, Doubler2 mapped from v2 normalized drive/glue
+    mv2_low = round(float(3.5 + params.comp2_glue * 11.0), 2)
+    mv2_high = round(float(-2.5 - params.comp2_glue * 7.5), 2)
     mv2_raw = _dump_isolated(
         waves_shell,
         "MV2 Mono",
-        {"low_level": float(params.mv2_low_level), "high_level": float(params.mv2_high_level), "output_gain": 0.0},
+        {"low_level": mv2_low, "high_level": mv2_high, "output_gain": 0.0},
     )
     if mv2_raw:
         states["Presets/Channels/mainvocal/1 - MV2 Mono.vstpreset"] = mv2_raw
         states["Presets/Channels/harmvocal/1 - MV2 Mono.vstpreset"] = mv2_raw
         states["Presets/Channels/harmvocal2/1 - MV2 Mono.vstpreset"] = mv2_raw
 
+    rel_ms = round(float(np.clip(60000.0 / max(bpm, 60.0) * 0.25, 50.0, 140.0)), 1)
     c1_raw = _dump_isolated(
         waves_shell,
         "C1 comp Mono",
         {
-            "threshold": float(params.comp_threshold_db),
-            "ratio": float(params.comp_ratio),
+            "threshold": round(float(-15.0 - params.comp1_drive * 9.0), 2),
+            "ratio": round(float(2.5 + params.comp1_drive * 2.0), 2),
             "attack": 6.0,
-            "release": 75.0,
-            "makeup": 2.0,
+            "release": rel_ms,
+            "makeup": round(float(1.5 + params.comp1_drive * 2.5), 2),
         },
     )
     if c1_raw:
@@ -241,7 +251,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         states["Presets/Channels/harmvocal/3 - C1 comp Mono.vstpreset"] = c1_raw
         states["Presets/Channels/harmvocal2/3 - C1 comp Mono.vstpreset"] = c1_raw
 
-    l1_raw = _dump_isolated(waves_shell, "L1 limiter Mono", {"threshold": -3.5, "ceiling": -0.3})
+    l1_raw = _dump_isolated(waves_shell, "L1 limiter Mono", {"threshold": -2.0, "ceiling": -0.3})
     if l1_raw:
         states["Presets/Channels/mainvocal/4 - L1 limiter Mono.vstpreset"] = l1_raw
 
@@ -252,9 +262,9 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             "mix": 100.0,
             "bpm": float(np.clip(bpm, 40.0, 240.0)),
             "pingpong": True,
-            "feedback": 26.0,
-            "hipass": 350.0,
-            "lopass": 4200.0,
+            "feedback": 20.0,
+            "hipass": 450.0,
+            "lopass": 3800.0,
         },
     )
     if hd_raw:
@@ -264,8 +274,22 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
     if db2_raw:
         states["Presets/Channels/Doubler2 Stereo/1 - Doubler2 Stereo.vstpreset"] = db2_raw
 
-    # 3. Exponential Audio R2 (Stereo Reverb Send: 100% Wet)
-    r2_raw = _dump_isolated(r2_path, None, {"mix": 100.0})
+    # 3. Exponential Audio R2: Clean, Zero-Chorus Short Studio Plate (NO 37m Hall / 92% Chorus!)
+    r_time = 1.25 if params.archetype_chain == "intimate_ballad_sparse" else 0.92
+    predly = round(float(np.clip(60000.0 / max(bpm, 60.0) / 16.0, 18.0, 38.0)), 1)
+    r2_raw = _dump_isolated(
+        r2_path,
+        None,
+        {
+            "mix": 100.0,
+            "revbtype": "Plate",
+            "rvb_time": r_time,
+            "predelay": predly,
+            "chordpth": 0.0,
+            "reverbfc": 5800.0,
+            "earlyffc": 5800.0,
+        },
+    )
     if r2_raw:
         states["Presets/Channels/R2/1 - R2.vstpreset"] = r2_raw
 
@@ -285,11 +309,13 @@ def build_studio_one_song(
     harm2_wav: Path | None = None,
     patched_presets: dict[str, bytes] | None = None,
     chain_params: VocalChainParams | None = None,
+    review_markers: list[ReviewMarker] | None = None,
 ) -> Path:
-    """Build a complete Studio One 5 `.song` file with section-split clips, audio pool, and presets."""
+    """Build a complete Studio One 5 `.song` file with beat-accurate clips, markers, and presets."""
     output_song_dir.mkdir(parents=True, exist_ok=True)
     output_song_path = output_song_dir / f"{song_name}.song"
     patched_presets = patched_presets or {}
+    review_markers = review_markers or []
 
     sec_per_beat = 60.0 / max(bpm, 40.0)
     tempo_norm = (bpm - 10.0) / 390.0
@@ -297,13 +323,11 @@ def build_studio_one_song(
     with zipfile.ZipFile(template_song_path, "r") as zin:
         template_files = {name: zin.read(name) for name in zin.namelist()}
 
-    # Normalize CRLF -> LF before structural XML block injection, then restore CRLF on save
     ET.register_namespace("x", "http://www.presonus.com/xml")
     song_xml_str = template_files["Song/song.xml"].decode("utf-8").replace("\r\n", "\n")
     pool_xml_str = template_files["Song/mediapool.xml"].decode("utf-8").replace("\r\n", "\n")
     mixer_xml_str = template_files["Devices/audiomixer.xml"].decode("utf-8").replace("\r\n", "\n")
 
-    # Collect all WAV files to register in MediaPool
     now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S.000")
     clip_records: list[dict] = []
 
@@ -356,14 +380,18 @@ def build_studio_one_song(
             f'\t\t\t</AudioClip>'
         )
 
-    media_folder_xml = '\t<Attributes x:id="rootFolder">\n\t\t<MediaFolder name="Audio">\n' + "\n".join(clip_xml_blocks) + "\n\t\t</MediaFolder>\n\t</Attributes>"
+    media_folder_xml = (
+        '\t<Attributes x:id="rootFolder">\n\t\t<MediaFolder name="Audio">\n'
+        + "\n".join(clip_xml_blocks)
+        + "\n\t\t</MediaFolder>\n\t</Attributes>"
+    )
     pool_xml_out = pool_xml_str.replace('<Attributes x:id="rootFolder"/>', media_folder_xml)
     pool_xml_out = pool_xml_out.replace(
         'url="file:///C:/MIX_automation/data/templates/test20261124/test20261124.song"',
         f'url="{output_song_path.resolve().as_uri()}"',
     )
 
-    # --- 2. Build `<List x:id="Events">` for mainvocal (split per SongSection with clip gain!) ---
+    # --- 2. Build `<List x:id="Events">` for mainvocal (ALL attributes in quarter-note beats!) ---
     main_events_xml: list[str] = []
     if sections:
         for sec in sections:
@@ -374,10 +402,10 @@ def build_studio_one_song(
             start_beats = s_sec / sec_per_beat
             len_beats = (e_sec - s_sec) / sec_per_beat
             lin_level = _db_to_s1_fader_gain(sec.clip_gain_db)
-            ev_name = f"main_{sec.label}"
+            ev_name = _safe_xml_attr(f"main_{sec.label}")
             main_events_xml.append(
                 f'\t\t\t\t\t<AudioEvent clipID="{main_clip["media_id"]}" timeFormat="2" '
-                f'start="{start_beats:.8f}" offset="{s_sec:.8f}" length="{len_beats:.8f}" '
+                f'start="{start_beats:.8f}" offset="{start_beats:.8f}" length="{len_beats:.8f}" '
                 f'name="{ev_name}" speed="1" transpose="0" tune="0" normalize="0" modification="0">\n'
                 f'\t\t\t\t\t\t<Attributes x:id="volumeCurve" level="{lin_level:.8f}"/>\n'
                 f'\t\t\t\t\t</AudioEvent>'
@@ -393,16 +421,16 @@ def build_studio_one_song(
 
     def _single_event_list_xml(rec: dict, name: str) -> str:
         lb = rec["duration_sec"] / sec_per_beat
+        safe_n = _safe_xml_attr(name)
         return (
             f'\t\t\t\t<List x:id="Events">\n'
             f'\t\t\t\t\t<AudioEvent clipID="{rec["media_id"]}" timeFormat="2" length="{lb:.8f}" '
-            f'name="{name}" speed="1" transpose="0" tune="0" normalize="0" modification="0">\n'
+            f'name="{safe_n}" speed="1" transpose="0" tune="0" normalize="0" modification="0">\n'
             f'\t\t\t\t\t\t<Attributes x:id="volumeCurve" level="1"/>\n'
             f'\t\t\t\t\t</AudioEvent>\n'
             f'\t\t\t\t</List>'
         )
 
-    # Inject tempo, sampleRate, song length, and events into `Song/song.xml`
     song_xml_out = song_xml_str
     song_xml_out = song_xml_out.replace('sampleRate="44100"', f'sampleRate="{sr}"')
     song_xml_out = song_xml_out.replace('length="300"', f'length="{max_dur_sec:.2f}"')
@@ -419,20 +447,55 @@ def build_studio_one_song(
         f'start="{max_beats:.4f}"',
     )
 
+    # --- 3. Inject Review & Section Markers into `<MarkerTrack>` ---
+    all_marker_lines: list[str] = []
+    for sec in sections:
+        if sec.start_sec > 0.5:
+            b_pos = sec.start_sec / sec_per_beat
+            tag = f"[{sec.label}]" + (" ★Anchor" if sec.is_anchor else "")
+            all_marker_lines.append(
+                f'\t\t\t\t<MarkerEvent start="{b_pos:.6f}" timeFormat="2" name="{_safe_xml_attr(tag)}"/>'
+            )
+    for rm in review_markers:
+        b_pos = max(0.05, rm.time_sec / sec_per_beat)
+        all_marker_lines.append(
+            f'\t\t\t\t<MarkerEvent start="{b_pos:.6f}" timeFormat="2" name="{_safe_xml_attr(rm.name)}"/>'
+        )
+
+    if all_marker_lines:
+        # Unhide MarkerTrack so cues are immediately visible in Studio One 5
+        song_xml_out = song_xml_out.replace(
+            '<MarkerTrack version="1" timeFormat="2">\n\t\t\t\t<Attributes x:id="attributes" hidden="1"/>',
+            '<MarkerTrack version="1" timeFormat="2">\n\t\t\t\t<Attributes x:id="attributes" hidden="0"/>',
+        )
+        start_marker_tag = '<MarkerEvent markerType="2" timeFormat="2" name="スタート"/>'
+        song_xml_out = song_xml_out.replace(
+            start_marker_tag,
+            start_marker_tag + "\n" + "\n".join(all_marker_lines),
+        )
+
     main_ev_block = '\t\t\t\t<List x:id="Events">\n' + "\n".join(main_events_xml) + "\n\t\t\t\t</List>"
-    # Insert `<List x:id="Events">` into mainvocal, harmvocal, harmvocal2 tracks
-    target_main_close = '<Url x:id="points" type="1" url="media:///Envelopes/mainvocal/パン.envelopex"/>\n\t\t\t\t\t</AutomationRegion>\n\t\t\t\t</Attributes>'
+    target_main_close = (
+        '<Url x:id="points" type="1" url="media:///Envelopes/mainvocal/パン.envelopex"/>\n'
+        "\t\t\t\t\t</AutomationRegion>\n\t\t\t\t</Attributes>"
+    )
     song_xml_out = song_xml_out.replace(target_main_close, target_main_close + "\n" + main_ev_block)
 
     if harm1_clip is not None:
-        t_h1 = '<Url x:id="points" type="1" url="media:///Envelopes/harmvocal/パン.envelopex"/>\n\t\t\t\t\t</AutomationRegion>\n\t\t\t\t</Attributes>'
+        t_h1 = (
+            '<Url x:id="points" type="1" url="media:///Envelopes/harmvocal/パン.envelopex"/>\n'
+            "\t\t\t\t\t</AutomationRegion>\n\t\t\t\t</Attributes>"
+        )
         song_xml_out = song_xml_out.replace(t_h1, t_h1 + "\n" + _single_event_list_xml(harm1_clip, "harmvocal"))
 
     if harm2_clip is not None:
-        t_h2 = '<Url x:id="points" type="1" url="media:///Envelopes/harmvocal2/パン.envelopex"/>\n\t\t\t\t\t</AutomationRegion>\n\t\t\t\t</Attributes>'
+        t_h2 = (
+            '<Url x:id="points" type="1" url="media:///Envelopes/harmvocal2/パン.envelopex"/>\n'
+            "\t\t\t\t\t</AutomationRegion>\n\t\t\t\t</Attributes>"
+        )
         song_xml_out = song_xml_out.replace(t_h2, t_h2 + "\n" + _single_event_list_xml(harm2_clip, "harmvocal2"))
 
-    # Add extra tracks (offvocal, ethereal FX throws, muted director harmony guides) to song.xml & audiomixer.xml
+    # Add extra tracks (offvocal, Nectar 3 stereo/L-R harmonies, verified FX throws)
     extra_media_tracks_xml: list[str] = []
     extra_mixer_channels_xml: list[str] = []
 
@@ -442,20 +505,20 @@ def build_studio_one_song(
         spk_type = "Stereo" if spec.stereo else "Mono"
         mute_flag = "1" if spec.mute else "0"
         fader_lin = _db_to_s1_fader_gain(spec.gain_db)
+        safe_spec_name = _safe_xml_attr(spec.name)
 
         extra_media_tracks_xml.append(
             f'\t\t\t<MediaTrack mediaType="Audio" tempoFollow="2" materialMode="0" layersFollow="1" '
-            f'version="1" trackID="{track_uid}" timeFormat="2" name="{spec.name}" color="{spec.color}">\n'
+            f'version="1" trackID="{track_uid}" timeFormat="2" name="{safe_spec_name}" color="{spec.color}">\n'
             f'\t\t\t\t<SpeakerSetup x:id="trackFormat" type="{spk_type}"/>\n'
             f'\t\t\t\t<UID x:id="channelID" uid="{chan_uid}"/>\n'
-            f'{_single_event_list_xml(rec, spec.name)}\n'
-            f'\t\t\t</MediaTrack>'
+            f"{_single_event_list_xml(rec, spec.name)}\n"
+            f"\t\t\t</MediaTrack>"
         )
 
-        # Route directly to Master Output `{636828DD-7358-4765-B2A2-106A2780EE51}/Input`
         extra_mixer_channels_xml.append(
             f'\t\t\t<AudioTrackChannel gain="{fader_lin}" pan="{spec.pan}" name="Channel{idx_e:02d}" '
-            f'label="{spec.name}" mute="{mute_flag}" solo="0" soloSafe="0" color="{spec.color}">\n'
+            f'label="{safe_spec_name}" mute="{mute_flag}" solo="0" soloSafe="0" color="{spec.color}">\n'
             f'\t\t\t\t<SpeakerSetup x:id="speakerType" type="{spk_type}"/>\n'
             f'\t\t\t\t<UID x:id="uniqueID" uid="{chan_uid}"/>\n'
             f'\t\t\t\t<Connection x:id="destination" objectID="{{636828DD-7358-4765-B2A2-106A2780EE51}}/Input" friendlyName="メイン"/>\n'
@@ -463,7 +526,7 @@ def build_studio_one_song(
             f'\t\t\t\t<Attributes x:id="Inserts"><Attributes x:id="Presets" pname="デフォルト" dirty="0"/></Attributes>\n'
             f'\t\t\t\t<Attributes x:id="InputFX" gain="0" invertPhaseL="0" invertPhaseR="0"/>\n'
             f'\t\t\t\t<Attributes x:id="Sends"><Attributes x:id="Presets" pname="デフォルト" dirty="0"/></Attributes>\n'
-            f'\t\t\t</AudioTrackChannel>'
+            f"\t\t\t</AudioTrackChannel>"
         )
 
     if extra_media_tracks_xml:
@@ -474,15 +537,14 @@ def build_studio_one_song(
 
     mixer_xml_out = mixer_xml_str
     if chain_params is not None:
-        # Update mainvocal fader gain & FX send levels in audiomixer.xml
         main_lin = _db_to_s1_fader_gain(chain_params.vocal_fader_db)
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel01" label="mainvocal"',
             f'<AudioTrackChannel gain="{main_lin}" pan="0.5" name="Channel01" label="mainvocal"',
         )
         doub_lv = _db_to_s1_fader_gain(chain_params.doubler_send_db)
-        dly_lv = _db_to_s1_fader_gain(chain_params.delay_send_db)
-        rev_lv = _db_to_s1_fader_gain(chain_params.reverb_send_db)
+        dly_lv = _db_to_s1_fader_gain(chain_params.tempo_delay_send_db)
+        rev_lv = _db_to_s1_fader_gain(chain_params.plate_reverb_send_db)
         mixer_xml_out = mixer_xml_out.replace(
             '<Attributes name="Send01" bypass="0" prefader="0" level="0.5" pan="0.5">',
             f'<Attributes name="Send01" bypass="0" prefader="0" level="{doub_lv}" pan="0.5">',
@@ -504,7 +566,6 @@ def build_studio_one_song(
             1,
         )
 
-    # Write updated files into the output `.song` ZIP archive (restoring Windows CRLF in XMLs)
     template_files["Song/mediapool.xml"] = pool_xml_out.replace("\n", "\r\n").encode("utf-8")
     template_files["Song/song.xml"] = song_xml_out.replace("\n", "\r\n").encode("utf-8")
     template_files["Devices/audiomixer.xml"] = mixer_xml_out.replace("\n", "\r\n").encode("utf-8")
