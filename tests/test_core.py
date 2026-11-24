@@ -18,7 +18,12 @@ from mix_automation.creative.fx_and_harmony import (
     detect_creative_fx_events,
 )
 from mix_automation.dsp.pitch_timing import ReviewMarker
-from mix_automation.dsp.vst3_optimizer import SongSection, detect_song_sections
+from mix_automation.dsp.vst3_optimizer import (
+    SongSection,
+    detect_song_sections,
+    solve_differentiable_intrinsic_eq_gpu,
+)
+from mix_automation.io.audio_loader import consolidate_vocal_stem_folder
 from mix_automation.io.song_builder import (
     build_studio_one_song,
     patch_vstpreset_component_state,
@@ -214,3 +219,65 @@ def test_detect_song_sections_identifies_loudest_chorus() -> None:
     assert len(sections) >= 2
     _, a_end, _ = sections[anchor_idx]
     assert a_end > 25.0
+
+
+def test_acoustic_dedup_and_plus3_harmony_classification(tmp_path: Path) -> None:
+    sr = 22050
+    t = np.linspace(0.0, 2.0, sr * 2, endpoint=False)
+    main_sig = (0.25 * np.sin(2 * np.pi * 330 * t)).astype(np.float32)
+    harm_sig = (0.008 * np.sin(2 * np.pi * 415 * t)).astype(np.float32)  # Quiet -45 dBFS harmony!
+
+    p_main = tmp_path / "song - main1.wav"
+    p_dup_st = tmp_path / "song - choir1.wav"
+    p_mono_ch = tmp_path / "songmono - choir1.wav"
+    p_plus3 = tmp_path / "songmono - +3 sabi.wav"
+    p_minus3 = tmp_path / "songmono - -3.wav"
+
+    write_pcm24_wav(p_main, main_sig, sr)
+    write_pcm24_wav(p_dup_st, np.stack([harm_sig, harm_sig], axis=0), sr)  # Dual-mono duplicate
+    write_pcm24_wav(p_mono_ch, harm_sig, sr)  # Canonical 1ch mono re-export
+    write_pcm24_wav(p_plus3, (0.01 * np.sin(2 * np.pi * 440 * t)).astype(np.float32), sr)
+    write_pcm24_wav(p_minus3, (0.01 * np.sin(2 * np.pi * 277 * t)).astype(np.float32), sr)
+
+    cons = consolidate_vocal_stem_folder([p_main, p_dup_st, p_mono_ch, p_plus3, p_minus3], target_sr=sr)
+    assert "song - choir1.wav" in cons.deduplicated_files
+    assert cons.has_user_harmonies
+    assert cons.user_harmony_track_count == 3  # choir1(mono) + +3 sabi + -3 (duplicate dropped!)
+    assert cons.harmonies_stereo_bus is not None
+    # Verify quiet -45 dBFS harmonies were leveled up into healthy active studio range!
+    assert float(np.sqrt(np.mean(cons.harmonies_stereo_bus**2))) > 0.03
+
+
+def test_gpu_differentiable_intrinsic_eq_warmstart() -> None:
+    sr = 44100
+    rng = np.random.default_rng(123)
+    # Dark muffled vocal (excess 560Hz mud, deficient 2.9kHz presence)
+    t = np.linspace(0.0, 2.0, sr * 2, endpoint=False)
+    dark_v = (
+        0.25 * np.sin(2 * np.pi * 560 * t)
+        + 0.08 * np.sin(2 * np.pi * 240 * t)
+        + 0.02 * np.sin(2 * np.pi * 2900 * t)
+        + 0.01 * rng.standard_normal(len(t))
+    ).astype(np.float32)
+    inst = (0.15 * rng.standard_normal(len(t))).astype(np.float32)
+
+    prof = compute_section_relative_profile(dark_v, inst, sr=sr)
+    # Construct pro-like intrinsic target with stronger presence & cleaner mud
+    tgt = type(prof)(
+        **{
+            **prof.to_dict(),
+            "vocal_intrinsic_bands_db": {
+                "sub_low": -35.0,
+                "body_warmth": -6.0,
+                "boxiness_mud": -4.2,
+                "core_mid": -6.1,
+                "core_presence": -9.3,
+                "sibilance": -18.0,
+                "air_sheen": -19.5,
+            },
+        }
+    )
+    eq = solve_differentiable_intrinsic_eq_gpu(dark_v, sr=sr, target_profile=tgt, inst_high_rolloff_db=-9.0)
+    # Should cut excessive 560Hz mud and boost deficient 2.9kHz presence!
+    assert eq["mud_cut_db"] < -1.0
+    assert eq["presence_gain_db"] > 1.0

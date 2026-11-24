@@ -1,13 +1,13 @@
-"""v2 Reference Extractor: Genuine BS-RoFormer GPU separation across all 35 pro covers.
+"""v3 Reference Extractor: Cached GPU BS-RoFormer 35-Song Profiler + Official Off-Vocal Calibration.
 
-Reads both `manifest.json` (Batch 1: 15 songs) and `manifest2.json` (Batch 2: 20 songs),
-separates every cover on RTX 5060 Ti using genuine `BS-RoFormer` (`sdr_12.9755`),
-analyzes vocal register (`median_f0_hz`), backing track archetype (`dense_rock_edm`,
-`groovy_mid_pop`, `intimate_ballad_sparse`), spatial wet-tail decay, syllabic clarity,
-and official distributed off-vocal loudness, building:
-  - `consensus` (all 35 songs)
-  - Register x Archetype matrix (`low_mid_dense_rock_edm`, `high_dense_rock_edm`, etc.)
-  - Group/Engineer profiles (`azusagawa`, `toy`, `saburou`, `aokiyo`, `aoru`, `hoshirubesho`, `nanadakiima`)
+Upgrades over v2:
+  1. Aggregates all v3 psychoacoustic invariants (`k_lufs_vi_ratio_db`, `mid_k_lufs_vi_ratio_db`,
+     `partial_loudness_margin_db`, 7-band `vocal_intrinsic_bands_db`, `inst_mid_density_index`,
+     `inst_high_rolloff_db`, `inst_side_mid_db`) across all 35 pro reference covers.
+  2. Performs Official Off-Vocal Calibration: wherever a reference folder contains the official
+     distributed off-vocal WAV/MP3, aligns it against the `BS-RoFormer`-separated instrumental
+     to quantify pro 2-mix mastering glue loudness delta, spectral tilt shift, and source-separation
+     bias without guesswork!
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import librosa
 import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
+from scipy import signal
 
 from mix_automation.analysis.relative_profile import (
     VOCAL_MIX_BANDS,
@@ -102,7 +103,6 @@ class BSRoFormerSeparator:
         if voc_file is None or inst_file is None or not voc_file.exists() or not inst_file.exists():
             raise RuntimeError(f"BS-RoFormer did not produce expected vocal/inst files for {slug}: {out_files}")
 
-        # Save compact PCM_16 stereo cache to preserve disk space across 35+ songs while keeping full 22kHz bandwidth
         v_tmp, _ = load_audio(voc_file, target_sr=target_sr, mono=False)
         i_tmp, _ = load_audio(inst_file, target_sr=target_sr, mono=False)
         sf.write(str(voc_cache), v_tmp.T, target_sr, subtype="PCM_16")
@@ -114,8 +114,6 @@ class BSRoFormerSeparator:
 
 
 def _estimate_fast_median_f0(vocal_mono: np.ndarray, sr: int) -> float:
-    """Fast median F0 estimation over a 45-second active excerpt."""
-    # Pick loudest 45s window
     chunk_len = min(len(vocal_mono), sr * 45)
     start = max(0, (len(vocal_mono) - chunk_len) // 2)
     seg = vocal_mono[start : start + chunk_len]
@@ -127,7 +125,6 @@ def _estimate_fast_median_f0(vocal_mono: np.ndarray, sr: int) -> float:
 
 
 def _find_primary_official_offvocal(song_dir: Path) -> Path | None:
-    """Locate the main official distributed off-vocal file inside `offvocal/`."""
     off_dir = song_dir / "offvocal"
     if not off_dir.exists():
         return None
@@ -136,19 +133,24 @@ def _find_primary_official_offvocal(song_dir: Path) -> Path | None:
         for p in off_dir.rglob("*")
         if p.is_file()
         and p.suffix.lower() in {".wav", ".mp3", ".flac", ".m4a", ".webm"}
-        and not any(x in p.name.lower() for x in ("+1", "+2", "+3", "+4", "+5", "+6", "-1", "-2", "-3", "-4", "-5", "hamo", "drums-only", "no-drums", "bass_less", "_part", "vo 0"))
+        and not any(
+            x in p.name.lower()
+            for x in ("+1", "+2", "+3", "+4", "+5", "+6", "-1", "-2", "-3", "-4", "-5", "hamo", "drums-only", "no-drums", "bass_less", "_part", "vo 0")
+        )
     ]
     if not candidates:
         return None
-    # Prefer WAV over lossy, and mastered/default over pre-mastering
-    candidates.sort(key=lambda p: (0 if p.suffix.lower() == ".wav" else 1, 1 if "nomst" in p.name.lower() or "pre-master" in p.name.lower() else 0, len(p.name)))
+    candidates.sort(
+        key=lambda p: (
+            0 if p.suffix.lower() == ".wav" else 1,
+            1 if "nomst" in p.name.lower() or "pre-master" in p.name.lower() else 0,
+            len(p.name),
+        )
+    )
     return candidates[0]
 
 
 def _pick_loudest_chorus_span(v_mono: np.ndarray, i_mono: np.ndarray, sr: int) -> tuple[int, int]:
-    """Find the 20-second window with highest combined mid-high backing density + active singing."""
-    from scipy import signal
-
     n = min(len(v_mono), len(i_mono))
     win = min(sr * 20, n)
     if n <= win:
@@ -167,14 +169,57 @@ def _pick_loudest_chorus_span(v_mono: np.ndarray, i_mono: np.ndarray, sr: int) -
     return best_s, best_s + win
 
 
+def _calibrate_official_offvocal_vs_separated(
+    sep_inst_st: np.ndarray,
+    off_st: np.ndarray,
+    sr: int,
+    meter: pyln.Meter,
+) -> dict | None:
+    """Measure 2-mix mastering glue & spectral tilt delta between official distributed off-vocal and pro mix."""
+    try:
+        off_lufs = float(meter.integrated_loudness(off_st.T.astype(np.float64)))
+        sep_lufs = float(meter.integrated_loudness(sep_inst_st.T.astype(np.float64)))
+        if not (np.isfinite(off_lufs) and np.isfinite(sep_lufs)):
+            return None
+
+        # Compare high-vs-mid spectral tilt on loudest 30s core
+        f_off, p_off = signal.welch(np.mean(off_st, axis=0), fs=sr, nperseg=4096)
+        f_sep, p_sep = signal.welch(np.mean(sep_inst_st, axis=0), fs=sr, nperseg=4096)
+
+        def _tilt(f, p):
+            lo = float(10.0 * np.log10(np.sum(p[(f >= 160) & (f < 900)]) + 1e-18))
+            hi = float(10.0 * np.log10(np.sum(p[(f >= 2000) & (f < 12000)]) + 1e-18))
+            return hi - lo
+
+        def _crest(st):
+            m = np.mean(st, axis=0)
+            pk = float(20.0 * np.log10(np.percentile(np.abs(m), 99.5) + 1e-12))
+            rm = float(20.0 * np.log10(np.sqrt(np.mean(m**2)) + 1e-12))
+            return pk - rm
+
+        return {
+            "official_offvocal_lufs": round(off_lufs, 2),
+            "sep_inst_lufs": round(sep_lufs, 2),
+            "lufs_delta_sep_minus_off_db": round(sep_lufs - off_lufs, 2),
+            "crest_delta_sep_minus_off_db": round(_crest(sep_inst_st) - _crest(off_st), 2),
+            "tilt_delta_sep_minus_off_db": round(_tilt(f_sep, p_sep) - _tilt(f_off, p_off), 2),
+        }
+    except Exception:
+        return None
+
+
 def aggregate_profiles_median(
     profiles: list[SectionRelativeProfile],
     archetype_label: str = "consensus",
 ) -> SectionRelativeProfile:
-    """Compute robust median consensus across a subset of reference profiles."""
+    """Compute robust median consensus across a subset of v3 reference profiles."""
     if not profiles:
         raise ValueError("Profile list is empty.")
 
+    intrinsic = {
+        b: round(float(np.median([p.vocal_intrinsic_bands_db[b] for p in profiles])), 3)
+        for b in VOCAL_MIX_BANDS
+    }
     band_margins = {
         b: round(float(np.median([p.band_margins_db[b] for p in profiles])), 3)
         for b in VOCAL_MIX_BANDS
@@ -188,6 +233,9 @@ def aggregate_profiles_median(
         vocal_rms_db=round(float(np.median([p.vocal_rms_db for p in profiles])), 3),
         inst_rms_db=round(float(np.median([p.inst_rms_db for p in profiles])), 3),
         broadband_vi_ratio_db=round(float(np.median([p.broadband_vi_ratio_db for p in profiles])), 3),
+        k_lufs_vi_ratio_db=round(float(np.median([p.k_lufs_vi_ratio_db for p in profiles])), 3),
+        mid_k_lufs_vi_ratio_db=round(float(np.median([p.mid_k_lufs_vi_ratio_db for p in profiles])), 3),
+        partial_loudness_margin_db=round(float(np.median([p.partial_loudness_margin_db for p in profiles])), 3),
         vocal_crest_db=round(float(np.median([p.vocal_crest_db for p in profiles])), 3),
         inst_crest_db=round(float(np.median([p.inst_crest_db for p in profiles])), 3),
         crest_difference_db=round(float(np.median([p.crest_difference_db for p in profiles])), 3),
@@ -196,7 +244,11 @@ def aggregate_profiles_median(
         syllabic_clarity_index=round(float(np.median([p.syllabic_clarity_index for p in profiles])), 4),
         wet_tail_ratio_db=round(float(np.median([p.wet_tail_ratio_db for p in profiles])), 2),
         vocal_side_mid_db=round(float(np.median([p.vocal_side_mid_db for p in profiles])), 2),
+        inst_side_mid_db=round(float(np.median([p.inst_side_mid_db for p in profiles])), 2),
+        inst_mid_density_index=round(float(np.median([p.inst_mid_density_index for p in profiles])), 3),
+        inst_high_rolloff_db=round(float(np.median([p.inst_high_rolloff_db for p in profiles])), 2),
         backing_archetype=archetype_label,
+        vocal_intrinsic_bands_db=intrinsic,
         band_margins_db=band_margins,
         inst_band_levels_db=inst_bands,
         active_frame_ratio=round(float(np.median([p.active_frame_ratio for p in profiles])), 3),
@@ -209,7 +261,7 @@ def build_all_reference_profiles(
     output_json_path: Path,
     target_sr: int = 44100,
 ) -> dict:
-    """Process all 35 reference covers (`manifest.json` + `manifest2.json`) with genuine BS-RoFormer."""
+    """Process all 35 reference covers (`manifest.json` + `manifest2.json`) into v3 psychoacoustic profiles."""
     info_dir = references_root / "_info"
     manifest: list[dict] = []
     for m_name in ("manifest.json", "manifest2.json"):
@@ -225,6 +277,7 @@ def build_all_reference_profiles(
     by_register_and_arch: dict[str, list[SectionRelativeProfile]] = {}
     by_register: dict[str, list[SectionRelativeProfile]] = {}
     all_chorus_profiles: list[SectionRelativeProfile] = []
+    offvocal_calibs: list[dict] = []
 
     for idx, item in enumerate(manifest, start=1):
         rel_dir = Path(item["dir"])
@@ -236,7 +289,7 @@ def build_all_reference_profiles(
         cover_path = cover_files[0]
         group = item["group"]
         slug = f"{group}_{rel_dir.name}"
-        print(f"[{idx:02d}/{len(manifest):02d}] BS-RoFormer separating & profiling {slug} ({item['title']}) ...", flush=True)
+        print(f"[{idx:02d}/{len(manifest):02d}] v3 Profiling {slug} ({item['title']}) ...", flush=True)
 
         v_st, i_st, sr, backend = separator.separate(cover_path, slug=slug, target_sr=target_sr)
         v_mono = np.mean(v_st, axis=0, dtype=np.float32)
@@ -249,17 +302,19 @@ def build_all_reference_profiles(
         chorus_prof = compute_section_relative_profile(v_st[:, s0:s1], i_st[:, s0:s1], sr=sr)
         full_prof = compute_section_relative_profile(v_st, i_st, sr=sr)
 
-        # Measure mastered cover LUFS vs official distributed off-vocal LUFS
         cover_2mix = np.clip(v_st + i_st, -1.0, 1.0)
         cover_lufs = round(float(meter.integrated_loudness(cover_2mix.T.astype(np.float64))), 2)
+
         off_file = _find_primary_official_offvocal(song_dir)
-        off_lufs = None
+        off_calib = None
         if off_file is not None:
             try:
                 off_st, _ = load_audio(off_file, target_sr=sr, mono=False)
-                off_lufs = round(float(meter.integrated_loudness(off_st.T.astype(np.float64))), 2)
+                off_calib = _calibrate_official_offvocal_vs_separated(i_st, off_st, sr=sr, meter=meter)
+                if off_calib is not None:
+                    offvocal_calibs.append(off_calib)
             except Exception:
-                off_lufs = None
+                off_calib = None
 
         arch = chorus_prof.backing_archetype
         by_group.setdefault(group.lower(), []).append(chorus_prof)
@@ -279,7 +334,7 @@ def build_all_reference_profiles(
                 "vocal_register": reg_key,
                 "backing_archetype": arch,
                 "cover_master_lufs": cover_lufs,
-                "official_offvocal_lufs": off_lufs,
+                "official_offvocal_calibration": off_calib,
                 "chorus_profile": chorus_prof.to_dict(),
                 "full_song_profile": full_prof.to_dict(),
             }
@@ -295,10 +350,30 @@ def build_all_reference_profiles(
     for grp, plist in by_group.items():
         targets[grp] = aggregate_profiles_median(plist, grp).to_dict()
 
+    calib_summary = {}
+    if offvocal_calibs:
+        calib_summary = {
+            "num_paired_official_offvocals": len(offvocal_calibs),
+            "median_master_minus_offvocal_lufs_db": round(
+                float(np.median([r["cover_master_lufs"] - r["official_offvocal_calibration"]["official_offvocal_lufs"] for r in per_song_records if r["official_offvocal_calibration"]])),
+                2,
+            ),
+            "median_sep_minus_offvocal_lufs_db": round(
+                float(np.median([c["lufs_delta_sep_minus_off_db"] for c in offvocal_calibs])), 2
+            ),
+            "median_sep_minus_offvocal_crest_db": round(
+                float(np.median([c["crest_delta_sep_minus_off_db"] for c in offvocal_calibs])), 2
+            ),
+            "median_sep_minus_offvocal_tilt_db": round(
+                float(np.median([c["tilt_delta_sep_minus_off_db"] for c in offvocal_calibs])), 2
+            ),
+        }
+
     result = {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "separator_model": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
         "num_reference_songs": len(per_song_records),
+        "official_offvocal_calibration": calib_summary,
         "target_profiles": targets,
         "songs": per_song_records,
     }

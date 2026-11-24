@@ -1,14 +1,11 @@
-"""v2 Studio One 5.5 Complete `.song` Session Builder & `.vstpreset` Chunk Patcher.
+"""v3 Studio One 5.5 Complete `.song` Session Builder & Verified `.vstpreset` Chunk Patcher.
 
-Upgrades over v1:
-  1. Fixes critical Studio One 5 `timeFormat="2"` `<AudioEvent>` offset bug: `offset` is now
-     written in quarter-note beats (`start_beats`), matching `start` and `length` so section-split
-     clips play seamlessly without sample jumps at any tempo.
-  2. Explicitly configures Exponential Audio `R2` `.vstpreset` to a chorus-free, tight studio Plate
-     (`revbtype='Plate'`, `chordpth=0.0`, `rvb_time=0.92..1.25s`, `reverbfc=5800Hz`) and enables
-     Dynamic EQ on `Persistent Q` bands 2 & 4 inside the Studio One session.
-  3. Injects automatic pitch/timing/FX `ReviewMarker` cues directly into Studio One 5's `<MarkerTrack>`
-     (and unhides the Marker Track) for instant one-click review in the DAW.
+Upgrades over v2:
+  1. Uses `mix_automation.dsp.vst3_adapter.set_vst3_param_strict` inside isolated preset-export
+     subprocesses so Studio One's `.vstpreset` files (`Persistent Q` 6-band, `MV2`, `C1`, `L1`,
+     `H-Delay`, `Doubler2`, chorus-free `R2` Plate) are 100% contract-verified.
+  2. Retains quarter-note beat-accurate `<AudioEvent>` `start` & `offset` values and visible
+     `<MarkerTrack>` section/review/FX markers.
 """
 
 from __future__ import annotations
@@ -103,7 +100,6 @@ def _new_uid() -> str:
 
 
 def _db_to_s1_fader_gain(db: float) -> float:
-    """Convert dB offset to linear Studio One channel gain multiplier."""
     return round(float(10.0 ** (db / 20.0)), 6)
 
 
@@ -112,7 +108,7 @@ def _safe_xml_attr(val: str) -> str:
 
 
 def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[str, bytes]:
-    """Load each VST3 plugin in an isolated timeout-guarded subprocess and dump optimized `Comp` states."""
+    """Load each template VST3 plugin in an isolated subprocess and dump contract-verified `Comp` states."""
     import base64
     import json
     import subprocess
@@ -126,19 +122,12 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
     worker_script = (
         "import base64, json, sys\n"
         "from pedalboard import load_plugin\n"
+        "from mix_automation.dsp.vst3_adapter import set_vst3_param_strict\n"
         "spec = json.loads(sys.argv[1])\n"
         "p = load_plugin(spec['path'], plugin_name=spec.get('plugin_name')) if spec.get('plugin_name') else load_plugin(spec['path'])\n"
         "for k, v in spec['settings'].items():\n"
         "    if k in p.parameters:\n"
-        "        param = p.parameters[k]\n"
-        "        vv = getattr(param, 'valid_values', None)\n"
-        "        if vv:\n"
-        "            if k == 'mix' and 'Wet' in vv:\n"
-        "                v = 'Wet'\n"
-        "            elif not isinstance(v, (bool, str)) and isinstance(vv[0], (int, float)) and not isinstance(vv[0], bool):\n"
-        "                v = min(vv, key=lambda x: abs(float(x) - float(v)))\n"
-        "        try: setattr(p, k, v)\n"
-        "        except Exception: pass\n"
+        "        set_vst3_param_strict(p, k, v)\n"
         "print('STATE_B64:' + base64.b64encode(p.raw_state).decode('ascii'))\n"
     )
 
@@ -147,9 +136,10 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", worker_script, payload],
+                check=False,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=12,
             )
             for line in proc.stdout.splitlines():
                 if line.startswith("STATE_B64:"):
@@ -158,40 +148,39 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             return None
         return None
 
-    # 1. Persistent Q (Main Vocal with Dynamic EQ on Body & Presence + Harmony Vocal Pocket EQ)
-    pq_main_raw = _dump_isolated(
-        pq_path,
-        None,
-        {
-            "band_1_enabled": True,
-            "band_1_type": "Highpass",
-            "band_1_frequency": float(np.clip(params.hpf_hz, 60.0, 180.0)),
-            "band_1_slope": 18.0,
-            "band_2_enabled": True,
-            "band_2_type": "Peaking",
-            "band_2_frequency": 235.0,
-            "band_2_gain": float(params.body_gain_db),
-            "band_2_q": 0.95,
-            "band_2_dynamic": False,
-            "band_3_enabled": True,
-            "band_3_type": "Peaking",
-            "band_3_frequency": 540.0,
-            "band_3_gain": float(params.mud_cut_db),
-            "band_3_q": 1.35,
-            "band_3_dynamic": False,
-            "band_4_enabled": True,
-            "band_4_type": "Peaking",
-            "band_4_frequency": 2850.0,
-            "band_4_gain": float(params.presence_gain_db),
-            "band_4_q": 0.80,
-            "band_4_dynamic": False,
-            "band_5_enabled": True,
-            "band_5_type": "HighShelf",
-            "band_5_frequency": 10500.0,
-            "band_5_gain": float(params.air_shelf_db),
-            "band_5_q": 0.7,
-        },
-    )
+    # 1. Persistent Q (Main Vocal 6-Band & Harmony Vocal Pocket EQ)
+    pq_main_settings = {
+        "band_1_enabled": True,
+        "band_1_type": "Highpass",
+        "band_1_frequency": float(np.clip(params.hpf_hz, 60.0, 180.0)),
+        "band_1_slope": 18.0,
+        "band_2_enabled": True,
+        "band_2_type": "Peaking",
+        "band_2_frequency": 225.0,
+        "band_2_gain": float(params.body_gain_db),
+        "band_2_q": 0.90,
+        "band_3_enabled": True,
+        "band_3_type": "Peaking",
+        "band_3_frequency": 560.0,
+        "band_3_gain": float(params.mud_cut_db),
+        "band_3_q": 1.25,
+        "band_4_enabled": True,
+        "band_4_type": "Peaking",
+        "band_4_frequency": 2900.0,
+        "band_4_gain": float(params.presence_gain_db),
+        "band_4_q": 0.80,
+        "band_5_enabled": True,
+        "band_5_type": "HighShelf",
+        "band_5_frequency": 10500.0,
+        "band_5_gain": float(params.air_shelf_db),
+        "band_5_q": 0.70,
+        "band_6_enabled": abs(params.core_mid_gain_db) > 0.05,
+        "band_6_type": "Peaking",
+        "band_6_frequency": 1250.0,
+        "band_6_gain": float(params.core_mid_gain_db),
+        "band_6_q": 1.10,
+    }
+    pq_main_raw = _dump_isolated(pq_path, None, pq_main_settings)
     if pq_main_raw:
         states["Presets/Channels/mainvocal/2 - Persistent Q.vstpreset"] = pq_main_raw
 
@@ -205,25 +194,25 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             "band_1_slope": 18.0,
             "band_2_enabled": True,
             "band_2_type": "Peaking",
-            "band_2_frequency": 540.0,
-            "band_2_gain": float(params.mud_cut_db - 1.0),
+            "band_2_frequency": 520.0,
+            "band_2_gain": -2.2,
             "band_3_enabled": True,
             "band_3_type": "Peaking",
-            "band_3_frequency": 2850.0,
-            "band_3_gain": -2.5,
+            "band_3_frequency": 2700.0,
+            "band_3_gain": -3.2,
             "band_4_enabled": True,
             "band_4_type": "HighShelf",
-            "band_4_frequency": 9500.0,
-            "band_4_gain": float(max(0.0, params.air_shelf_db * 0.6)),
+            "band_4_frequency": 9800.0,
+            "band_4_gain": float(max(0.0, params.air_shelf_db * 0.5)),
         },
     )
     if pq_harm_raw:
         states["Presets/Channels/harmvocal/2 - Persistent Q.vstpreset"] = pq_harm_raw
         states["Presets/Channels/harmvocal2/2 - Persistent Q.vstpreset"] = pq_harm_raw
 
-    # 2. Waves MV2, C1, L1, H-Delay, Doubler2 mapped from v2 normalized drive/glue
-    mv2_low = round(float(3.5 + params.comp2_glue * 11.0), 2)
-    mv2_high = round(float(-2.5 - params.comp2_glue * 7.5), 2)
+    # 2. Waves MV2, C1, L1, H-Delay, Doubler2 mapped from v3 calibrated GR parameters
+    mv2_low = round(float(np.clip(params.comp2_param if params.archetype_chain == "dense_rock_edm" else 6.0, 2.0, 16.0)), 1)
+    mv2_high = round(float(-mv2_low * 0.72), 1)
     mv2_raw = _dump_isolated(
         waves_shell,
         "MV2 Mono",
@@ -239,11 +228,11 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         waves_shell,
         "C1 comp Mono",
         {
-            "threshold": round(float(-15.0 - params.comp1_drive * 9.0), 2),
-            "ratio": round(float(2.5 + params.comp1_drive * 2.0), 2),
-            "attack": 6.0,
+            "threshold": round(float(np.clip(params.vca_threshold_db, -36.0, -10.0)), 1),
+            "ratio": 3.8 if params.archetype_chain == "dense_rock_edm" else 3.0,
+            "attack": 14.0,  # Preserves consonant attack punch!
             "release": rel_ms,
-            "makeup": round(float(1.5 + params.comp1_drive * 2.5), 2),
+            "makeup": round(float(np.clip(params.vca_measured_gr_db, 0.5, 6.0)), 1),
         },
     )
     if c1_raw:
@@ -264,7 +253,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             "pingpong": True,
             "feedback": 20.0,
             "hipass": 450.0,
-            "lopass": 3800.0,
+            "lopass": 4000.0,
         },
     )
     if hd_raw:
@@ -274,7 +263,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
     if db2_raw:
         states["Presets/Channels/Doubler2 Stereo/1 - Doubler2 Stereo.vstpreset"] = db2_raw
 
-    # 3. Exponential Audio R2: Clean, Zero-Chorus Short Studio Plate (NO 37m Hall / 92% Chorus!)
+    # 3. Exponential Audio R2: Verified Chorus-Free Short Studio Plate
     r_time = 1.25 if params.archetype_chain == "intimate_ballad_sparse" else 0.92
     predly = round(float(np.clip(60000.0 / max(bpm, 60.0) / 16.0, 18.0, 38.0)), 1)
     r2_raw = _dump_isolated(
@@ -286,8 +275,8 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             "rvb_time": r_time,
             "predelay": predly,
             "chordpth": 0.0,
-            "reverbfc": 5800.0,
-            "earlyffc": 5800.0,
+            "reverbfc": 5750.0,
+            "earlyffc": 5750.0,
         },
     )
     if r2_raw:
@@ -356,7 +345,6 @@ def build_studio_one_song(
     max_dur_sec = max((r["duration_sec"] for r in clip_records), default=240.0) + 12.0
     max_beats = max_dur_sec / sec_per_beat
 
-    # --- 1. Build `Song/mediapool.xml` ---
     clip_xml_blocks: list[str] = []
     for rec in clip_records:
         use_cnt = len(sections) if rec["key"] == "mainvocal" and sections else 1
@@ -391,7 +379,6 @@ def build_studio_one_song(
         f'url="{output_song_path.resolve().as_uri()}"',
     )
 
-    # --- 2. Build `<List x:id="Events">` for mainvocal (ALL attributes in quarter-note beats!) ---
     main_events_xml: list[str] = []
     if sections:
         for sec in sections:
@@ -447,7 +434,6 @@ def build_studio_one_song(
         f'start="{max_beats:.4f}"',
     )
 
-    # --- 3. Inject Review & Section Markers into `<MarkerTrack>` ---
     all_marker_lines: list[str] = []
     for sec in sections:
         if sec.start_sec > 0.5:
@@ -463,7 +449,6 @@ def build_studio_one_song(
         )
 
     if all_marker_lines:
-        # Unhide MarkerTrack so cues are immediately visible in Studio One 5
         song_xml_out = song_xml_out.replace(
             '<MarkerTrack version="1" timeFormat="2">\n\t\t\t\t<Attributes x:id="attributes" hidden="1"/>',
             '<MarkerTrack version="1" timeFormat="2">\n\t\t\t\t<Attributes x:id="attributes" hidden="0"/>',
@@ -495,7 +480,6 @@ def build_studio_one_song(
         )
         song_xml_out = song_xml_out.replace(t_h2, t_h2 + "\n" + _single_event_list_xml(harm2_clip, "harmvocal2"))
 
-    # Add extra tracks (offvocal, Nectar 3 stereo/L-R harmonies, verified FX throws)
     extra_media_tracks_xml: list[str] = []
     extra_mixer_channels_xml: list[str] = []
 
@@ -541,6 +525,16 @@ def build_studio_one_song(
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel01" label="mainvocal"',
             f'<AudioTrackChannel gain="{main_lin}" pan="0.5" name="Channel01" label="mainvocal"',
+        )
+        # Pan user harmvocal / harmvocal2 wide L/R (0.18 / 0.82) at balanced -7.8 dB!
+        h_lin = _db_to_s1_fader_gain(-7.8)
+        mixer_xml_out = mixer_xml_out.replace(
+            '<AudioTrackChannel gain="1" pan="0.5" name="Channel02" label="harmvocal"',
+            f'<AudioTrackChannel gain="{h_lin}" pan="0.18" name="Channel02" label="harmvocal"',
+        )
+        mixer_xml_out = mixer_xml_out.replace(
+            '<AudioTrackChannel gain="1" pan="0.5" name="Channel03" label="harmvocal2"',
+            f'<AudioTrackChannel gain="{h_lin}" pan="0.82" name="Channel03" label="harmvocal2"',
         )
         doub_lv = _db_to_s1_fader_gain(chain_params.doubler_send_db)
         dly_lv = _db_to_s1_fader_gain(chain_params.tempo_delay_send_db)

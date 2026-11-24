@@ -96,7 +96,7 @@ def build_references(
     from mix_automation.analysis.reference_extractor import build_all_reference_profiles
 
     res = build_all_reference_profiles(references_dir, cache_dir, out_json)
-    console.print(f"[green]Built v2 target profiles from {res['num_reference_songs']} songs -> {out_json}[/green]")
+    console.print(f"[green]Built v3 psychoacoustic target profiles from {res['num_reference_songs']} songs -> {out_json}[/green]")
 
 
 @app.command("mix")
@@ -128,7 +128,7 @@ def mix_song(
         style=style,
         force_auto_pitch=auto_pitch,
     )
-    console.print("\n[bold green]v2 Auto-MIX Complete![/bold green]")
+    console.print("\n[bold green]v3 Auto-MIX Complete![/bold green]")
     console.print(f"  Archetype & Target   : [magenta]{report['optimized_chain_params']['archetype_chain']} -> {report['resolved_target_profile']}[/magenta]")
     console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan]")
     console.print(f"  Mastered 2mix WAV    : [cyan]{report['master_wav']}[/cyan]")

@@ -1,6 +1,6 @@
 [project]
 name = "mix-automation"
-version = "0.2.0"
+version = "0.3.0"
 description = "Reference-grade automated vocal mixing engine tailored for Studio One 5 & commercial VST3 chains"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -49,6 +49,9 @@ packages = ["src/mix_automation"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.pytest.ini_options]
+addopts = "-p no:faulthandler"
 
 [tool.uv]
 environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]

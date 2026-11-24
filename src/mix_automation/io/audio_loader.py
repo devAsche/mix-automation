@@ -1,22 +1,27 @@
-"""v2 Lossless Stem Consolidation & Stereo Stage Panning.
+"""v3 Intelligent Stem Consolidation: Acoustic Deduplication, Role Inference & Wide Harmony Staging.
 
-Eliminates the v1 flaws:
-  1. Drops completely dead/empty stems (`peak < -75 dBFS`, e.g., empty export tracks).
-  2. Preserves punch-in crossfades and phrase overlaps 100% intact instead of chopping
-     25ms frames into a secondary track. Only sustained simultaneous vocal overdubs
-     (`>= 1.4s` continuous overlap) are routed to `double_mono`.
-  3. Automatically pans dual-mono harmony/choir tracks symmetrically across the stereo
-     image (`L/R ±52%`, `±74%`, `±36%`) using equal-power panning so the center Mid
-     channel stays crystal-clear for the Lead Vocal!
+Fixes every v2 harmony/stem weakness for arbitrary real-world DAW exports:
+  1. Acoustic Duplicate Rejection: If a user re-exports mono tracks alongside earlier dual-mono
+     stereo exports (e.g., `choir1.wav` + `mono - choir1.wav`), waveform envelope correlation
+     (`r >= 0.985`) automatically drops the duplicate and prefers the clean 1-channel mono export.
+  2. Universal Role Classification (Name + Acoustic Pitch-Offset Fallback): Recognizes Japanese
+     and English Utattemita naming (`+3`, `-3`, `+5`, `-5`, `上ハモ`, `下ハモ`, `ハモ`, `harm`,
+     `choir`, `chorus`, `suboc`, `superoc`, `oct`, `double`, `dbl`), and classifies unknown
+     auxiliary filenames via median semitone interval relative to the lead vocal!
+  3. Individual Active-RMS Leveling BEFORE Panning: Every auxiliary stem is noise-gated and
+     staged to consistent active RMS (`-20 dBFS`) prior to equal-power L/R stereo distribution,
+     preventing quiet `-45..-60 dBFS` exports from vanishing or skewing the stereo image!
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import librosa
 import numpy as np
 import soundfile as sf
 from scipy import ndimage, signal
@@ -88,14 +93,14 @@ def strip_silence_gate(
     mono_audio: np.ndarray,
     sr: int,
     rel_gate_db: float = -54.0,
-    abs_floor_db: float = -65.0,
+    abs_floor_db: float = -72.0,
     hold_ms: float = 160.0,
     fade_ms: float = 28.0,
 ) -> np.ndarray:
     """Gently mute pure mic noise between phrases while keeping breathy tails & whispers intact."""
     x = mono_audio.astype(np.float32, copy=True)
     peak_abs = float(np.max(np.abs(x))) if x.size > 0 else 0.0
-    if peak_abs < 10.0 ** (-75.0 / 20.0):
+    if peak_abs < 10.0 ** (-78.0 / 20.0):
         return np.zeros_like(x)
 
     hop = max(int(sr * 0.01), 128)
@@ -133,9 +138,128 @@ def apply_equal_power_pan(mono_sig: np.ndarray, pan: float) -> np.ndarray:
     return np.stack([mono_sig * g_l, mono_sig * g_r], axis=0).astype(np.float32)
 
 
+def _active_level_normalize(sig: np.ndarray, target_active_rms_db: float = -20.0, max_boost_db: float = 38.0) -> np.ndarray:
+    """Normalize a single vocal stem's active singing frames to consistent RMS (handles -58 dBFS stems!)."""
+    if sig.size == 0:
+        return sig
+    env = np.abs(sig)
+    pk = float(np.percentile(env, 99.5))
+    if pk < 10.0 ** (-72.0 / 20.0):
+        return np.zeros_like(sig)
+    act = sig[env >= pk * (10.0 ** (-22.0 / 20.0))]
+    if act.size < 256:
+        return sig
+    cur_rms_db = float(20.0 * np.log10(np.sqrt(np.mean(act**2)) + 1e-12))
+    gain_db = float(np.clip(target_active_rms_db - cur_rms_db, -18.0, max_boost_db))
+    out = sig * (10.0 ** (gain_db / 20.0))
+    out_pk = float(np.max(np.abs(out))) + 1e-9
+    if out_pk > 0.88:
+        out *= 0.88 / out_pk
+    return out.astype(np.float32)
+
+
+def _delay_samples(x: np.ndarray, shift_samples: int) -> np.ndarray:
+    if shift_samples <= 0:
+        return x
+    out = np.zeros_like(x)
+    if shift_samples < len(x):
+        out[shift_samples:] = x[:-shift_samples]
+    return out
+
+
+def _deduplicate_stem_records(records: list[dict], sr: int) -> tuple[list[dict], list[str]]:
+    """Drop acoustic duplicates (e.g. stereo dual-mono + mono re-export of same track), keeping 1ch mono."""
+    hop = max(int(sr * 0.02), 256)
+    # Sort so true 1-channel mono exports and newer files are evaluated first (kept as canonical!)
+    ordered = sorted(records, key=lambda r: (0 if r["orig_channels"] == 1 else 1, -r["mtime"], r["path"].name))
+
+    kept: list[dict] = []
+    kept_sigs: list[np.ndarray] = []
+    skipped_names: list[str] = []
+
+    for rec in ordered:
+        m = rec["mono"]
+        n_f = len(m) // hop
+        if n_f < 10:
+            continue
+        env = np.sqrt(np.mean(m[: n_f * hop].reshape(n_f, hop) ** 2, axis=1) + 1e-12)
+        env_norm = env - np.mean(env)
+        denom = float(np.linalg.norm(env_norm)) + 1e-12
+
+        is_dup = False
+        for k_rec, k_env in zip(kept, kept_sigs):
+            c_len = min(len(env_norm), len(k_env))
+            if c_len < 10:
+                continue
+            r_env = float(np.dot(env_norm[:c_len], k_env[:c_len]) / (denom * (float(np.linalg.norm(k_env[:c_len])) + 1e-12)))
+            if r_env >= 0.985:
+                # Confirm fine waveform correlation on active region to be 100% sure it's identical audio
+                cm = min(len(m), len(k_rec["mono"]))
+                a = m[:cm]
+                b = k_rec["mono"][:cm]
+                act = (np.abs(a) > 1e-4) | (np.abs(b) > 1e-4)
+                if np.sum(act) > 500:
+                    r_wav = float(np.corrcoef(a[act][:50000], b[act][:50000])[0, 1])
+                    if abs(r_wav) >= 0.96:
+                        is_dup = True
+                        break
+        if is_dup:
+            skipped_names.append(rec["path"].name)
+        else:
+            kept.append(rec)
+            kept_sigs.append(env_norm)
+
+    return kept, skipped_names
+
+
+def _classify_filename_role(stem_name: str) -> str | None:
+    """Classify stem role from Japanese & English Utattemita naming conventions."""
+    low = stem_name.lower()
+    if any(k in low for k in ("suboc", "oct-", "low_oct", "下オク", "オクターブ下", "-12")):
+        return "sub_octave"
+    if any(k in low for k in ("superoc", "oct+", "high_oct", "上オク", "オクターブ上", "+12")):
+        return "super_octave"
+    if any(k in low for k in ("choir", "chorus", "コーラス")):
+        return "choir"
+    if any(k in low for k in ("+3", "+4", "+5", "上ハモ", "harm_up", "hamo_up", "upper")):
+        return "upper_harm"
+    if any(k in low for k in ("-3", "-4", "-5", "下ハモ", "harm_low", "hamo_low", "lower")):
+        return "lower_harm"
+    if any(k in low for k in ("harm", "hamo", "ハモ")):
+        return "harmony"
+    if any(k in low for k in ("double", "dbl", "ダブル")):
+        return "double"
+    if any(k in low for k in ("main", "lead", "メイン")) or re.search(r"(^|[^a-z])vo([^a-z]|$)", low):
+        return "main"
+    return None
+
+
+def _infer_role_by_pitch_offset(aux_mono: np.ndarray, lead_mono: np.ndarray, sr: int) -> str:
+    """Fallback acoustic role classifier using median semitone interval vs lead vocal."""
+    n = min(len(aux_mono), len(lead_mono), sr * 60)
+    if n < sr * 2:
+        return "harmony"
+    hop = 1024
+    f_l, v_l, _ = librosa.pyin(lead_mono[:n], fmin=75.0, fmax=880.0, sr=sr, hop_length=hop)
+    f_a, v_a, _ = librosa.pyin(aux_mono[:n], fmin=75.0, fmax=880.0, sr=sr, hop_length=hop)
+    both = v_l & v_a & (~np.isnan(f_l)) & (~np.isnan(f_a))
+    if np.sum(both) < 12:
+        return "harmony"
+    st_diff = float(np.median(librosa.hz_to_midi(f_a[both]) - librosa.hz_to_midi(f_l[both])))
+    if st_diff >= 9.5:
+        return "super_octave"
+    if st_diff <= -9.5:
+        return "sub_octave"
+    if st_diff >= 1.5:
+        return "upper_harm"
+    if st_diff <= -1.5:
+        return "lower_harm"
+    return "double"
+
+
 @dataclass(frozen=True)
 class ConsolidatedStems:
-    """Losslessly consolidated vocal stems with stereo-staged harmonies."""
+    """Losslessly consolidated & acoustically deduplicated vocal stems with leveled wide harmonies."""
 
     lead_mono: np.ndarray
     double_stereo: np.ndarray | None
@@ -145,6 +269,9 @@ class ConsolidatedStems:
     harm1_mono: np.ndarray | None
     harm2_mono: np.ndarray | None
     has_user_harmonies: bool
+    user_harmony_track_count: int
+    deduplicated_files: list[str]
+    stem_roles_summary: dict[str, list[str]]
     sr: int
 
 
@@ -152,46 +279,48 @@ def consolidate_vocal_stem_folder(
     stem_files: list[Path],
     target_sr: int = 44100,
 ) -> ConsolidatedStems:
-    """Consolidate multi-take vocal stems without chopping phrase transitions, and pan harmonies wide."""
-    main_paths: list[Path] = []
-    suboc_paths: list[Path] = []
-    superoc_paths: list[Path] = []
-    harm_paths: list[Path] = []
-
+    """Consolidate vocal stems with acoustic dedup, universal role inference, and leveled wide stereo staging."""
+    raw_records: list[dict] = []
     for p in sorted(stem_files):
-        lname = p.stem.lower()
-        if "suboc" in lname:
-            suboc_paths.append(p)
-        elif "superoc" in lname:
-            superoc_paths.append(p)
-        elif "harm" in lname or "choir" in lname or "chorus" in lname:
-            harm_paths.append(p)
-        elif "main" in lname or "lead" in lname or "vo" in lname:
-            main_paths.append(p)
+        try:
+            info = sf.info(str(p))
+            orig_ch = info.channels
+        except Exception:
+            orig_ch = 2
+        st, _ = load_audio(p, target_sr=target_sr, mono=False)
+        if float(np.max(np.abs(st))) < 10.0 ** (-75.0 / 20.0):
+            continue
+        mono = np.mean(st, axis=0, dtype=np.float32)
+        lr_diff = float(np.sqrt(np.mean((st[0] - st[1]) ** 2)))
+        raw_records.append(
+            {
+                "path": p,
+                "orig_channels": orig_ch,
+                "mtime": p.stat().st_mtime,
+                "stereo": st,
+                "mono": mono,
+                "is_true_stereo": (orig_ch >= 2 and lr_diff > 1e-3),
+                "role": _classify_filename_role(p.stem),
+            }
+        )
 
-    if not main_paths:
+    deduped, skipped_dups = _deduplicate_stem_records(raw_records, sr=target_sr)
+
+    main_recs = [r for r in deduped if r["role"] == "main"]
+    if not main_recs:
         raise ValueError("No main vocal stem files (`main*`) found.")
 
-    # Filter out silent/empty tracks (`peak < -75 dBFS`)
-    valid_mains: list[np.ndarray] = []
-    for p in main_paths:
-        m_raw, _ = load_audio(p, target_sr=target_sr, mono=True)
-        if float(np.max(np.abs(m_raw))) >= 10.0 ** (-75.0 / 20.0):
-            valid_mains.append(strip_silence_gate(m_raw, target_sr))
+    max_len = max(len(r["mono"]) for r in deduped)
+    padded_mains = [
+        np.pad(strip_silence_gate(r["mono"], target_sr), (0, max_len - len(r["mono"]))) for r in main_recs
+    ]
 
-    if not valid_mains:
-        raise ValueError("All main vocal stem files are silent.")
-
-    max_len = max(len(m) for m in valid_mains)
-    padded_mains = [np.pad(m, (0, max_len - len(m))) for m in valid_mains]
-
-    # Lossless summation for punch-ins/phrase handoffs!
-    # Only separate sustained simultaneous overdubs (>= 1.4 seconds continuous overlap) into `double_stereo`.
+    # Lossless summation for punch-ins/phrase handoffs; route >= 1.4s sustained overdubs to `double_stereo`
     if len(padded_mains) == 1:
         lead = padded_mains[0]
         double_st = None
     else:
-        hop = int(target_sr * 0.05)  # 50ms coarse activity grid
+        hop = int(target_sr * 0.05)
         n_f = int(np.ceil(max_len / hop))
         stack = np.stack(padded_mains, axis=0)
         pad_s = np.pad(stack, ((0, 0), (0, n_f * hop - max_len)))
@@ -199,7 +328,6 @@ def consolidate_vocal_stem_folder(
 
         active_grid = rms_grid > 1.5e-3
         multi_mask = np.sum(active_grid, axis=0) >= 2
-        # Keep ONLY long sustained overlaps (>= 28 frames = 1.4s); short phrase crossfades stay 100% in lead!
         min_sustained = int(1.4 / 0.05)
         labels, n_ov = ndimage.label(multi_mask)
         sustained_ov = np.zeros_like(multi_mask)
@@ -209,7 +337,6 @@ def consolidate_vocal_stem_folder(
                 sustained_ov[pts] = True
 
         if not np.any(sustained_ov):
-            # Pure punch-in / phrase-split tracks -> clean lossless sum!
             lead = np.sum(stack, axis=0).astype(np.float32)
             double_st = None
         else:
@@ -238,43 +365,121 @@ def consolidate_vocal_stem_folder(
                     dbl_l += padded_mains[t_i] * dw_s
                 else:
                     dbl_r += padded_mains[t_i] * dw_s
-            double_st = apply_equal_power_pan(dbl_l, -0.45) + apply_equal_power_pan(dbl_r, +0.45)
+            double_st = apply_equal_power_pan(dbl_l, -0.48) + apply_equal_power_pan(dbl_r, +0.48)
 
-    def _stage_stereo_group(paths: list[Path], pan_positions: list[float]) -> np.ndarray | None:
-        if not paths:
+    # Classify any remaining unnamed auxiliary tracks via acoustic pitch interval vs lead
+    role_buckets: dict[str, list[dict]] = {
+        "main": main_recs,
+        "double": [],
+        "sub_octave": [],
+        "super_octave": [],
+        "upper_harm": [],
+        "lower_harm": [],
+        "harmony": [],
+        "choir": [],
+    }
+    for r in deduped:
+        if r["role"] == "main":
+            continue
+        role = r["role"] or _infer_role_by_pitch_offset(r["mono"], lead, sr=target_sr)
+        role_buckets[role].append(r)
+
+    def _stage_leveled_stereo_group(
+        recs: list[dict],
+        pan_positions: list[float],
+        micro_haas_ms: float = 0.0,
+    ) -> np.ndarray | None:
+        if not recs:
             return None
         acc = np.zeros((2, max_len), dtype=np.float32)
-        valid_idx = 0
-        for p in paths:
-            st, _ = load_audio(p, target_sr=target_sr, mono=False)
-            if float(np.max(np.abs(st))) < 10.0 ** (-75.0 / 20.0):
-                continue
-            L = strip_silence_gate(st[0], target_sr)
-            R = strip_silence_gate(st[1], target_sr)
-            n = min(len(L), max_len)
-            lr_diff = float(np.sqrt(np.mean((L[:n] - R[:n]) ** 2)))
-            if lr_diff > 1e-3:
-                # Already genuinely stereo-panned by the user -> preserve exact stereo image!
-                acc[0, :n] += L[:n]
-                acc[1, :n] += R[:n]
+        pan_idx = 0
+        for rec in recs:
+            n = min(len(rec["mono"]), max_len)
+            if rec["is_true_stereo"]:
+                L = _active_level_normalize(strip_silence_gate(rec["stereo"][0, :n], target_sr))
+                R = _active_level_normalize(strip_silence_gate(rec["stereo"][1, :n], target_sr))
+                acc[0, :n] += L
+                acc[1, :n] += R
             else:
-                # Dual-mono center track -> pan symmetrically wide across L/R stage!
-                pan_val = pan_positions[valid_idx % len(pan_positions)]
-                panned = apply_equal_power_pan(L[:n], pan_val)
+                m_clean = _active_level_normalize(strip_silence_gate(rec["mono"][:n], target_sr))
+                if float(np.max(np.abs(m_clean))) < 1e-5:
+                    continue
+                pan_val = pan_positions[pan_idx % len(pan_positions)]
+                panned = apply_equal_power_pan(m_clean, pan_val)
+                if micro_haas_ms > 0.0:
+                    # Subtle opposite-ear 6-11ms micro-delay creates natural choir ensemble width!
+                    shift = int(target_sr * (micro_haas_ms + (pan_idx % 3) * 2.5) / 1000.0)
+                    if pan_val < 0:
+                        panned[1] = _delay_samples(panned[1], shift)
+                    else:
+                        panned[0] = _delay_samples(panned[0], shift)
                 acc[:, :n] += panned
-                valid_idx += 1
-        return acc if float(np.max(np.abs(acc))) > 1e-5 else None
+                pan_idx += 1
+        if float(np.max(np.abs(acc))) < 1e-5:
+            return None
+        # Normalize stacked bus back to consistent -19 dBFS active RMS so N tracks don't explode headroom
+        bus_m = 0.5 * (acc[0] + acc[1])
+        pk = float(np.percentile(np.abs(bus_m), 99.5))
+        if pk > 1e-5:
+            act_m = bus_m[np.abs(bus_m) >= pk * 0.1]
+            if act_m.size > 256:
+                cur_db = float(20.0 * np.log10(np.sqrt(np.mean(act_m**2)) + 1e-12))
+                acc *= float(10.0 ** ((-19.0 - cur_db) / 20.0))
+        return acc.astype(np.float32)
 
-    harm_pans = [-0.58, +0.58, -0.78, +0.78, -0.40, +0.40, -0.88, +0.88]
-    harm_bus = _stage_stereo_group(harm_paths, harm_pans)
-    sub_st = _stage_stereo_group(suboc_paths, [-0.22, +0.22])
-    sup_st = _stage_stereo_group(superoc_paths, [-0.35, +0.35])
+    # Explicit double tracks merged with any sustained main overdub
+    explicit_dbl = _stage_leveled_stereo_group(role_buckets["double"], [-0.55, +0.55], micro_haas_ms=5.0)
+    if explicit_dbl is not None:
+        double_st = explicit_dbl if double_st is None else (double_st + explicit_dbl)
 
-    harm1_m = None
-    harm2_m = None
-    if harm_bus is not None:
-        harm1_m = harm_bus[0]
-        harm2_m = harm_bus[1]
+    sub_st = _stage_leveled_stereo_group(role_buckets["sub_octave"], [-0.25, +0.25])
+    sup_st = _stage_leveled_stereo_group(role_buckets["super_octave"], [-0.42, +0.42], micro_haas_ms=4.0)
+
+    # Stage harmonies with balanced L/R separation:
+    # Upper harmonies (+3) slightly Left-biased pair; Lower harmonies (-3) Right-biased pair;
+    # Choir stacks wide across [-0.88 .. +0.88] with subtle ensemble micro-spread!
+    harm_parts: list[np.ndarray] = []
+    if role_buckets["upper_harm"]:
+        # If multiple upper harmony tracks exist (e.g. +3 AB, +3 sabi, +3 2), pan alternating L/R!
+        up_st = _stage_leveled_stereo_group(role_buckets["upper_harm"], [-0.62, +0.62, -0.78, +0.78], micro_haas_ms=6.5)
+        if up_st is not None:
+            harm_parts.append(up_st)
+    if role_buckets["lower_harm"]:
+        lo_st = _stage_leveled_stereo_group(role_buckets["lower_harm"], [+0.58, -0.58, +0.76, -0.76], micro_haas_ms=7.0)
+        if lo_st is not None:
+            harm_parts.append(lo_st)
+    if role_buckets["harmony"]:
+        gen_st = _stage_leveled_stereo_group(role_buckets["harmony"], [-0.65, +0.65, -0.82, +0.82], micro_haas_ms=6.0)
+        if gen_st is not None:
+            harm_parts.append(gen_st)
+    if role_buckets["choir"]:
+        ch_st = _stage_leveled_stereo_group(
+            role_buckets["choir"],
+            [-0.88, +0.88, -0.72, +0.72, -0.54, +0.54, -0.38, +0.38],
+            micro_haas_ms=8.5,
+        )
+        if ch_st is not None:
+            harm_parts.append(ch_st)
+
+    harm_bus: np.ndarray | None = None
+    if harm_parts:
+        harm_bus = np.sum(harm_parts, axis=0).astype(np.float32)
+        # Re-balance L/R channels of the combined harmony bus within ±1.5 dB so stereo stage stays centered!
+        l_rms = float(np.sqrt(np.mean(harm_bus[0] ** 2) + 1e-12))
+        r_rms = float(np.sqrt(np.mean(harm_bus[1] ** 2) + 1e-12))
+        if l_rms > 1e-5 and r_rms > 1e-5:
+            lr_ratio = float(np.clip(np.sqrt(r_rms / l_rms), 0.72, 1.38))
+            harm_bus[0] *= lr_ratio
+            harm_bus[1] /= lr_ratio
+
+    user_harm_cnt = (
+        len(role_buckets["upper_harm"])
+        + len(role_buckets["lower_harm"])
+        + len(role_buckets["harmony"])
+        + len(role_buckets["choir"])
+    )
+
+    roles_summary = {k: [r["path"].name for r in v] for k, v in role_buckets.items() if v}
 
     return ConsolidatedStems(
         lead_mono=lead,
@@ -282,8 +487,11 @@ def consolidate_vocal_stem_folder(
         sub_octave_stereo=sub_st,
         super_octave_stereo=sup_st,
         harmonies_stereo_bus=harm_bus,
-        harm1_mono=harm1_m,
-        harm2_mono=harm2_m,
+        harm1_mono=(harm_bus[0] if harm_bus is not None else None),
+        harm2_mono=(harm_bus[1] if harm_bus is not None else None),
         has_user_harmonies=(harm_bus is not None),
+        user_harmony_track_count=user_harm_cnt,
+        deduplicated_files=skipped_dups,
+        stem_roles_summary=roles_summary,
         sr=target_sr,
     )
