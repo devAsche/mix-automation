@@ -1,0 +1,1120 @@
+{
+  "num_reference_songs": 15,
+  "target_profiles": {
+    "consensus": {
+      "vocal_rms_db": -18.712,
+      "inst_rms_db": -14.915,
+      "broadband_vi_ratio_db": -2.529,
+      "vocal_crest_db": 9.532,
+      "inst_crest_db": 9.542,
+      "crest_difference_db": -0.545,
+      "position_stability_std_db": 7.31,
+      "harsh_resonance_index_db": 2.074,
+      "band_margins_db": {
+        "sub_low": -34.761,
+        "body_warmth": -2.004,
+        "boxiness_mud": 6.459,
+        "core_presence": 1.126,
+        "sibilance": -3.832,
+        "air_sheen": -0.039
+      },
+      "inst_band_levels_db": {
+        "sub_low": -18.157,
+        "body_warmth": -24.29,
+        "boxiness_mud": -30.31,
+        "core_presence": -26.649,
+        "sibilance": -33.459,
+        "air_sheen": -35.458
+      },
+      "active_frame_ratio": 0.931
+    },
+    "azusagawa": {
+      "vocal_rms_db": -16.146,
+      "inst_rms_db": -14.903,
+      "broadband_vi_ratio_db": -1.243,
+      "vocal_crest_db": 9.655,
+      "inst_crest_db": 9.851,
+      "crest_difference_db": -0.545,
+      "position_stability_std_db": 7.064,
+      "harsh_resonance_index_db": 1.569,
+      "band_margins_db": {
+        "sub_low": -32.93,
+        "body_warmth": 0.875,
+        "boxiness_mud": 6.391,
+        "core_presence": -3.54,
+        "sibilance": -5.206,
+        "air_sheen": -1.653
+      },
+      "inst_band_levels_db": {
+        "sub_low": -18.157,
+        "body_warmth": -22.778,
+        "boxiness_mud": -26.844,
+        "core_presence": -24.754,
+        "sibilance": -32.751,
+        "air_sheen": -34.578
+      },
+      "active_frame_ratio": 0.942
+    },
+    "toy": {
+      "vocal_rms_db": -17.999,
+      "inst_rms_db": -14.283,
+      "broadband_vi_ratio_db": -3.663,
+      "vocal_crest_db": 9.514,
+      "inst_crest_db": 9.279,
+      "crest_difference_db": 0.045,
+      "position_stability_std_db": 9.213,
+      "harsh_resonance_index_db": 2.988,
+      "band_margins_db": {
+        "sub_low": -42.728,
+        "body_warmth": -2.997,
+        "boxiness_mud": 6.946,
+        "core_presence": -0.068,
+        "sibilance": -3.832,
+        "air_sheen": 4.579
+      },
+      "inst_band_levels_db": {
+        "sub_low": -16.541,
+        "body_warmth": -22.465,
+        "boxiness_mud": -30.31,
+        "core_presence": -26.304,
+        "sibilance": -30.712,
+        "air_sheen": -35.458
+      },
+      "active_frame_ratio": 0.613
+    },
+    "saburou": {
+      "vocal_rms_db": -20.658,
+      "inst_rms_db": -18.129,
+      "broadband_vi_ratio_db": -2.529,
+      "vocal_crest_db": 9.756,
+      "inst_crest_db": 9.902,
+      "crest_difference_db": -0.595,
+      "position_stability_std_db": 6.336,
+      "harsh_resonance_index_db": 2.395,
+      "band_margins_db": {
+        "sub_low": -44.684,
+        "body_warmth": -0.884,
+        "boxiness_mud": 6.459,
+        "core_presence": 5.431,
+        "sibilance": -0.902,
+        "air_sheen": -0.039
+      },
+      "inst_band_levels_db": {
+        "sub_low": -20.118,
+        "body_warmth": -26.346,
+        "boxiness_mud": -32.079,
+        "core_presence": -31.852,
+        "sibilance": -35.945,
+        "air_sheen": -38.105
+      },
+      "active_frame_ratio": 0.968
+    }
+  },
+  "songs": [
+    {
+      "slug": "Azusagawa_01_Katsuairon2_HirataYoshihisa",
+      "group": "Azusagawa",
+      "mixer": "梓川",
+      "vocal": "梓川",
+      "title": "渇愛論II",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "05_Chorus",
+        "start_sec": 83.73,
+        "end_sec": 103.44
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -16.146,
+        "inst_rms_db": -14.903,
+        "broadband_vi_ratio_db": -1.243,
+        "vocal_crest_db": 9.783,
+        "inst_crest_db": 9.467,
+        "crest_difference_db": 0.316,
+        "position_stability_std_db": 6.044,
+        "harsh_resonance_index_db": 1.569,
+        "band_margins_db": {
+          "sub_low": -32.702,
+          "body_warmth": -2.004,
+          "boxiness_mud": 7.767,
+          "core_presence": -3.54,
+          "sibilance": -3.352,
+          "air_sheen": -2.453
+        },
+        "inst_band_levels_db": {
+          "sub_low": -20.56,
+          "body_warmth": -18.781,
+          "boxiness_mud": -26.844,
+          "core_presence": -26.649,
+          "sibilance": -37.04,
+          "air_sheen": -39.197
+        },
+        "active_frame_ratio": 0.963
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -17.159,
+        "inst_rms_db": -17.083,
+        "broadband_vi_ratio_db": -0.076,
+        "vocal_crest_db": 10.011,
+        "inst_crest_db": 10.46,
+        "crest_difference_db": -0.45,
+        "position_stability_std_db": 7.886,
+        "harsh_resonance_index_db": 1.284,
+        "band_margins_db": {
+          "sub_low": -29.376,
+          "body_warmth": 0.981,
+          "boxiness_mud": 8.582,
+          "core_presence": -2.0,
+          "sibilance": -2.873,
+          "air_sheen": -0.732
+        },
+        "inst_band_levels_db": {
+          "sub_low": -20.496,
+          "body_warmth": -23.154,
+          "boxiness_mud": -28.787,
+          "core_presence": -28.37,
+          "sibilance": -37.98,
+          "air_sheen": -39.744
+        },
+        "active_frame_ratio": 0.684
+      }
+    },
+    {
+      "slug": "Azusagawa_02_Ironina_NiruKajitsu",
+      "group": "Azusagawa",
+      "mixer": "梓川",
+      "vocal": "梓川",
+      "title": "アイロニーナ",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "05_Chorus",
+        "start_sec": 111.22,
+        "end_sec": 129.66
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -16.773,
+        "inst_rms_db": -14.634,
+        "broadband_vi_ratio_db": -2.139,
+        "vocal_crest_db": 9.306,
+        "inst_crest_db": 9.851,
+        "crest_difference_db": -0.545,
+        "position_stability_std_db": 10.111,
+        "harsh_resonance_index_db": 1.828,
+        "band_margins_db": {
+          "sub_low": -32.93,
+          "body_warmth": -2.06,
+          "boxiness_mud": 6.256,
+          "core_presence": 3.404,
+          "sibilance": -5.206,
+          "air_sheen": -2.217
+        },
+        "inst_band_levels_db": {
+          "sub_low": -17.044,
+          "body_warmth": -22.21,
+          "boxiness_mud": -27.31,
+          "core_presence": -27.084,
+          "sibilance": -32.751,
+          "air_sheen": -34.893
+        },
+        "active_frame_ratio": 0.476
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -16.406,
+        "inst_rms_db": -14.549,
+        "broadband_vi_ratio_db": -1.857,
+        "vocal_crest_db": 9.965,
+        "inst_crest_db": 9.733,
+        "crest_difference_db": 0.231,
+        "position_stability_std_db": 7.659,
+        "harsh_resonance_index_db": 0.955,
+        "band_margins_db": {
+          "sub_low": -30.111,
+          "body_warmth": 0.046,
+          "boxiness_mud": 9.336,
+          "core_presence": 4.864,
+          "sibilance": -4.107,
+          "air_sheen": 0.426
+        },
+        "inst_band_levels_db": {
+          "sub_low": -15.946,
+          "body_warmth": -24.609,
+          "boxiness_mud": -29.62,
+          "core_presence": -29.137,
+          "sibilance": -35.353,
+          "air_sheen": -38.203
+        },
+        "active_frame_ratio": 0.78
+      }
+    },
+    {
+      "slug": "Azusagawa_03_LoveAndDestroy_MI8k",
+      "group": "Azusagawa",
+      "mixer": "梓川",
+      "vocal": "梓川",
+      "title": "ラブ＆デストロイ",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "05_Chorus",
+        "start_sec": 137.72,
+        "end_sec": 179.58
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -15.648,
+        "inst_rms_db": -15.076,
+        "broadband_vi_ratio_db": -0.572,
+        "vocal_crest_db": 9.693,
+        "inst_crest_db": 10.361,
+        "crest_difference_db": -0.668,
+        "position_stability_std_db": 6.662,
+        "harsh_resonance_index_db": 2.074,
+        "band_margins_db": {
+          "sub_low": -33.001,
+          "body_warmth": 0.875,
+          "boxiness_mud": 6.391,
+          "core_presence": -3.603,
+          "sibilance": -5.319,
+          "air_sheen": -4.508
+        },
+        "inst_band_levels_db": {
+          "sub_low": -19.502,
+          "body_warmth": -22.778,
+          "boxiness_mud": -25.334,
+          "core_presence": -22.494,
+          "sibilance": -30.711,
+          "air_sheen": -31.093
+        },
+        "active_frame_ratio": 0.987
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -16.228,
+        "inst_rms_db": -15.259,
+        "broadband_vi_ratio_db": -0.968,
+        "vocal_crest_db": 9.738,
+        "inst_crest_db": 10.685,
+        "crest_difference_db": -0.947,
+        "position_stability_std_db": 7.59,
+        "harsh_resonance_index_db": 2.089,
+        "band_margins_db": {
+          "sub_low": -30.959,
+          "body_warmth": 0.36,
+          "boxiness_mud": 5.943,
+          "core_presence": -3.227,
+          "sibilance": -6.078,
+          "air_sheen": -5.285
+        },
+        "inst_band_levels_db": {
+          "sub_low": -19.55,
+          "body_warmth": -22.518,
+          "boxiness_mud": -25.408,
+          "core_presence": -23.492,
+          "sibilance": -30.565,
+          "air_sheen": -30.926
+        },
+        "active_frame_ratio": 0.781
+      }
+    },
+    {
+      "slug": "Azusagawa_04_TinyBunny_Youman",
+      "group": "Azusagawa",
+      "mixer": "梓川",
+      "vocal": "梓川",
+      "title": "タイニーバニー",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "10_Chorus",
+        "start_sec": 163.61,
+        "end_sec": 185.3
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -14.66,
+        "inst_rms_db": -14.915,
+        "broadband_vi_ratio_db": 0.255,
+        "vocal_crest_db": 9.107,
+        "inst_crest_db": 9.542,
+        "crest_difference_db": -0.435,
+        "position_stability_std_db": 7.064,
+        "harsh_resonance_index_db": 1.509,
+        "band_margins_db": {
+          "sub_low": -32.187,
+          "body_warmth": 2.503,
+          "boxiness_mud": 9.062,
+          "core_presence": 0.575,
+          "sibilance": -5.732,
+          "air_sheen": -3.832
+        },
+        "inst_band_levels_db": {
+          "sub_low": -18.157,
+          "body_warmth": -23.154,
+          "boxiness_mud": -27.335,
+          "core_presence": -24.022,
+          "sibilance": -28.759,
+          "air_sheen": -30.515
+        },
+        "active_frame_ratio": 0.942
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -16.35,
+        "inst_rms_db": -16.031,
+        "broadband_vi_ratio_db": -0.319,
+        "vocal_crest_db": 9.638,
+        "inst_crest_db": 11.071,
+        "crest_difference_db": -1.433,
+        "position_stability_std_db": 9.049,
+        "harsh_resonance_index_db": 1.294,
+        "band_margins_db": {
+          "sub_low": -26.815,
+          "body_warmth": 3.077,
+          "boxiness_mud": 8.178,
+          "core_presence": -0.667,
+          "sibilance": -4.969,
+          "air_sheen": -2.317
+        },
+        "inst_band_levels_db": {
+          "sub_low": -19.666,
+          "body_warmth": -23.88,
+          "boxiness_mud": -29.113,
+          "core_presence": -24.946,
+          "sibilance": -30.968,
+          "air_sheen": -32.529
+        },
+        "active_frame_ratio": 0.731
+      }
+    },
+    {
+      "slug": "Azusagawa_05_Monitoring_DECO27",
+      "group": "Azusagawa",
+      "mixer": "梓川",
+      "vocal": "梓川",
+      "title": "モニタリング",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "07_Chorus",
+        "start_sec": 161.7,
+        "end_sec": 179.91
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -18.712,
+        "inst_rms_db": -13.919,
+        "broadband_vi_ratio_db": -4.793,
+        "vocal_crest_db": 9.655,
+        "inst_crest_db": 10.422,
+        "crest_difference_db": -0.767,
+        "position_stability_std_db": 7.774,
+        "harsh_resonance_index_db": 1.419,
+        "band_margins_db": {
+          "sub_low": -34.761,
+          "body_warmth": 2.6,
+          "boxiness_mud": 1.247,
+          "core_presence": -5.065,
+          "sibilance": -2.356,
+          "air_sheen": 0.36
+        },
+        "inst_band_levels_db": {
+          "sub_low": -15.647,
+          "body_warmth": -25.317,
+          "boxiness_mud": -25.497,
+          "core_presence": -24.754,
+          "sibilance": -33.459,
+          "air_sheen": -34.578
+        },
+        "active_frame_ratio": 0.77
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -19.032,
+        "inst_rms_db": -15.013,
+        "broadband_vi_ratio_db": -4.019,
+        "vocal_crest_db": 10.226,
+        "inst_crest_db": 10.303,
+        "crest_difference_db": -0.077,
+        "position_stability_std_db": 10.737,
+        "harsh_resonance_index_db": 1.921,
+        "band_margins_db": {
+          "sub_low": -38.918,
+          "body_warmth": 0.409,
+          "boxiness_mud": 7.754,
+          "core_presence": 0.698,
+          "sibilance": -1.951,
+          "air_sheen": -0.202
+        },
+        "inst_band_levels_db": {
+          "sub_low": -16.432,
+          "body_warmth": -25.456,
+          "boxiness_mud": -30.578,
+          "core_presence": -29.42,
+          "sibilance": -35.124,
+          "air_sheen": -35.982
+        },
+        "active_frame_ratio": 0.839
+      }
+    },
+    {
+      "slug": "TOY_01_DebitBit_Avogado6_vocal-TachibanaUta",
+      "group": "TOY",
+      "mixer": "TOY (@PONCOPATH)",
+      "vocal": "橘_うた××",
+      "title": "デビットビット",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "07_Chorus",
+        "start_sec": 115.01,
+        "end_sec": 128.38
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -16.316,
+        "inst_rms_db": -14.283,
+        "broadband_vi_ratio_db": -2.033,
+        "vocal_crest_db": 9.514,
+        "inst_crest_db": 9.163,
+        "crest_difference_db": 0.351,
+        "position_stability_std_db": 4.776,
+        "harsh_resonance_index_db": 2.081,
+        "band_margins_db": {
+          "sub_low": -30.548,
+          "body_warmth": 6.664,
+          "boxiness_mud": 1.451,
+          "core_presence": -4.463,
+          "sibilance": -0.315,
+          "air_sheen": 6.662
+        },
+        "inst_band_levels_db": {
+          "sub_low": -16.541,
+          "body_warmth": -24.902,
+          "boxiness_mud": -25.548,
+          "core_presence": -26.621,
+          "sibilance": -33.14,
+          "air_sheen": -37.147
+        },
+        "active_frame_ratio": 0.983
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -16.735,
+        "inst_rms_db": -14.776,
+        "broadband_vi_ratio_db": -1.96,
+        "vocal_crest_db": 10.084,
+        "inst_crest_db": 10.153,
+        "crest_difference_db": -0.068,
+        "position_stability_std_db": 12.621,
+        "harsh_resonance_index_db": 0.956,
+        "band_margins_db": {
+          "sub_low": -28.869,
+          "body_warmth": 7.724,
+          "boxiness_mud": 5.535,
+          "core_presence": 0.362,
+          "sibilance": 1.749,
+          "air_sheen": 6.517
+        },
+        "inst_band_levels_db": {
+          "sub_low": -16.235,
+          "body_warmth": -27.281,
+          "boxiness_mud": -28.195,
+          "core_presence": -29.455,
+          "sibilance": -35.079,
+          "air_sheen": -38.393
+        },
+        "active_frame_ratio": 0.865
+      }
+    },
+    {
+      "slug": "TOY_02_Hyouka_xea_vocal-Tella",
+      "group": "TOY",
+      "mixer": "TOY (@PONCOPATH)",
+      "vocal": "衒 (Tella)",
+      "title": "氷菓",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "08_Chorus",
+        "start_sec": 159.89,
+        "end_sec": 185.11
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -18.786,
+        "inst_rms_db": -15.124,
+        "broadband_vi_ratio_db": -3.663,
+        "vocal_crest_db": 8.929,
+        "inst_crest_db": 10.86,
+        "crest_difference_db": -1.931,
+        "position_stability_std_db": 9.281,
+        "harsh_resonance_index_db": 3.025,
+        "band_margins_db": {
+          "sub_low": -43.763,
+          "body_warmth": -2.997,
+          "boxiness_mud": 6.946,
+          "core_presence": 1.341,
+          "sibilance": -3.832,
+          "air_sheen": 5.619
+        },
+        "inst_band_levels_db": {
+          "sub_low": -17.623,
+          "body_warmth": -20.795,
+          "boxiness_mud": -30.31,
+          "core_presence": -29.646,
+          "sibilance": -33.506,
+          "air_sheen": -41.198
+        },
+        "active_frame_ratio": 0.491
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -19.831,
+        "inst_rms_db": -15.98,
+        "broadband_vi_ratio_db": -3.851,
+        "vocal_crest_db": 9.936,
+        "inst_crest_db": 12.242,
+        "crest_difference_db": -2.306,
+        "position_stability_std_db": 10.34,
+        "harsh_resonance_index_db": 2.326,
+        "band_margins_db": {
+          "sub_low": -20.272,
+          "body_warmth": -1.745,
+          "boxiness_mud": 6.273,
+          "core_presence": 1.259,
+          "sibilance": -3.076,
+          "air_sheen": 5.036
+        },
+        "inst_band_levels_db": {
+          "sub_low": -18.302,
+          "body_warmth": -22.202,
+          "boxiness_mud": -31.347,
+          "core_presence": -30.892,
+          "sibilance": -34.573,
+          "air_sheen": -41.381
+        },
+        "active_frame_ratio": 0.757
+      }
+    },
+    {
+      "slug": "TOY_03_Desperate_TeddyLoid-Giga_vocal-TachibanaUta",
+      "group": "TOY",
+      "mixer": "TOY (@PONCOPATH)",
+      "vocal": "橘_うた××",
+      "title": "デスペレート",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "07_Chorus",
+        "start_sec": 92.46,
+        "end_sec": 119.4
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -17.926,
+        "inst_rms_db": -11.045,
+        "broadband_vi_ratio_db": -6.88,
+        "vocal_crest_db": 9.532,
+        "inst_crest_db": 8.769,
+        "crest_difference_db": 0.763,
+        "position_stability_std_db": 10.549,
+        "harsh_resonance_index_db": 0.785,
+        "band_margins_db": {
+          "sub_low": -31.087,
+          "body_warmth": -2.526,
+          "boxiness_mud": 3.825,
+          "core_presence": -0.937,
+          "sibilance": -4.353,
+          "air_sheen": -0.661
+        },
+        "inst_band_levels_db": {
+          "sub_low": -12.572,
+          "body_warmth": -22.465,
+          "boxiness_mud": -26.573,
+          "core_presence": -24.96,
+          "sibilance": -27.404,
+          "air_sheen": -32.183
+        },
+        "active_frame_ratio": 0.931
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -18.204,
+        "inst_rms_db": -11.295,
+        "broadband_vi_ratio_db": -6.91,
+        "vocal_crest_db": 9.75,
+        "inst_crest_db": 9.209,
+        "crest_difference_db": 0.541,
+        "position_stability_std_db": 10.315,
+        "harsh_resonance_index_db": 0.843,
+        "band_margins_db": {
+          "sub_low": -32.291,
+          "body_warmth": -5.981,
+          "boxiness_mud": 3.373,
+          "core_presence": 2.083,
+          "sibilance": -2.168,
+          "air_sheen": 0.596
+        },
+        "inst_band_levels_db": {
+          "sub_low": -12.707,
+          "body_warmth": -20.503,
+          "boxiness_mud": -26.442,
+          "core_presence": -27.028,
+          "sibilance": -31.405,
+          "air_sheen": -34.257
+        },
+        "active_frame_ratio": 0.909
+      }
+    },
+    {
+      "slug": "TOY_04_Wolfism_Farusti_vocal-TachibanaUta",
+      "group": "TOY",
+      "mixer": "TOY (@PONCOPATH)",
+      "vocal": "橘_うた××",
+      "title": "ウルフィズム",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "05_Chorus",
+        "start_sec": 154.58,
+        "end_sec": 174.59
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -17.999,
+        "inst_rms_db": -14.531,
+        "broadband_vi_ratio_db": -3.468,
+        "vocal_crest_db": 8.395,
+        "inst_crest_db": 9.279,
+        "crest_difference_db": -0.884,
+        "position_stability_std_db": 9.213,
+        "harsh_resonance_index_db": 4.256,
+        "band_margins_db": {
+          "sub_low": -42.728,
+          "body_warmth": -6.902,
+          "boxiness_mud": 11.801,
+          "core_presence": 1.126,
+          "sibilance": -8.572,
+          "air_sheen": -6.355
+        },
+        "inst_band_levels_db": {
+          "sub_low": -17.203,
+          "body_warmth": -21.437,
+          "boxiness_mud": -33.309,
+          "core_presence": -26.304,
+          "sibilance": -30.553,
+          "air_sheen": -32.161
+        },
+        "active_frame_ratio": 0.554
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -17.506,
+        "inst_rms_db": -14.729,
+        "broadband_vi_ratio_db": -2.777,
+        "vocal_crest_db": 8.736,
+        "inst_crest_db": 9.495,
+        "crest_difference_db": -0.759,
+        "position_stability_std_db": 6.957,
+        "harsh_resonance_index_db": 2.63,
+        "band_margins_db": {
+          "sub_low": -32.151,
+          "body_warmth": -1.705,
+          "boxiness_mud": 10.061,
+          "core_presence": 2.372,
+          "sibilance": -4.781,
+          "air_sheen": -1.944
+        },
+        "inst_band_levels_db": {
+          "sub_low": -16.985,
+          "body_warmth": -22.213,
+          "boxiness_mud": -31.99,
+          "core_presence": -27.505,
+          "sibilance": -31.639,
+          "air_sheen": -34.135
+        },
+        "active_frame_ratio": 0.699
+      }
+    },
+    {
+      "slug": "TOY_05_ZuttoIssho_KitaniTatsuya_vocal-urei",
+      "group": "TOY",
+      "mixer": "TOY (@PONCOPATH)",
+      "vocal": "urei",
+      "title": "ずうっといっしょ！",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "06_Chorus",
+        "start_sec": 127.27,
+        "end_sec": 182.17
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -18.714,
+        "inst_rms_db": -13.755,
+        "broadband_vi_ratio_db": -4.959,
+        "vocal_crest_db": 9.554,
+        "inst_crest_db": 9.509,
+        "crest_difference_db": 0.045,
+        "position_stability_std_db": 8.188,
+        "harsh_resonance_index_db": 2.988,
+        "band_margins_db": {
+          "sub_low": -50.266,
+          "body_warmth": -4.649,
+          "boxiness_mud": 7.832,
+          "core_presence": -0.068,
+          "sibilance": -3.047,
+          "air_sheen": 3.779
+        },
+        "inst_band_levels_db": {
+          "sub_low": -15.587,
+          "body_warmth": -24.29,
+          "boxiness_mud": -31.132,
+          "core_presence": -24.591,
+          "sibilance": -30.712,
+          "air_sheen": -35.458
+        },
+        "active_frame_ratio": 0.613
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -18.791,
+        "inst_rms_db": -14.025,
+        "broadband_vi_ratio_db": -4.766,
+        "vocal_crest_db": 9.634,
+        "inst_crest_db": 9.861,
+        "crest_difference_db": -0.227,
+        "position_stability_std_db": 8.438,
+        "harsh_resonance_index_db": 2.076,
+        "band_margins_db": {
+          "sub_low": -45.63,
+          "body_warmth": -2.104,
+          "boxiness_mud": 8.258,
+          "core_presence": -0.215,
+          "sibilance": -0.575,
+          "air_sheen": 6.557
+        },
+        "inst_band_levels_db": {
+          "sub_low": -15.662,
+          "body_warmth": -24.366,
+          "boxiness_mud": -31.747,
+          "core_presence": -25.208,
+          "sibilance": -32.663,
+          "air_sheen": -37.378
+        },
+        "active_frame_ratio": 0.67
+      }
+    },
+    {
+      "slug": "Saburou_01_DarekanoShinzou_YurryCanon_vocal-Yoshino",
+      "group": "Saburou",
+      "mixer": "さぶろう (@saburousan3263)",
+      "vocal": "吉乃",
+      "title": "だれかの心臓になれたなら",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "06_Chorus",
+        "start_sec": 155.11,
+        "end_sec": 200.02
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -20.658,
+        "inst_rms_db": -18.129,
+        "broadband_vi_ratio_db": -2.529,
+        "vocal_crest_db": 8.617,
+        "inst_crest_db": 11.997,
+        "crest_difference_db": -3.38,
+        "position_stability_std_db": 6.336,
+        "harsh_resonance_index_db": 2.008,
+        "band_margins_db": {
+          "sub_low": -48.863,
+          "body_warmth": -2.214,
+          "boxiness_mud": 7.172,
+          "core_presence": 7.804,
+          "sibilance": -11.126,
+          "air_sheen": -3.837
+        },
+        "inst_band_levels_db": {
+          "sub_low": -19.888,
+          "body_warmth": -26.346,
+          "boxiness_mud": -31.783,
+          "core_presence": -34.446,
+          "sibilance": -35.945,
+          "air_sheen": -39.742
+        },
+        "active_frame_ratio": 0.725
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -21.824,
+        "inst_rms_db": -18.939,
+        "broadband_vi_ratio_db": -2.885,
+        "vocal_crest_db": 9.083,
+        "inst_crest_db": 12.498,
+        "crest_difference_db": -3.416,
+        "position_stability_std_db": 7.787,
+        "harsh_resonance_index_db": 1.744,
+        "band_margins_db": {
+          "sub_low": -44.391,
+          "body_warmth": 0.823,
+          "boxiness_mud": 7.071,
+          "core_presence": 6.065,
+          "sibilance": -6.397,
+          "air_sheen": -1.905
+        },
+        "inst_band_levels_db": {
+          "sub_low": -20.455,
+          "body_warmth": -28.017,
+          "boxiness_mud": -33.299,
+          "core_presence": -35.789,
+          "sibilance": -38.511,
+          "air_sheen": -41.928
+        },
+        "active_frame_ratio": 0.719
+      }
+    },
+    {
+      "slug": "Saburou_02_TotemoSutekinaRokugatsu_Eight_vocal-Ado",
+      "group": "Saburou",
+      "mixer": "さぶろう (@saburousan3263)",
+      "vocal": "Ado",
+      "title": "とても素敵な六月でした",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "05_Chorus",
+        "start_sec": 200.76,
+        "end_sec": 271.42
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -19.079,
+        "inst_rms_db": -17.664,
+        "broadband_vi_ratio_db": -1.415,
+        "vocal_crest_db": 9.125,
+        "inst_crest_db": 9.902,
+        "crest_difference_db": -0.777,
+        "position_stability_std_db": 7.498,
+        "harsh_resonance_index_db": 2.73,
+        "band_margins_db": {
+          "sub_low": -47.571,
+          "body_warmth": -2.615,
+          "boxiness_mud": 9.159,
+          "core_presence": 2.467,
+          "sibilance": -5.697,
+          "air_sheen": -0.381
+        },
+        "inst_band_levels_db": {
+          "sub_low": -20.118,
+          "body_warmth": -24.677,
+          "boxiness_mud": -32.162,
+          "core_presence": -28.821,
+          "sibilance": -33.807,
+          "air_sheen": -37.747
+        },
+        "active_frame_ratio": 0.747
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -19.8,
+        "inst_rms_db": -17.608,
+        "broadband_vi_ratio_db": -2.192,
+        "vocal_crest_db": 9.097,
+        "inst_crest_db": 10.281,
+        "crest_difference_db": -1.184,
+        "position_stability_std_db": 7.221,
+        "harsh_resonance_index_db": 2.348,
+        "band_margins_db": {
+          "sub_low": -44.482,
+          "body_warmth": -1.236,
+          "boxiness_mud": 7.932,
+          "core_presence": 2.024,
+          "sibilance": -4.641,
+          "air_sheen": -0.54
+        },
+        "inst_band_levels_db": {
+          "sub_low": -19.893,
+          "body_warmth": -24.962,
+          "boxiness_mud": -32.07,
+          "core_presence": -29.205,
+          "sibilance": -34.179,
+          "air_sheen": -37.63
+        },
+        "active_frame_ratio": 0.656
+      }
+    },
+    {
+      "slug": "Saburou_03_DarlingDance_KairikiBear_vocal-Ado",
+      "group": "Saburou",
+      "mixer": "さぶろう (@saburousan3263)",
+      "vocal": "Ado",
+      "title": "ダーリンダンス",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "04_Chorus",
+        "start_sec": 73.77,
+        "end_sec": 86.42
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -21.055,
+        "inst_rms_db": -20.031,
+        "broadband_vi_ratio_db": -1.024,
+        "vocal_crest_db": 10.322,
+        "inst_crest_db": 8.71,
+        "crest_difference_db": 1.612,
+        "position_stability_std_db": 4.491,
+        "harsh_resonance_index_db": 2.395,
+        "band_margins_db": {
+          "sub_low": -38.797,
+          "body_warmth": -0.378,
+          "boxiness_mud": 4.877,
+          "core_presence": 2.702,
+          "sibilance": 0.996,
+          "air_sheen": 10.393
+        },
+        "inst_band_levels_db": {
+          "sub_low": -22.417,
+          "body_warmth": -28.52,
+          "boxiness_mud": -32.079,
+          "core_presence": -29.744,
+          "sibilance": -39.993,
+          "air_sheen": -44.902
+        },
+        "active_frame_ratio": 0.988
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -21.896,
+        "inst_rms_db": -20.415,
+        "broadband_vi_ratio_db": -1.481,
+        "vocal_crest_db": 10.484,
+        "inst_crest_db": 9.204,
+        "crest_difference_db": 1.279,
+        "position_stability_std_db": 7.018,
+        "harsh_resonance_index_db": 0.984,
+        "band_margins_db": {
+          "sub_low": -37.897,
+          "body_warmth": -1.701,
+          "boxiness_mud": 5.489,
+          "core_presence": 2.711,
+          "sibilance": -1.535,
+          "air_sheen": 5.539
+        },
+        "inst_band_levels_db": {
+          "sub_low": -23.123,
+          "body_warmth": -28.091,
+          "boxiness_mud": -32.365,
+          "core_presence": -30.585,
+          "sibilance": -38.011,
+          "air_sheen": -42.619
+        },
+        "active_frame_ratio": 0.795
+      }
+    },
+    {
+      "slug": "Saburou_04_Kamippoi_PinocchioP_vocal-Ado",
+      "group": "Saburou",
+      "mixer": "さぶろう (@saburousan3263)",
+      "vocal": "Ado",
+      "title": "神っぽいな",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "10_Chorus",
+        "start_sec": 154.27,
+        "end_sec": 168.11
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -19.444,
+        "inst_rms_db": -16.244,
+        "broadband_vi_ratio_db": -3.2,
+        "vocal_crest_db": 9.756,
+        "inst_crest_db": 9.534,
+        "crest_difference_db": 0.221,
+        "position_stability_std_db": 5.968,
+        "harsh_resonance_index_db": 2.844,
+        "band_margins_db": {
+          "sub_low": -44.684,
+          "body_warmth": -0.884,
+          "boxiness_mud": 6.459,
+          "core_presence": 5.981,
+          "sibilance": -0.902,
+          "air_sheen": -0.839
+        },
+        "inst_band_levels_db": {
+          "sub_low": -18.294,
+          "body_warmth": -25.086,
+          "boxiness_mud": -30.692,
+          "core_presence": -31.852,
+          "sibilance": -35.405,
+          "air_sheen": -35.092
+        },
+        "active_frame_ratio": 0.987
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -20.873,
+        "inst_rms_db": -17.807,
+        "broadband_vi_ratio_db": -3.066,
+        "vocal_crest_db": 10.601,
+        "inst_crest_db": 10.639,
+        "crest_difference_db": -0.037,
+        "position_stability_std_db": 9.291,
+        "harsh_resonance_index_db": 1.791,
+        "band_margins_db": {
+          "sub_low": -39.28,
+          "body_warmth": -0.973,
+          "boxiness_mud": 5.516,
+          "core_presence": 6.588,
+          "sibilance": 1.919,
+          "air_sheen": 1.392
+        },
+        "inst_band_levels_db": {
+          "sub_low": -19.957,
+          "body_warmth": -26.972,
+          "boxiness_mud": -31.685,
+          "core_presence": -34.087,
+          "sibilance": -37.939,
+          "air_sheen": -38.061
+        },
+        "active_frame_ratio": 0.909
+      }
+    },
+    {
+      "slug": "Saburou_05_Overdose_Natori_vocal-Ado",
+      "group": "Saburou",
+      "mixer": "さぶろう (@saburousan3263)",
+      "vocal": "Ado",
+      "title": "Overdose",
+      "separator_backend": "cached",
+      "anchor_section": {
+        "label": "07_Chorus",
+        "start_sec": 131.38,
+        "end_sec": 157.18
+      },
+      "chorus_profile": {
+        "vocal_rms_db": -21.743,
+        "inst_rms_db": -18.862,
+        "broadband_vi_ratio_db": -2.881,
+        "vocal_crest_db": 9.812,
+        "inst_crest_db": 10.407,
+        "crest_difference_db": -0.595,
+        "position_stability_std_db": 7.31,
+        "harsh_resonance_index_db": 1.098,
+        "band_margins_db": {
+          "sub_low": -33.199,
+          "body_warmth": 0.921,
+          "boxiness_mud": 5.213,
+          "core_presence": 5.431,
+          "sibilance": -0.786,
+          "air_sheen": -1.672
+        },
+        "inst_band_levels_db": {
+          "sub_low": -20.38,
+          "body_warmth": -28.244,
+          "boxiness_mud": -32.439,
+          "core_presence": -34.633,
+          "sibilance": -39.174,
+          "air_sheen": -38.105
+        },
+        "active_frame_ratio": 0.968
+      },
+      "full_song_profile": {
+        "vocal_rms_db": -22.349,
+        "inst_rms_db": -18.926,
+        "broadband_vi_ratio_db": -3.423,
+        "vocal_crest_db": 9.816,
+        "inst_crest_db": 10.405,
+        "crest_difference_db": -0.589,
+        "position_stability_std_db": 7.64,
+        "harsh_resonance_index_db": 0.615,
+        "band_margins_db": {
+          "sub_low": -30.593,
+          "body_warmth": 0.483,
+          "boxiness_mud": 4.795,
+          "core_presence": 7.845,
+          "sibilance": 1.434,
+          "air_sheen": -1.453
+        },
+        "inst_band_levels_db": {
+          "sub_low": -20.336,
+          "body_warmth": -28.083,
+          "boxiness_mud": -33.12,
+          "core_presence": -37.061,
+          "sibilance": -39.52,
+          "air_sheen": -38.318
+        },
+        "active_frame_ratio": 0.919
+      }
+    }
+  ]
+}

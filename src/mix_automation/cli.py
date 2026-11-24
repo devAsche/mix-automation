@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 import soundfile as sf
 import typer
 from rich.console import Console
@@ -16,7 +17,10 @@ from mix_automation.io.studio_one import extract_vst3_processor_cid, inspect_stu
 app = typer.Typer(help="Reference-grade automated vocal mixing engine for Studio One 5.")
 console = Console()
 
+PROJECT_ROOT = Path(r"C:\MIX_automation")
 STUDIO_ONE_EXE = Path(r"C:\Program Files\PreSonus\Studio One 5\Studio One.exe")
+DEFAULT_TEMPLATE_SONG = PROJECT_ROOT / "data" / "templates" / "test20261124" / "test20261124.song"
+DEFAULT_PROFILES_JSON = PROJECT_ROOT / "profiles" / "pro_target_profiles.json"
 
 
 @app.command()
@@ -82,6 +86,55 @@ def inspect_plugin(plugin_key: str) -> None:
     console.print(table)
 
 
+@app.command("build-references")
+def build_references(
+    references_dir: Path = typer.Option(PROJECT_ROOT / "data" / "references", help="References root"),
+    cache_dir: Path = typer.Option(PROJECT_ROOT / "data" / "processed" / "reference_stems", help="Stem cache"),
+    out_json: Path = typer.Option(DEFAULT_PROFILES_JSON, help="Output target profiles JSON"),
+) -> None:
+    """Separate all pro reference tracks on GPU and build engineer target profiles."""
+    from mix_automation.analysis.reference_extractor import build_all_reference_profiles
+
+    res = build_all_reference_profiles(references_dir, cache_dir, out_json)
+    console.print(f"[green]Built target profiles from {res['num_reference_songs']} songs -> {out_json}[/green]")
+
+
+@app.command("mix")
+def mix_song(
+    song_folder: Path = typer.Argument(..., exists=True, help="Raw song folder containing stems/ and off-vocal"),
+    style: str = typer.Option("consensus", "--style", "-s", help="Target style: consensus | azusagawa | toy | saburou"),
+    template_song: Path = typer.Option(DEFAULT_TEMPLATE_SONG, "--template", "-t", help="Base Studio One 5 .song"),
+    profiles_json: Path = typer.Option(DEFAULT_PROFILES_JSON, "--profiles", "-p", help="Target profiles JSON"),
+    output_root: Path = typer.Option(PROJECT_ROOT / "data" / "outputs", "--out-dir", "-o", help="Output directory"),
+) -> None:
+    """Run full automated vocal mixing (Stages ①-④) and generate Studio One 5 .song + Master WAV."""
+    from mix_automation.pipeline import run_full_automix_for_song
+
+    report = run_full_automix_for_song(
+        song_folder=song_folder,
+        template_song_path=template_song,
+        profiles_json_path=profiles_json,
+        output_root=output_root,
+        style=style,
+    )
+    console.print("\n[bold green]Auto-MIX Complete![/bold green]")
+    console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan]")
+    console.print(f"  Mastered 2mix WAV    : [cyan]{report['master_wav']}[/cyan]")
+    console.print(f"  Processed Vocal Bus  : [cyan]{report['vocal_bus_wav']}[/cyan]\n")
+
+
+@app.command("propagate-anchor")
+def propagate_anchor(
+    song_path: Path = typer.Argument(..., exists=True, help="User-adjusted Studio One 5 .song file"),
+    anchor_index: int = typer.Option(0, "--anchor", "-a", help="0-based section index tweaked by the user"),
+) -> None:
+    """Propagate user's manual tweak on one anchor section across all sections in a Studio One 5 .song."""
+    from mix_automation.pipeline import repropagate_anchor_in_song
+
+    out_song = repropagate_anchor_in_song(song_path, anchor_event_index=anchor_index)
+    console.print(f"[green]Propagated anchor balance across all sections -> {out_song}[/green]")
+
+
 @app.command("analyze-pair")
 def analyze_pair(
     vocal_path: Path = typer.Argument(..., exists=True, help="Vocal stem WAV/FLAC"),
@@ -92,20 +145,15 @@ def analyze_pair(
     vocal, sr_v = sf.read(str(vocal_path), always_2d=False)
     inst, sr_i = sf.read(str(inst_path), always_2d=False)
     if sr_v != sr_i:
-        console.print(
-            f"[red]Sample rate mismatch: vocal={sr_v}Hz vs instrumental={sr_i}Hz. Resample first.[/red]"
-        )
+        console.print(f"[red]Sample rate mismatch: vocal={sr_v}Hz vs instrumental={sr_i}Hz.[/red]")
         raise typer.Exit(code=1)
 
     profile = compute_section_relative_profile(vocal, inst, sr=sr_v)
-    payload = profile.to_dict()
-    formatted = json.dumps(payload, indent=2, ensure_ascii=False)
+    formatted = json.dumps(profile.to_dict(), indent=2, ensure_ascii=False)
     console.print_json(formatted)
-
     if output_json is not None:
         output_json.parent.mkdir(parents=True, exist_ok=True)
         output_json.write_text(formatted, encoding="utf-8")
-        console.print(f"[green]Saved profile to {output_json}[/green]")
 
 
 @app.command("inspect-song")

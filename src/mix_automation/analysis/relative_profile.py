@@ -13,9 +13,9 @@ relationships between the vocal and the backing track:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+
 import numpy as np
 from scipy import signal
-
 
 VOCAL_MIX_BANDS: dict[str, tuple[float, float]] = {
     "sub_low": (40.0, 130.0),        # Rumble / unnecessary low collision

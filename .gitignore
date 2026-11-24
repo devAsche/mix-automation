@@ -18,6 +18,7 @@ build/
 data/raw/*
 data/processed/*
 data/references/*
+data/templates/*
 data/outputs/*
 !data/**/README.md
 workspace/
@@ -26,6 +27,7 @@ workspace/
 *.flac
 *.ogg
 *.m4a
+*.webm
 !tests/fixtures/*.wav
 
 # DAW & Binary States (exclude generated sessions; allow base templates if explicitly tracked)
@@ -40,7 +42,8 @@ models/weights/
 *.onnx
 *.safetensors
 
-# OS / IDE
+# OS / IDE / External Binaries
+tools/*.exe
 .DS_Store
 Thumbs.db
 .vscode/
