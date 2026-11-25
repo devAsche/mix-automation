@@ -24,6 +24,8 @@ from scipy import signal
 from mix_automation.analysis.relative_profile import (
     VOCAL_MIX_BANDS,
     SectionRelativeProfile,
+    classify_backing_archetype,
+    compute_backing_full_descriptors,
     compute_section_relative_profile,
 )
 from mix_automation.io.audio_loader import load_audio
@@ -261,13 +263,16 @@ def build_all_reference_profiles(
     output_json_path: Path,
     target_sr: int = 44100,
 ) -> dict:
-    """Process all 35 reference covers (`manifest.json` + `manifest2.json`) into v3 psychoacoustic profiles."""
+    """Process all reference covers (`manifest*.json`) into psychoacoustic target profiles."""
     info_dir = references_root / "_info"
     manifest: list[dict] = []
-    for m_name in ("manifest.json", "manifest2.json"):
-        mp = info_dir / m_name
-        if mp.exists():
-            manifest.extend(json.loads(mp.read_text(encoding="utf-8")))
+    seen_dirs: set[str] = set()
+    for mp in sorted(info_dir.glob("manifest*.json")):
+        for entry in json.loads(mp.read_text(encoding="utf-8")):
+            d_key = str(entry.get("dir", "")).replace("/", "\\").lower()
+            if d_key and d_key not in seen_dirs:
+                seen_dirs.add(d_key)
+                manifest.append(entry)
 
     separator = BSRoFormerSeparator(cache_dir=cache_dir)
     meter = pyln.Meter(target_sr)
@@ -301,6 +306,10 @@ def build_all_reference_profiles(
         s0, s1 = _pick_loudest_chorus_span(v_mono, i_mono, sr=sr)
         chorus_prof = compute_section_relative_profile(v_st[:, s0:s1], i_st[:, s0:s1], sr=sr)
         full_prof = compute_section_relative_profile(v_st, i_st, sr=sr)
+        full_desc = compute_backing_full_descriptors(i_st, sr=sr)
+        verse_intimacy_shift = round(
+            float(np.clip(full_prof.k_lufs_vi_ratio_db - chorus_prof.k_lufs_vi_ratio_db, -1.5, 2.5)), 3
+        )
 
         cover_2mix = np.clip(v_st + i_st, -1.0, 1.0)
         cover_lufs = round(float(meter.integrated_loudness(cover_2mix.T.astype(np.float64))), 2)
@@ -316,10 +325,18 @@ def build_all_reference_profiles(
             except Exception:
                 off_calib = None
 
-        arch = chorus_prof.backing_archetype
+        arch = classify_backing_archetype(
+            inst_crest_db=chorus_prof.inst_crest_db,
+            inst_band_levels_db=chorus_prof.inst_band_levels_db,
+            full_inst_mid_density_index=full_desc["full_inst_mid_density_index"],
+            backing_dynamic_range_db=full_desc["backing_dynamic_range_db"],
+            full_inst_crest_db=full_desc["full_inst_crest_db"],
+            chorus_inst_mid_density_index=chorus_prof.inst_mid_density_index,
+        )
         by_group.setdefault(group.lower(), []).append(chorus_prof)
         by_register.setdefault(reg_key, []).append(chorus_prof)
         by_register_and_arch.setdefault(f"{reg_key}_{arch}", []).append(chorus_prof)
+        by_register_and_arch.setdefault(arch, []).append(chorus_prof)
         all_chorus_profiles.append(chorus_prof)
 
         per_song_records.append(
@@ -329,11 +346,14 @@ def build_all_reference_profiles(
                 "mixer": item.get("mixer", ""),
                 "vocal": item.get("vocal", ""),
                 "title": item["title"],
+                "genre_hint": item.get("genre_hint", ""),
                 "separator_backend": backend,
                 "vocal_median_f0_hz": med_f0,
                 "vocal_register": reg_key,
                 "backing_archetype": arch,
                 "cover_master_lufs": cover_lufs,
+                "verse_intimacy_shift_db": verse_intimacy_shift,
+                "backing_full_descriptors": full_desc,
                 "official_offvocal_calibration": off_calib,
                 "chorus_profile": chorus_prof.to_dict(),
                 "full_song_profile": full_prof.to_dict(),
@@ -370,7 +390,7 @@ def build_all_reference_profiles(
         }
 
     result = {
-        "schema_version": "3.0",
+        "schema_version": "4.0",
         "separator_model": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
         "num_reference_songs": len(per_song_records),
         "official_offvocal_calibration": calib_summary,
@@ -380,3 +400,174 @@ def build_all_reference_profiles(
     output_json_path.parent.mkdir(parents=True, exist_ok=True)
     output_json_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     return result
+
+
+def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """Compute robust weighted median resistant to single-track production outliers."""
+    if len(values) == 0:
+        return 0.0
+    order = np.argsort(values)
+    v_s = values[order]
+    w_s = weights[order]
+    cdf = np.cumsum(w_s) / (np.sum(w_s) + 1e-12)
+    idx = int(np.searchsorted(cdf, 0.5))
+    return float(v_s[min(idx, len(v_s) - 1)])
+
+
+def synthesize_acoustic_knn_target(
+    songs_records: list[dict],
+    query_chorus_prof: SectionRelativeProfile,
+    query_full_desc: dict[str, float],
+    query_median_f0_hz: float,
+    k: int = 9,
+    taste_profile: SectionRelativeProfile | None = None,
+    taste_weight: float = 0.0,
+) -> tuple[SectionRelativeProfile, list[dict], float]:
+    """Synthesize a continuous song-specific target profile via distance-weighted acoustic k-NN across all pro covers.
+
+    Returns `(target_profile, top_neighbors_summary, learned_verse_intimacy_shift_db)`.
+    """
+    if not songs_records:
+        raise ValueError("Cannot run acoustic k-NN with empty reference song list.")
+
+    def _feat_vec(cp: dict, fd: dict, f0_hz: float) -> np.ndarray:
+        return np.array(
+            [
+                float(cp.get("inst_mid_density_index", 0.55)),
+                float(fd.get("full_inst_mid_density_index", cp.get("inst_mid_density_index", 0.50))),
+                float(cp.get("inst_crest_db", 9.5)),
+                float(fd.get("backing_dynamic_range_db", 3.0)),
+                float(cp.get("inst_side_mid_db", -7.5)),
+                float(cp.get("inst_high_rolloff_db", -8.5)),
+                float(np.log2(max(f0_hz, 80.0))),
+            ],
+            dtype=np.float64,
+        )
+
+    # Feature importance weights: full/chorus density, dynamic range & vocal register matter most!
+    feat_weights = np.array([1.35, 1.50, 0.90, 1.15, 0.70, 0.70, 1.40], dtype=np.float64)
+
+    ref_feats = np.stack(
+        [
+            _feat_vec(
+                s["chorus_profile"],
+                s.get("backing_full_descriptors", {}),
+                float(s.get("vocal_median_f0_hz", 260.0)),
+            )
+            for s in songs_records
+        ],
+        axis=0,
+    )
+    q_feat = _feat_vec(query_chorus_prof.to_dict(), query_full_desc, query_median_f0_hz)
+
+    mu = np.mean(ref_feats, axis=0)
+    sd = np.std(ref_feats, axis=0) + 1e-6
+    z_ref = (ref_feats - mu) / sd
+    z_q = (q_feat - mu) / sd
+
+    dists = np.sqrt(np.sum(feat_weights * ((z_ref - z_q) ** 2), axis=1))
+    k_eff = min(max(3, k), len(songs_records))
+    nn_idx = np.argsort(dists)[:k_eff]
+    nn_dists = dists[nn_idx]
+
+    sigma = max(float(np.median(nn_dists)), 0.75)
+    raw_w = np.exp(-0.5 * (nn_dists / sigma) ** 2)
+    weights = raw_w / (np.sum(raw_w) + 1e-12)
+
+    nn_records = [songs_records[int(i)] for i in nn_idx]
+    nn_profs = [r["chorus_profile"] for r in nn_records]
+
+    def _agg(field: str, digits: int = 3) -> float:
+        vals = np.array([float(p[field]) for p in nn_profs], dtype=np.float64)
+        # Blend weighted median (70%) + weighted mean (30%) for smooth continuity & outlier immunity
+        val = 0.70 * _weighted_median(vals, weights) + 0.30 * float(np.sum(vals * weights))
+        return round(val, digits)
+
+    intrinsic = {}
+    margins = {}
+    inst_bands = {}
+    for b in VOCAL_MIX_BANDS:
+        v_i = np.array([float(p["vocal_intrinsic_bands_db"][b]) for p in nn_profs], dtype=np.float64)
+        v_m = np.array([float(p["band_margins_db"][b]) for p in nn_profs], dtype=np.float64)
+        v_ib = np.array([float(p["inst_band_levels_db"][b]) for p in nn_profs], dtype=np.float64)
+        intrinsic[b] = round(0.70 * _weighted_median(v_i, weights) + 0.30 * float(np.sum(v_i * weights)), 3)
+        margins[b] = round(0.70 * _weighted_median(v_m, weights) + 0.30 * float(np.sum(v_m * weights)), 3)
+        inst_bands[b] = round(0.70 * _weighted_median(v_ib, weights) + 0.30 * float(np.sum(v_ib * weights)), 3)
+
+    verse_shifts = np.array([float(r.get("verse_intimacy_shift_db", 0.5)) for r in nn_records], dtype=np.float64)
+    learned_verse_shift = round(float(np.clip(np.sum(verse_shifts * weights), 0.0, 1.35)), 2)
+
+    knn_prof = SectionRelativeProfile(
+        vocal_rms_db=_agg("vocal_rms_db"),
+        inst_rms_db=_agg("inst_rms_db"),
+        broadband_vi_ratio_db=_agg("broadband_vi_ratio_db"),
+        k_lufs_vi_ratio_db=_agg("k_lufs_vi_ratio_db"),
+        mid_k_lufs_vi_ratio_db=_agg("mid_k_lufs_vi_ratio_db"),
+        partial_loudness_margin_db=_agg("partial_loudness_margin_db"),
+        vocal_crest_db=_agg("vocal_crest_db"),
+        inst_crest_db=_agg("inst_crest_db"),
+        crest_difference_db=_agg("crest_difference_db"),
+        position_stability_std_db=_agg("position_stability_std_db"),
+        harsh_resonance_index_db=_agg("harsh_resonance_index_db"),
+        syllabic_clarity_index=_agg("syllabic_clarity_index", 4),
+        wet_tail_ratio_db=_agg("wet_tail_ratio_db", 2),
+        vocal_side_mid_db=_agg("vocal_side_mid_db", 2),
+        inst_side_mid_db=_agg("inst_side_mid_db", 2),
+        inst_mid_density_index=_agg("inst_mid_density_index", 3),
+        inst_high_rolloff_db=_agg("inst_high_rolloff_db", 2),
+        backing_archetype=f"knn_{k_eff}_continuous",
+        vocal_intrinsic_bands_db=intrinsic,
+        band_margins_db=margins,
+        inst_band_levels_db=inst_bands,
+        active_frame_ratio=_agg("active_frame_ratio"),
+    )
+
+    # Optional engineer taste blend (e.g. 35% Azusagawa or Sou aesthetic on top of acoustic k-NN!)
+    tw = float(np.clip(taste_weight, 0.0, 0.85))
+    if taste_profile is not None and tw > 0.01:
+        def _mix(a: float, b: float, d: int = 3) -> float:
+            return round((1.0 - tw) * a + tw * b, d)
+
+        knn_prof = SectionRelativeProfile(
+            vocal_rms_db=_mix(knn_prof.vocal_rms_db, taste_profile.vocal_rms_db),
+            inst_rms_db=knn_prof.inst_rms_db,
+            broadband_vi_ratio_db=_mix(knn_prof.broadband_vi_ratio_db, taste_profile.broadband_vi_ratio_db),
+            k_lufs_vi_ratio_db=_mix(knn_prof.k_lufs_vi_ratio_db, taste_profile.k_lufs_vi_ratio_db),
+            mid_k_lufs_vi_ratio_db=_mix(knn_prof.mid_k_lufs_vi_ratio_db, taste_profile.mid_k_lufs_vi_ratio_db),
+            partial_loudness_margin_db=_mix(knn_prof.partial_loudness_margin_db, taste_profile.partial_loudness_margin_db),
+            vocal_crest_db=_mix(knn_prof.vocal_crest_db, taste_profile.vocal_crest_db),
+            inst_crest_db=knn_prof.inst_crest_db,
+            crest_difference_db=_mix(knn_prof.crest_difference_db, taste_profile.crest_difference_db),
+            position_stability_std_db=_mix(knn_prof.position_stability_std_db, taste_profile.position_stability_std_db),
+            harsh_resonance_index_db=_mix(knn_prof.harsh_resonance_index_db, taste_profile.harsh_resonance_index_db),
+            syllabic_clarity_index=_mix(knn_prof.syllabic_clarity_index, taste_profile.syllabic_clarity_index, 4),
+            wet_tail_ratio_db=_mix(knn_prof.wet_tail_ratio_db, taste_profile.wet_tail_ratio_db, 2),
+            vocal_side_mid_db=_mix(knn_prof.vocal_side_mid_db, taste_profile.vocal_side_mid_db, 2),
+            inst_side_mid_db=knn_prof.inst_side_mid_db,
+            inst_mid_density_index=knn_prof.inst_mid_density_index,
+            inst_high_rolloff_db=knn_prof.inst_high_rolloff_db,
+            backing_archetype=f"{knn_prof.backing_archetype}+taste({int(tw * 100)}%)",
+            vocal_intrinsic_bands_db={
+                b: _mix(knn_prof.vocal_intrinsic_bands_db[b], taste_profile.vocal_intrinsic_bands_db[b])
+                for b in VOCAL_MIX_BANDS
+            },
+            band_margins_db={
+                b: _mix(knn_prof.band_margins_db[b], taste_profile.band_margins_db[b])
+                for b in VOCAL_MIX_BANDS
+            },
+            inst_band_levels_db=knn_prof.inst_band_levels_db,
+            active_frame_ratio=knn_prof.active_frame_ratio,
+        )
+
+    neighbors_summary = [
+        {
+            "slug": r["slug"],
+            "title": r["title"],
+            "group": r["group"],
+            "archetype": r.get("backing_archetype", ""),
+            "weight_pct": round(float(w * 100.0), 1),
+            "distance": round(float(d), 2),
+        }
+        for r, w, d in zip(nn_records[:6], weights[:6], nn_dists[:6])
+    ]
+    return knn_prof, neighbors_summary, learned_verse_shift

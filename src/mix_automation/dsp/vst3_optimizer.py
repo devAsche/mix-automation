@@ -414,54 +414,69 @@ class RealVST3CharacterRig:
         after_vca = np.mean(self.vca(st_in, sr, reset=True), axis=0)
         st_vca = np.stack([after_vca, after_vca], axis=0).astype(np.float32)
 
-        # 2. Bisect Stage 2 leveler (`Waves MV2` or `UAD LA-2A`) to hit target vocal crest factor (`~9.5-10.5 dB`)!
-        best_c2 = 8.0 if self.mv2 is not None else 40.0
-        best_c2_gr = 2.0
+        # 2. Bisect Stage 2 leveler (`Waves MV2` or `UAD LA-2A`) for authentic studio glue & stable vocal core!
+        best_c2 = 9.0 if self.mv2 is not None else 42.0
+        best_c2_gr = 1.4
 
         def _crest(sig: np.ndarray) -> float:
             pk = float(20.0 * np.log10(np.percentile(np.abs(sig[nz]), 99.5) + 1e-12))
             rm = float(20.0 * np.log10(np.sqrt(np.mean(sig[nz] ** 2)) + 1e-12))
             return pk - rm
 
+        pre_s2_crest = _crest(after_vca)
+        if self.archetype == "dense_rock_edm":
+            # Ensure genuine upward/downward core glue so quiet syllables & 400-1800Hz power never dip under guitars!
+            eff_target_crest = float(np.clip(min(target_crest_db, pre_s2_crest - 1.35), 7.8, 9.5))
+        elif self.archetype == "groovy_mid_pop":
+            eff_target_crest = float(np.clip(min(target_crest_db, pre_s2_crest - 0.95), 8.5, 10.1))
+        else:
+            eff_target_crest = float(np.clip(max(9.4, target_crest_db), 9.4, 11.2))
+
         if self.mv2 is not None:
-            lo_m, hi_m = 3.0, 16.0
+            lo_m, hi_m = 6.0, 16.5
             best_c_err = 999.0
             for _ in range(5):
                 mid_m = 0.5 * (lo_m + hi_m)
                 configure_waves_mv2(self.mv2, low_level=mid_m, high_level=-mid_m * 0.72, output_gain=0.0)
                 y2 = np.mean(self.mv2(st_vca, sr, reset=True), axis=0)
                 c = _crest(y2)
-                err = abs(c - target_crest_db)
+                err = abs(c - eff_target_crest)
                 if err < best_c_err:
                     best_c_err = err
                     best_c2 = mid_m
-                    best_c2_gr = max(0.0, _crest(after_vca) - c)
-                if c > target_crest_db:
-                    lo_m = mid_m  # Still too dynamic -> more glue
+                    best_c2_gr = max(0.0, pre_s2_crest - c)
+                if c > eff_target_crest:
+                    lo_m = mid_m  # Still too dynamic -> more upward/downward glue
                 else:
                     hi_m = mid_m
         elif self.la2a is not None:
-            lo_p, hi_p = 20.0, 72.0
+            lo_p, hi_p = (22.0, 62.0) if self.archetype == "intimate_ballad_sparse" else (28.0, 74.0)
             best_c_err = 999.0
             for _ in range(5):
                 mid_p = 0.5 * (lo_p + hi_p)
                 configure_uad_la2a(self.la2a, peak_reduct=mid_p, gain=35.0)
                 y2 = np.mean(self.la2a(st_vca, sr, reset=True), axis=0)
                 c = _crest(y2)
-                err = abs(c - target_crest_db)
+                err = abs(c - eff_target_crest)
                 if err < best_c_err:
                     best_c_err = err
                     best_c2 = mid_p
-                    best_c2_gr = max(0.0, _crest(after_vca) - c)
-                if c > target_crest_db:
+                    best_c2_gr = max(0.0, pre_s2_crest - c)
+                if c > eff_target_crest:
                     lo_p = mid_p
                 else:
                     hi_p = mid_p
 
         return round(best_vca_t, 1), round(best_vca_gr, 2), round(best_c2, 2), round(best_c2_gr, 2)
 
-    def apply_insert_chain(self, vocal_mono: np.ndarray, sr: int, p: VocalChainParams) -> np.ndarray:
-        """Process vocal through the verified commercial VST3 insert chain + parallel harmonic glue."""
+    def apply_insert_chain(
+        self,
+        vocal_mono: np.ndarray,
+        sr: int,
+        p: VocalChainParams,
+        sat_envelope: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Process vocal through the verified commercial VST3 insert chain + section-aware parallel harmonic glue."""
         configure_persistent_q_5band(
             self.pq,
             hpf_hz=p.hpf_hz,
@@ -499,9 +514,9 @@ class RealVST3CharacterRig:
 
         if self.color is not None:
             if "hf_boost" in self.color.parameters:
-                configure_uad_pultec(self.color, lf_boost=0.6, hf_boost=1.2, hf_freq="10 KCS")
+                configure_uad_pultec(self.color, lf_boost=0.4, hf_boost=0.45, hf_freq="12 KCS")
             elif "out_stage" in self.color.parameters:
-                configure_slick_eq(self.color, out_stage="Silky", drive_db=4.5)
+                configure_slick_eq(self.color, out_stage="Silky", drive_db=4.0)
             chain.append(self.color)
 
         board = Pedalboard(chain)
@@ -509,24 +524,34 @@ class RealVST3CharacterRig:
         core_st = board(st_in, sr, reset=True)
         core_mono = np.mean(core_st, axis=0, dtype=np.float32)
 
-        # True Parallel Harmonic Saturation (verified Softube Saturation Knob blended gently for dense core!)
+        # True Parallel Harmonic Saturation (verified Softube Saturation Knob with optional section envelope!)
         if p.parallel_sat_amount > 0.1 and p.parallel_sat_wet_pct > 0.01:
             configure_softube_saturation(self.sat, amount=p.parallel_sat_amount, sat_type="KEEP LOW")
             sat_pre = Pedalboard([HighpassFilter(220.0), LowpassFilter(11500.0), self.sat])(
                 np.stack([core_mono, core_mono], axis=0), sr, reset=True
             )
             sat_m = np.mean(sat_pre, axis=0, dtype=np.float32)
-            # Match RMS of parallel saturation branch to core before mixing at `parallel_sat_wet_pct`
             c_rms = float(np.sqrt(np.mean(core_mono**2) + 1e-12))
             s_rms = float(np.sqrt(np.mean(sat_m**2) + 1e-12))
             if s_rms > 1e-6:
                 sat_m *= c_rms / s_rms
-            w_sat = float(np.clip(p.parallel_sat_wet_pct / 100.0, 0.0, 0.35))
-            core_mono = ((1.0 - w_sat) * core_mono + w_sat * sat_m).astype(np.float32)
+            base_w = float(np.clip(p.parallel_sat_wet_pct / 100.0, 0.0, 0.35))
+            if sat_envelope is not None and len(sat_envelope) >= len(core_mono):
+                w_arr = np.clip(base_w * sat_envelope[: len(core_mono)].astype(np.float32), 0.0, 0.38)
+                core_mono = ((1.0 - w_arr) * core_mono + w_arr * sat_m).astype(np.float32)
+            else:
+                core_mono = ((1.0 - base_w) * core_mono + base_w * sat_m).astype(np.float32)
 
         return (core_mono * float(10.0 ** (p.vocal_fader_db / 20.0))).astype(np.float32)
 
-    def render_spatial_blend(self, dry_lead_mono: np.ndarray, sr: int, p: VocalChainParams) -> np.ndarray:
+    def render_spatial_blend(
+        self,
+        dry_lead_mono: np.ndarray,
+        sr: int,
+        p: VocalChainParams,
+        section_space_env: np.ndarray | None = None,
+        section_delay_env: np.ndarray | None = None,
+    ) -> np.ndarray:
         """Render Early-Reflection Room Glue + Slapback + Ducked 1/8 Delay + Chorus-Free Plate Reverb."""
         st_in = np.stack([dry_lead_mono, dry_lead_mono], axis=0).astype(np.float32)
 
@@ -536,6 +561,17 @@ class RealVST3CharacterRig:
         env = np.sqrt(np.maximum((csum[win:] - csum[:-win]) / win, 1e-12))[: len(dry_lead_mono)].astype(np.float32)
         act = np.clip(env / (float(np.percentile(env, 92)) + 1e-9), 0.0, 1.0)
         duck_gain = 1.0 - 0.50 * act
+
+        sp_env = (
+            section_space_env[: len(dry_lead_mono)].astype(np.float32)[np.newaxis, :]
+            if section_space_env is not None and len(section_space_env) >= len(dry_lead_mono)
+            else 1.0
+        )
+        dl_env = (
+            section_delay_env[: len(dry_lead_mono)].astype(np.float32)[np.newaxis, :]
+            if section_delay_env is not None and len(section_delay_env) >= len(dry_lead_mono)
+            else 1.0
+        )
 
         # 1. Early Reflection Room Glue (puts dry vocal inside the same acoustic space as the backing track!)
         if self.phoenix is not None:
@@ -551,19 +587,22 @@ class RealVST3CharacterRig:
         slap_r = Pedalboard([HighpassFilter(420.0), LowpassFilter(3800.0), Delay(0.090, feedback=0.08, mix=1.0)])(
             dry_lead_mono[np.newaxis, :], sr
         )[0]
-        slap_st = np.stack([slap_l, slap_r], axis=0) * (10.0 ** (p.slap_delay_send_db / 20.0))
+        slap_st = np.stack([slap_l, slap_r], axis=0) * (10.0 ** (p.slap_delay_send_db / 20.0)) * dl_env
 
-        # 3. Tempo-Synced 1/8 Note Filtered Stereo Delay (Ducked!)
+        # 3. Tempo-Synced 1/8 Note Filtered Stereo Delay (Ducked + Section Automated!)
         eighth_sec = float(np.clip(60.0 / max(self.bpm, 60.0) * 0.5, 0.16, 0.42))
         dly_board = Pedalboard(
             [HighpassFilter(450.0), LowpassFilter(4000.0), Delay(eighth_sec, feedback=0.20, mix=1.0)]
         )
-        dly_st = dly_board(st_in, sr) * duck_gain[np.newaxis, :] * (10.0 ** (p.tempo_delay_send_db / 20.0))
+        dly_st = dly_board(st_in, sr) * duck_gain[np.newaxis, :] * (10.0 ** (p.tempo_delay_send_db / 20.0)) * dl_env
 
-        # 4. Clean Tight Plate Reverb (R2, zero chorus, ducked)
+        # 4. Clean Tight Plate Reverb (R2, zero chorus, ducked + Section Automated!)
         rev_pre = Pedalboard([HighpassFilter(450.0), LowpassFilter(5800.0)])(st_in, sr)
-        rev_st = self.r2(rev_pre, sr, reset=True) * (0.65 + 0.35 * duck_gain[np.newaxis, :]) * (
-            10.0 ** (p.plate_reverb_send_db / 20.0)
+        rev_st = (
+            self.r2(rev_pre, sr, reset=True)
+            * (0.65 + 0.35 * duck_gain[np.newaxis, :])
+            * (10.0 ** (p.plate_reverb_send_db / 20.0))
+            * sp_env
         )
 
         return (er_st + slap_st + dly_st + rev_st).astype(np.float32)
@@ -689,36 +728,103 @@ def apply_dynamic_instrumental_unmasking(
     inst_stereo: np.ndarray,
     vocal_mono: np.ndarray,
     sr: int,
-    max_dip_db: float = 2.0,
+    max_dip_db: float = 2.2,
 ) -> np.ndarray:
-    """Carve a vocal-triggered Mid-channel pocket (600Hz-3.8kHz) in the backing track so voice sits INSIDE."""
+    """Trackspacer/Soothe2-style Bark-band adaptive Mid-channel spectral unmasking (300Hz-5.8kHz).
+
+    Carves ONLY the exact Mid-channel frequencies colliding with the singer's active formants at
+    each 11.6ms frame while leaving the Side stereo image, sub-bass (<300Hz), and air (>6kHz) 100% untouched!
+    """
     if max_dip_db <= 0.05:
         return inst_stereo
 
     n = min(inst_stereo.shape[1], len(vocal_mono))
-    mid = 0.5 * (inst_stereo[0, :n] + inst_stereo[1, :n])
-    side = 0.5 * (inst_stereo[0, :n] - inst_stereo[1, :n])
+    if n < 2048:
+        return inst_stereo
 
-    # Unmask BOTH lower-mid vocal core (600-1600Hz, gentle) & presence clarity (1600-4000Hz, primary)
-    sos_p = signal.butter(2, [1500.0, 4000.0], btype="bandpass", fs=sr, output="sos")
-    sos_m = signal.butter(2, [550.0, 1500.0], btype="bandpass", fs=sr, output="sos")
-    mid_pres = signal.sosfiltfilt(sos_p, mid)
-    mid_core = signal.sosfiltfilt(sos_m, mid)
-    voc_env_sig = signal.sosfiltfilt(sos_p, vocal_mono[:n]) + 0.6 * signal.sosfiltfilt(sos_m, vocal_mono[:n])
+    mid = 0.5 * (inst_stereo[0, :n].astype(np.float64) + inst_stereo[1, :n].astype(np.float64))
+    side = 0.5 * (inst_stereo[0, :n].astype(np.float64) - inst_stereo[1, :n].astype(np.float64))
+    voc = vocal_mono[:n].astype(np.float64)
 
-    win = max(int(sr * 0.04), 512)
-    pad = np.pad(voc_env_sig.astype(np.float64) ** 2, (win // 2, win - win // 2 - 1), mode="edge")
-    csum = np.cumsum(np.insert(pad, 0, 0.0))
-    v_env = np.sqrt(np.maximum((csum[win:] - csum[:-win]) / win, 1e-12))[:n].astype(np.float32)
-    activity = np.clip(v_env / (float(np.percentile(v_env, 95)) + 1e-9), 0.0, 1.0)
+    nperseg = 2048
+    noverlap = 1536  # 75% overlap Hann -> exact COLA reconstruction
+    freqs, _, Z_mid = signal.stft(mid, fs=sr, window="hann", nperseg=nperseg, noverlap=noverlap)
+    _, _, Z_voc = signal.stft(voc, fs=sr, window="hann", nperseg=nperseg, noverlap=noverlap)
 
-    dip_pres = 1.0 - (10.0 ** (-max_dip_db / 20.0))
-    dip_core = 1.0 - (10.0 ** (-(max_dip_db * 0.55) / 20.0))
-    mid_ducked = mid - mid_pres * (activity * dip_pres) - mid_core * (activity * dip_core)
+    n_bins, n_frames = Z_mid.shape
+    P_mid = np.abs(Z_mid) ** 2
+    P_voc = np.abs(Z_voc) ** 2
+
+    # 14 Bark-like critical bands across the primary vocal-backing collision zone (300Hz - 5.8kHz)
+    band_edges = np.array(
+        [300, 420, 560, 720, 920, 1160, 1450, 1800, 2200, 2700, 3300, 4000, 4800, 5800],
+        dtype=np.float64,
+    )
+    n_bands = len(band_edges) - 1
+    band_centers = np.sqrt(band_edges[:-1] * band_edges[1:])
+    band_dips_db = np.zeros((n_bands, n_frames), dtype=np.float64)
+
+    # Intelligibility importance bell: peaks cleanly in 900Hz-4.2kHz presence/core zone, gentler at edges
+    band_importance = np.array(
+        [0.45, 0.55, 0.70, 0.82, 0.95, 1.00, 1.00, 1.00, 1.00, 0.95, 0.85, 0.65, 0.45],
+        dtype=np.float64,
+    )
+
+    # Global vocal reference floor so quiet silence/breaths never trigger unnecessary carving
+    v_total = np.sqrt(np.sum(P_voc[(freqs >= 250) & (freqs <= 6000)], axis=0) + 1e-16)
+    v_ref_95 = float(np.percentile(v_total, 95)) + 1e-12
+    global_gate = np.clip((v_total / v_ref_95 - 0.06) / 0.28, 0.0, 1.0)
+
+    # Smooth exponential release along time (~30ms attack, ~115ms release at 11.6ms/frame)
+    alpha_atk = 0.38
+    alpha_rel = 0.10
+
+    for b in range(n_bands):
+        m = (freqs >= band_edges[b]) & (freqs < band_edges[b + 1])
+        if not np.any(m):
+            continue
+        v_b = np.sqrt(np.mean(P_voc[m], axis=0) + 1e-16)
+        i_b = np.sqrt(np.mean(P_mid[m], axis=0) + 1e-16)
+
+        v_b_norm = np.clip(v_b / (float(np.percentile(v_b, 95)) + 1e-12), 0.0, 1.0)
+        # Collision factor: carve strongest where backing Mid energy actually competes with the voice!
+        i_b_norm = np.clip(i_b / (float(np.percentile(i_b, 85)) + 1e-12), 0.25, 1.0)
+        raw_dip = max_dip_db * band_importance[b] * v_b_norm * i_b_norm * global_gate
+
+        env = np.empty(n_frames, dtype=np.float64)
+        cur = 0.0
+        for t in range(n_frames):
+            x = raw_dip[t]
+            cur = cur + (alpha_atk if x > cur else alpha_rel) * (x - cur)
+            env[t] = cur
+        band_dips_db[b] = env
+
+    # Smoothly interpolate per-band dips onto all FFT bins (zero spectral step artifacts!)
+    bin_dip_db = np.zeros((n_bins, n_frames), dtype=np.float64)
+    in_zone = (freqs >= 220.0) & (freqs <= 6800.0)
+    f_in = freqs[in_zone]
+    for b_idx, f_val in enumerate(f_in):
+        if f_val <= band_centers[0]:
+            w_edge = np.clip((f_val - 220.0) / max(band_centers[0] - 220.0, 1.0), 0.0, 1.0)
+            bin_dip_db[np.where(in_zone)[0][b_idx]] = band_dips_db[0] * w_edge
+        elif f_val >= band_centers[-1]:
+            w_edge = np.clip((6800.0 - f_val) / max(6800.0 - band_centers[-1], 1.0), 0.0, 1.0)
+            bin_dip_db[np.where(in_zone)[0][b_idx]] = band_dips_db[-1] * w_edge
+        else:
+            hi_b = int(np.searchsorted(band_centers, f_val))
+            lo_b = hi_b - 1
+            frac = (f_val - band_centers[lo_b]) / max(band_centers[hi_b] - band_centers[lo_b], 1.0)
+            bin_dip_db[np.where(in_zone)[0][b_idx]] = (1.0 - frac) * band_dips_db[lo_b] + frac * band_dips_db[hi_b]
+
+    gain_mask = np.power(10.0, -np.clip(bin_dip_db, 0.0, max_dip_db + 0.3) / 20.0)
+    _, mid_ducked = signal.istft(Z_mid * gain_mask, fs=sr, window="hann", nperseg=nperseg, noverlap=noverlap)
+    mid_ducked = mid_ducked[:n]
+    if len(mid_ducked) < n:
+        mid_ducked = np.pad(mid_ducked, (0, n - len(mid_ducked)), mode="edge")
 
     out = inst_stereo.copy()
-    out[0, :n] = mid_ducked + side
-    out[1, :n] = mid_ducked - side
+    out[0, :n] = (mid_ducked + side).astype(np.float32)
+    out[1, :n] = (mid_ducked - side).astype(np.float32)
     return out.astype(np.float32)
 
 
@@ -730,10 +836,11 @@ def optimize_real_vst3_chain(
     target_profile: SectionRelativeProfile,
     n_iterations: int = 32,
     seed: int = 42,
+    forced_archetype: str | None = None,
 ) -> tuple[RealVST3CharacterRig, VocalChainParams, SectionRelativeProfile, float]:
-    """3-Stage Hybrid Optimizer: GPU Differentiable EQ -> GR Bisection -> 5D Perceptual Real-VST3 Refinement."""
+    """3-Stage Hybrid Optimizer: Differentiable EQ -> GR Bisection -> 5D Perceptual Real-VST3 Refinement."""
     init_prof = compute_section_relative_profile(anchor_vocal_mono, anchor_inst_stereo, sr=sr)
-    archetype = classify_backing_archetype(init_prof.inst_crest_db, init_prof.inst_band_levels_db)
+    archetype = forced_archetype or classify_backing_archetype(init_prof.inst_crest_db, init_prof.inst_band_levels_db)
 
     rig = RealVST3CharacterRig(archetype=archetype, bpm=bpm)
 
@@ -741,7 +848,7 @@ def optimize_real_vst3_chain(
     v_eval = anchor_vocal_mono[:eval_len]
     i_eval_st = anchor_inst_stereo[:, :eval_len]
 
-    # --- Stage A: Fast GPU Differentiable 6-Band EQ Warm-Start (200 steps in ~0.15s!) ---
+    # --- Stage A: Fast Differentiable 6-Band EQ Warm-Start (200 steps in ~0.06s!) ---
     eq_init = solve_differentiable_intrinsic_eq_gpu(
         v_eval, sr=sr, target_profile=target_profile, inst_high_rolloff_db=init_prof.inst_high_rolloff_db
     )
@@ -761,18 +868,27 @@ def optimize_real_vst3_chain(
 
     # --- Stage B: Exact Measured-GR Bisection on Real Commercial Compressors ---
     vca_thresh, vca_gr, c2_param, c2_gr = rig.calibrate_dynamics_bisection(
-        eq_preview, sr=sr, target_crest_db=max(9.4, target_profile.vocal_crest_db)
+        eq_preview, sr=sr, target_crest_db=float(target_profile.vocal_crest_db)
     )
 
-    # --- Stage C: Backing-Density-Synchronized Parallel Saturation & Mid Unmasking ---
+    # --- Stage C: Backing-Density-Synchronized Parallel Saturation & Bark Spectral Mid Unmasking ---
     dens = init_prof.inst_mid_density_index
-    sat_amount = round(float(1.4 + dens * 2.4), 1)          # 1.4 .. 3.8 on Softube Saturation Knob
-    sat_wet_pct = round(float(10.0 + dens * 16.0), 1)       # 10% (clean) .. 26% (dense rock!)
-    unmask_dip = round(float(1.2 + dens * 1.3), 2)          # 1.2 .. 2.5 dB dynamic Mid pocket
+    if archetype == "intimate_ballad_sparse":
+        sat_amount = round(float(0.8 + dens * 1.4), 1)
+        sat_wet_pct = round(float(6.0 + dens * 8.0), 1)
+        unmask_dip = round(float(0.9 + dens * 0.9), 2)
+    elif archetype == "groovy_mid_pop":
+        sat_amount = round(float(1.2 + dens * 1.8), 1)
+        sat_wet_pct = round(float(9.0 + dens * 12.0), 1)
+        unmask_dip = round(float(1.3 + dens * 1.1), 2)
+    else:
+        sat_amount = round(float(1.6 + dens * 2.4), 1)
+        sat_wet_pct = round(float(12.0 + dens * 16.0), 1)
+        unmask_dip = round(float(1.6 + dens * 1.2), 2)
 
     # Synchronize Early Room level to backing track stereo spaciousness (`inst_side_mid_db`)
     inst_width_norm = float(np.clip((init_prof.inst_side_mid_db + 16.0) / 10.0, 0.0, 1.0))
-    base_er_db = -21.5 + inst_width_norm * 3.5              # -21.5 .. -18.0 dB tight room glue
+    base_er_db = (-19.5 if archetype == "intimate_ballad_sparse" else -21.5) + inst_width_norm * 3.5
 
     # --- Stage D: Focused 5D Real-VST3 CMA-ES Refinement around GPU+Bisection Solution ---
     # z in [0, 1]^5: [body_delta, presence_delta, air_delta, space_delta, fader_db]
@@ -789,8 +905,8 @@ def optimize_real_vst3_chain(
             body_gain_db=round(float(np.clip(eq_init["body_gain_db"] + (zc[0] - 0.5) * 3.6, -4.0, 4.0)), 2),
             mud_cut_db=eq_init["mud_cut_db"],
             core_mid_gain_db=eq_init["core_mid_gain_db"],
-            presence_gain_db=round(float(np.clip(eq_init["presence_gain_db"] + (zc[1] - 0.5) * 4.0, -3.0, 6.0)), 2),
-            air_shelf_db=round(float(np.clip(eq_init["air_shelf_db"] + (zc[2] - 0.5) * 4.0, -2.5, 5.5)), 2),
+            presence_gain_db=round(float(np.clip(eq_init["presence_gain_db"] + (zc[1] - 0.5) * 4.4, -3.5, 5.5)), 2),
+            air_shelf_db=round(float(np.clip(eq_init["air_shelf_db"] + (zc[2] - 0.5) * 5.6, -4.0, 5.0)), 2),
             vca_threshold_db=vca_thresh,
             vca_measured_gr_db=vca_gr,
             comp2_param=c2_param,
@@ -811,8 +927,8 @@ def optimize_real_vst3_chain(
         "boxiness_mud": 2.2,
         "core_mid": 2.4,
         "core_presence": 3.0,
-        "sibilance": 1.4,
-        "air_sheen": 1.6,
+        "sibilance": 2.2,
+        "air_sheen": 2.0,
     }
     rolloff_delta = float(np.clip(init_prof.inst_high_rolloff_db - target_profile.inst_high_rolloff_db, -6.0, 6.0))
     tgt_air_adj = target_profile.vocal_intrinsic_bands_db["air_sheen"] + 0.22 * rolloff_delta

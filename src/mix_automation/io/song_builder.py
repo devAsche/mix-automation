@@ -1,16 +1,28 @@
-"""v3 Studio One 5.5 Complete `.song` Session Builder & Verified `.vstpreset` Chunk Patcher.
+"""v4 Studio One 5.5 True 1:1 Dynamic VST3 `.song` Session Builder & Steinberg `.vstpreset` Synthesizer.
 
-Upgrades over v2:
-  1. Uses `mix_automation.dsp.vst3_adapter.set_vst3_param_strict` inside isolated preset-export
-     subprocesses so Studio One's `.vstpreset` files (`Persistent Q` 6-band, `MV2`, `C1`, `L1`,
-     `H-Delay`, `Doubler2`, chorus-free `R2` Plate) are 100% contract-verified.
-  2. Retains quarter-note beat-accurate `<AudioEvent>` `start` & `offset` values and visible
-     `<MarkerTrack>` section/review/FX markers.
+Upgrades over v3:
+  1. True 1:1 Commercial VST3 Chain Injection into `Devices/audiomixer.xml` & `Presets/Channels/`:
+     Reads Studio One 5's exact verified VST3 `classID`s (with live `Plugins-ja.settings` lookup +
+     workstation-verified fallback table) and synthesizes genuine Steinberg `.vstpreset` binaries
+     (`VST3` header + `Comp` chunk + `Cont` + `Info` MetaInfo XML + `List` footer).
+  2. `mainvocal` receives the exact archetype-matched VST3 chain rendered in Python (`Persistent Q` ->
+     `VCA Compressor` -> `MV2 Mono` or `UADx LA-2A` -> optional `UADx Pultec EQP-1A` / `TDR VOS SlickEQ`).
+  3. Adds real `Saturation Knob` (Parallel Harmonic FX Channel) & `PhoenixVerb` (8m Early Room FX
+     Channel) wired to `main` bus Sends (`Send04` / `Send05`), plus `VCA Compressor` (bus glue) &
+     `Wave Breaker` (true-peak limiter) directly on the `メイン` Master Output Bus!
+  4. Registers all newly created FX & extra audio channels inside `Devices/mixerconsole.xml` so every
+     strip appears cleanly in Studio One 5's Mix Console immediately on open.
 """
 
 from __future__ import annotations
 
+import base64
+import json
+import os
+import re
 import struct
+import subprocess
+import sys
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
@@ -22,7 +34,7 @@ from xml.sax.saxutils import escape as xml_escape
 import numpy as np
 import soundfile as sf
 
-from mix_automation.config.plugin_registry import VST3_ROOT
+from mix_automation.config.plugin_registry import VST3_ROOT, get_plugin_map
 from mix_automation.dsp.pitch_timing import ReviewMarker
 from mix_automation.dsp.vst3_optimizer import SongSection, VocalChainParams
 
@@ -38,6 +50,97 @@ class TrackMediaSpec:
     gain_db: float = 0.0
     mute: bool = False
     pan: float = 0.5
+
+
+@dataclass(frozen=True)
+class S1PluginClassSpec:
+    """Studio One 5 VST3 plugin descriptor matching `Devices/audiomixer.xml` & `Plugins-ja.settings`."""
+
+    name: str
+    class_id: str          # "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
+    sub_category: str      # e.g. "VST3/Dynamics"
+    stereo_ports: bool = True
+
+    @property
+    def hex32(self) -> str:
+        return self.class_id.strip("{}").replace("-", "").upper()
+
+
+# Workstation-verified Studio One 5.5 VST3 ClassDescriptions (extracted directly from Plugins-ja.settings)
+DEFAULT_S1_PLUGIN_SPECS: dict[str, S1PluginClassSpec] = {
+    "persistent_q": S1PluginClassSpec("Persistent Q", "{ABCDEF01-9182-FAEB-4B61-706550713031}", "VST3", False),
+    "vca_compressor": S1PluginClassSpec("VCA Compressor", "{24DCAB96-A33C-41E5-B2C9-7A9953B51CCD}", "VST3/Dynamics", True),
+    "mv2_mono": S1PluginClassSpec("MV2 Mono", "{5653544D-5632-4D6D-7632-206D6F6E6F00}", "VST3/Dynamics", False),
+    "uad_la2a": S1PluginClassSpec("UADx LA-2A Tube Compressor", "{ABCDEF01-9182-FAEB-5541-44785533444A}", "VST3/Dynamics", True),
+    "uad_pultec": S1PluginClassSpec("UADx Pultec EQP-1A EQ", "{ABCDEF01-9182-FAEB-5541-44785533414E}", "VST3/EQ", True),
+    "slick_eq": S1PluginClassSpec("TDR VOS SlickEQ", "{56535454-6431-3074-6472-20766F732073}", "VST3/EQ", True),
+    "saturation_knob": S1PluginClassSpec("Saturation Knob", "{F73F44A6-96F4-40AF-B187-1EAFA5E2AF01}", "VST3/Distortion", True),
+    "phoenix_verb": S1PluginClassSpec("PhoenixVerb", "{5653544D-4373-7270-686F-656E69787665}", "VST3/Reverb", True),
+    "r2": S1PluginClassSpec("R2", "{5653544D-4373-3272-3200-000000000000}", "VST3/Reverb", True),
+    "wave_breaker": S1PluginClassSpec("Wave Breaker", "{F2AEE70D-00DE-4F4E-5050-6C7950507762}", "VST3/Dynamics", True),
+    "h_delay": S1PluginClassSpec("H-Delay Stereo", "{56535448-4244-5368-2D64-656C61792073}", "VST3/Delay", True),
+    "doubler2": S1PluginClassSpec("Doubler2 Stereo", "{56535457-4432-5364-6F75-626C65723220}", "VST3/Modulation", True),
+}
+
+
+def load_s1_plugin_specs() -> dict[str, S1PluginClassSpec]:
+    """Load Studio One 5 VST3 class descriptors, refreshing from local `Plugins-*.settings` when available."""
+    specs = dict(DEFAULT_S1_PLUGIN_SPECS)
+    s1_dir = Path(os.path.expandvars(r"%APPDATA%\PreSonus\Studio One 5\x64"))
+    if not s1_dir.exists():
+        return specs
+
+    settings_files = sorted(s1_dir.glob("Plugins-*.settings"))
+    if not settings_files:
+        return specs
+
+    try:
+        txt = settings_files[0].read_text(encoding="utf-8", errors="ignore")
+        by_name: dict[str, tuple[str, str]] = {}
+        for m in re.finditer(r"<ClassDescription\s+([^>]+)>", txt, re.S):
+            attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+            if "VST3" in attrs.get("subCategory", "") and attrs.get("classID"):
+                by_name[attrs.get("name", "").lower()] = (attrs["classID"], attrs["subCategory"])
+
+        for key, spec in list(specs.items()):
+            hit = by_name.get(spec.name.lower())
+            if hit:
+                specs[key] = S1PluginClassSpec(spec.name, hit[0], hit[1], spec.stereo_ports)
+    except Exception:
+        pass
+    return specs
+
+
+def create_vstpreset_bytes(class_id_guid: str, comp_state: bytes) -> bytes:
+    """Synthesize a complete, Studio One 5-native Steinberg `.vstpreset` binary from a VST3 `Comp` chunk."""
+    hex32 = class_id_guid.strip("{}").replace("-", "").upper()
+    if len(hex32) != 32:
+        raise ValueError(f"Expected 32-hex VST3 class ID, got {class_id_guid!r}")
+
+    info_xml = (
+        '\ufeff<?xml version="1.0" encoding="UTF-8"?>\r\n'
+        "<MetaInfo>\r\n"
+        f'\t<Attribute id="VST3UniqueID" value="{hex32}" type="string"/>\r\n'
+        "</MetaInfo>\r\n"
+    ).encode("utf-8")
+
+    chunks = [
+        (b"Comp", comp_state),
+        (b"Cont", b""),
+        (b"Info", info_xml),
+    ]
+    data_blobs = bytearray()
+    list_entries = bytearray()
+    cursor = 48
+    for cid, payload in chunks:
+        size = len(payload)
+        list_entries.extend(struct.pack("<4sqq", cid, cursor, size))
+        data_blobs.extend(payload)
+        cursor += size
+
+    header = struct.pack("<4si32sq", b"VST3", 1, hex32.encode("ascii"), cursor)
+    list_hdr = struct.pack("<4si", b"List", len(chunks))
+    return bytes(header) + bytes(data_blobs) + bytes(list_hdr) + bytes(list_entries)
 
 
 def patch_vstpreset_component_state(orig_vstpreset: bytes, new_comp_state: bytes) -> bytes:
@@ -107,146 +210,230 @@ def _safe_xml_attr(val: str) -> str:
     return xml_escape(val, {'"': "&quot;", "'": "&apos;"})
 
 
-def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[str, bytes]:
-    """Load each template VST3 plugin in an isolated subprocess and dump contract-verified `Comp` states."""
-    import base64
-    import json
-    import subprocess
-    import sys
+def _render_fx_slot_xml(
+    slot_index: int,
+    spec: S1PluginClassSpec,
+    preset_path: str,
+    stereo_channel: bool = False,
+) -> str:
+    """Render an exact Studio One 5 `<Attributes name="FX0N">` insert block for `Devices/audiomixer.xml`."""
+    sub_type = "3" if (stereo_channel or spec.stereo_ports) else "1"
+    in_lbl = "Stereo In" if sub_type == "3" else "Mono In"
+    out_lbl = "Stereo Out" if sub_type == "3" else "Mono Out"
+    safe_nm = _safe_xml_attr(spec.name)
+    safe_sub = _safe_xml_attr(spec.sub_category)
+    safe_pre = _safe_xml_attr(preset_path)
 
-    states: dict[str, bytes] = {}
+    return (
+        f'\t\t\t\t\t<Attributes name="FX{slot_index:02d}">\n'
+        f'\t\t\t\t\t\t<UID x:id="uniqueID" uid="{_new_uid()}"/>\n'
+        f'\t\t\t\t\t\t<UID x:id="deviceClassID" uid="{spec.class_id}"/>\n'
+        f'\t\t\t\t\t\t<Attributes x:id="deviceData" name="{safe_nm}">\n'
+        f'\t\t\t\t\t\t\t<UID x:id="uniqueID" uid="{_new_uid()}"/>\n'
+        f"\t\t\t\t\t\t</Attributes>\n"
+        f'\t\t\t\t\t\t<Attributes x:id="ghostData" presetType="vstpreset">\n'
+        f'\t\t\t\t\t\t\t<Attributes x:id="classInfo" classID="{spec.class_id}" name="{safe_nm}"\n'
+        f'\t\t\t\t\t\t\t            category="AudioEffect" subCategory="{safe_sub}"/>\n'
+        f'\t\t\t\t\t\t\t<Attributes x:id="IO">\n'
+        f'\t\t\t\t\t\t\t\t<List x:id="audioInputs">\n'
+        f'\t\t\t\t\t\t\t\t\t<PortDescription flags="3" subType="{sub_type}" label="{in_lbl}"/>\n'
+        f"\t\t\t\t\t\t\t\t</List>\n"
+        f'\t\t\t\t\t\t\t\t<List x:id="audioOutputs">\n'
+        f'\t\t\t\t\t\t\t\t\t<PortDescription flags="3" subType="{sub_type}" label="{out_lbl}"/>\n'
+        f"\t\t\t\t\t\t\t\t</List>\n"
+        f"\t\t\t\t\t\t\t</Attributes>\n"
+        f"\t\t\t\t\t\t</Attributes>\n"
+        f'\t\t\t\t\t\t<Attributes x:id="Automation" mode="0"/>\n'
+        f'\t\t\t\t\t\t<Attributes x:id="Presets" pname="{safe_nm}" dirty="0"/>\n'
+        f'\t\t\t\t\t\t<Attributes x:id="SlotRemoteFX" syncActive="0"/>\n'
+        f'\t\t\t\t\t\t<String x:id="presetPath" text="{safe_pre}"/>\n'
+        f"\t\t\t\t\t</Attributes>"
+    )
+
+
+def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[str, bytes]:
+    """Load every real commercial VST3 plugin in isolated subprocesses and dump verified `.vstpreset` binaries.
+
+    Keys are exact archive paths (`Presets/Channels/.../*.vstpreset`). Values are complete Steinberg
+    `.vstpreset` binary payloads ready to embed directly into Studio One 5 `.song` archives!
+    """
+    pmap = get_plugin_map()
+    s1_specs = load_s1_plugin_specs()
     waves_shell = str(VST3_ROOT / "WaveShell1-VST3 14.12_x64.vst3")
-    pq_path = str(VST3_ROOT / "Persistent Q.vst3")
-    r2_path = str(VST3_ROOT / "R2.vst3")
+    presets: dict[str, bytes] = {}
 
     worker_script = (
         "import base64, json, sys\n"
         "from pedalboard import load_plugin\n"
-        "from mix_automation.dsp.vst3_adapter import set_vst3_param_strict\n"
+        "from mix_automation.dsp.vst3_adapter import (\n"
+        "    configure_clean_plate_r2, configure_early_room_phoenix, configure_persistent_q_5band,\n"
+        "    configure_slick_eq, configure_softube_saturation, configure_softube_vca,\n"
+        "    configure_uad_la2a, configure_uad_pultec, configure_waves_mv2, set_vst3_param_strict\n"
+        ")\n"
         "spec = json.loads(sys.argv[1])\n"
         "p = load_plugin(spec['path'], plugin_name=spec.get('plugin_name')) if spec.get('plugin_name') else load_plugin(spec['path'])\n"
-        "for k, v in spec['settings'].items():\n"
-        "    if k in p.parameters:\n"
-        "        set_vst3_param_strict(p, k, v)\n"
+        "fn = spec.get('helper')\n"
+        "kw = spec.get('kwargs', {})\n"
+        "if fn == 'pq': configure_persistent_q_5band(p, **kw)\n"
+        "elif fn == 'vca': configure_softube_vca(p, **kw)\n"
+        "elif fn == 'mv2': configure_waves_mv2(p, **kw)\n"
+        "elif fn == 'la2a': configure_uad_la2a(p, **kw)\n"
+        "elif fn == 'pultec': configure_uad_pultec(p, **kw)\n"
+        "elif fn == 'slick': configure_slick_eq(p, **kw)\n"
+        "elif fn == 'sat': configure_softube_saturation(p, **kw)\n"
+        "elif fn == 'phoenix': configure_early_room_phoenix(p, **kw)\n"
+        "elif fn == 'r2': configure_clean_plate_r2(p, **kw)\n"
+        "else:\n"
+        "    for k, v in kw.items():\n"
+        "        if k in p.parameters: set_vst3_param_strict(p, k, v)\n"
         "print('STATE_B64:' + base64.b64encode(p.raw_state).decode('ascii'))\n"
     )
 
-    def _dump_isolated(vst_path: str, plugin_name: str | None, settings: dict) -> bytes | None:
-        payload = json.dumps({"path": vst_path, "plugin_name": plugin_name, "settings": settings})
+    def _dump_preset(
+        spec_key: str,
+        vst_path: str,
+        plugin_name: str | None,
+        helper: str | None,
+        kwargs: dict,
+    ) -> bytes | None:
+        if not Path(vst_path).exists():
+            return None
+        payload = json.dumps({"path": vst_path, "plugin_name": plugin_name, "helper": helper, "kwargs": kwargs})
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", worker_script, payload],
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=12,
+                timeout=16,
             )
             for line in proc.stdout.splitlines():
                 if line.startswith("STATE_B64:"):
-                    return base64.b64decode(line[len("STATE_B64:") :])
+                    raw_comp = base64.b64decode(line[len("STATE_B64:") :])
+                    return create_vstpreset_bytes(s1_specs[spec_key].class_id, raw_comp)
         except Exception:
             return None
         return None
 
-    # 1. Persistent Q (Main Vocal 6-Band & Harmony Vocal Pocket EQ)
-    pq_main_settings = {
-        "band_1_enabled": True,
-        "band_1_type": "Highpass",
-        "band_1_frequency": float(np.clip(params.hpf_hz, 60.0, 180.0)),
-        "band_1_slope": 18.0,
-        "band_2_enabled": True,
-        "band_2_type": "Peaking",
-        "band_2_frequency": 225.0,
-        "band_2_gain": float(params.body_gain_db),
-        "band_2_q": 0.90,
-        "band_3_enabled": True,
-        "band_3_type": "Peaking",
-        "band_3_frequency": 560.0,
-        "band_3_gain": float(params.mud_cut_db),
-        "band_3_q": 1.25,
-        "band_4_enabled": True,
-        "band_4_type": "Peaking",
-        "band_4_frequency": 2900.0,
-        "band_4_gain": float(params.presence_gain_db),
-        "band_4_q": 0.80,
-        "band_5_enabled": True,
-        "band_5_type": "HighShelf",
-        "band_5_frequency": 10500.0,
-        "band_5_gain": float(params.air_shelf_db),
-        "band_5_q": 0.70,
-        "band_6_enabled": abs(params.core_mid_gain_db) > 0.05,
-        "band_6_type": "Peaking",
-        "band_6_frequency": 1250.0,
-        "band_6_gain": float(params.core_mid_gain_db),
-        "band_6_q": 1.10,
-    }
-    pq_main_raw = _dump_isolated(pq_path, None, pq_main_settings)
-    if pq_main_raw:
-        states["Presets/Channels/mainvocal/2 - Persistent Q.vstpreset"] = pq_main_raw
-
-    pq_harm_raw = _dump_isolated(
-        pq_path,
+    # --- 1. Main Vocal 1:1 Commercial VST3 Chain ---
+    pq_main = _dump_preset(
+        "persistent_q",
+        str(pmap["persistent_q"].loadable_path),
         None,
+        "pq",
         {
-            "band_1_enabled": True,
-            "band_1_type": "Highpass",
-            "band_1_frequency": 210.0,
-            "band_1_slope": 18.0,
-            "band_2_enabled": True,
-            "band_2_type": "Peaking",
-            "band_2_frequency": 520.0,
-            "band_2_gain": -2.2,
-            "band_3_enabled": True,
-            "band_3_type": "Peaking",
-            "band_3_frequency": 2700.0,
-            "band_3_gain": -3.2,
-            "band_4_enabled": True,
-            "band_4_type": "HighShelf",
-            "band_4_frequency": 9800.0,
-            "band_4_gain": float(max(0.0, params.air_shelf_db * 0.5)),
+            "hpf_hz": float(np.clip(params.hpf_hz, 60.0, 180.0)),
+            "body_db": float(params.body_gain_db),
+            "mud_db": float(params.mud_cut_db),
+            "presence_db": float(params.presence_gain_db),
+            "air_db": float(params.air_shelf_db),
+            "mid_dip_hz": 1250.0,
+            "mid_dip_db": float(params.core_mid_gain_db),
         },
     )
-    if pq_harm_raw:
-        states["Presets/Channels/harmvocal/2 - Persistent Q.vstpreset"] = pq_harm_raw
-        states["Presets/Channels/harmvocal2/2 - Persistent Q.vstpreset"] = pq_harm_raw
+    if pq_main:
+        presets["Presets/Channels/mainvocal/1 - Persistent Q.vstpreset"] = pq_main
 
-    # 2. Waves MV2, C1, L1, H-Delay, Doubler2 mapped from v3 calibrated GR parameters
-    mv2_low = round(float(np.clip(params.comp2_param if params.archetype_chain == "dense_rock_edm" else 6.0, 2.0, 16.0)), 1)
-    mv2_high = round(float(-mv2_low * 0.72), 1)
-    mv2_raw = _dump_isolated(
+    vca_main = _dump_preset(
+        "vca_compressor",
+        str(pmap["vca_compressor"].loadable_path),
+        None,
+        "vca",
+        {
+            "threshold_db": float(params.vca_threshold_db),
+            "ratio": 3.8 if params.archetype_chain == "dense_rock_edm" else 3.0,
+            "attack_norm": 1.75,
+            "release_norm": 0.72,
+            "sc_hpf_hz": 120.0,
+            "output_db": float(np.clip(params.vca_measured_gr_db, 0.0, 8.0)),
+            "dry_wet": 100.0,
+            "output_drive": 1.0,
+        },
+    )
+    if vca_main:
+        presets["Presets/Channels/mainvocal/2 - VCA Compressor.vstpreset"] = vca_main
+
+    if params.archetype_chain == "dense_rock_edm":
+        mv2_low = round(float(np.clip(params.comp2_param, 2.0, 16.5)), 1)
+        mv2_main = _dump_preset(
+            "mv2_mono",
+            waves_shell,
+            "MV2 Mono",
+            "mv2",
+            {"low_level": mv2_low, "high_level": round(-mv2_low * 0.72, 1), "output_gain": 0.0},
+        )
+        if mv2_main:
+            presets["Presets/Channels/mainvocal/3 - MV2 Mono.vstpreset"] = mv2_main
+    else:
+        la2a_main = _dump_preset(
+            "uad_la2a",
+            str(pmap["uad_la2a"].loadable_path),
+            None,
+            "la2a",
+            {"peak_reduct": float(np.clip(params.comp2_param, 18.0, 76.0)), "gain": 35.0},
+        )
+        if la2a_main:
+            presets["Presets/Channels/mainvocal/3 - UADx LA-2A Tube Compressor.vstpreset"] = la2a_main
+
+        if params.archetype_chain == "intimate_ballad_sparse":
+            slick = _dump_preset(
+                "slick_eq",
+                str(pmap["slick_eq"].loadable_path),
+                None,
+                "slick",
+                {"out_stage": "Silky", "drive_db": 4.5},
+            )
+            if slick:
+                presets["Presets/Channels/mainvocal/4 - TDR VOS SlickEQ.vstpreset"] = slick
+        else:
+            pultec = _dump_preset(
+                "uad_pultec",
+                str(pmap["uad_pultec_eqp1a"].loadable_path),
+                None,
+                "pultec",
+                {"lf_boost": 0.4, "hf_boost": 0.45, "hf_freq": "12 KCS"},
+            )
+            if pultec:
+                presets["Presets/Channels/mainvocal/4 - UADx Pultec EQP-1A EQ.vstpreset"] = pultec
+
+    # --- 2. Harmony Channels (`harmvocal` / `harmvocal2` pocket EQ & glue) ---
+    pq_harm = _dump_preset(
+        "persistent_q",
+        str(pmap["persistent_q"].loadable_path),
+        None,
+        "pq",
+        {
+            "hpf_hz": 210.0,
+            "body_db": 0.0,
+            "mud_db": -2.2,
+            "presence_db": -3.2,
+            "air_db": float(max(0.0, params.air_shelf_db * 0.5)),
+            "mud_hz": 520.0,
+            "presence_hz": 2700.0,
+            "air_hz": 9800.0,
+        },
+    )
+    if pq_harm:
+        presets["Presets/Channels/harmvocal/2 - Persistent Q.vstpreset"] = pq_harm
+        presets["Presets/Channels/harmvocal2/2 - Persistent Q.vstpreset"] = pq_harm
+
+    mv2_harm = _dump_preset(
+        "mv2_mono",
         waves_shell,
         "MV2 Mono",
-        {"low_level": mv2_low, "high_level": mv2_high, "output_gain": 0.0},
+        "mv2",
+        {"low_level": 7.5, "high_level": -5.4, "output_gain": 0.0},
     )
-    if mv2_raw:
-        states["Presets/Channels/mainvocal/1 - MV2 Mono.vstpreset"] = mv2_raw
-        states["Presets/Channels/harmvocal/1 - MV2 Mono.vstpreset"] = mv2_raw
-        states["Presets/Channels/harmvocal2/1 - MV2 Mono.vstpreset"] = mv2_raw
+    if mv2_harm:
+        presets["Presets/Channels/harmvocal/1 - MV2 Mono.vstpreset"] = mv2_harm
+        presets["Presets/Channels/harmvocal2/1 - MV2 Mono.vstpreset"] = mv2_harm
 
-    rel_ms = round(float(np.clip(60000.0 / max(bpm, 60.0) * 0.25, 50.0, 140.0)), 1)
-    c1_raw = _dump_isolated(
-        waves_shell,
-        "C1 comp Mono",
-        {
-            "threshold": round(float(np.clip(params.vca_threshold_db, -36.0, -10.0)), 1),
-            "ratio": 3.8 if params.archetype_chain == "dense_rock_edm" else 3.0,
-            "attack": 14.0,  # Preserves consonant attack punch!
-            "release": rel_ms,
-            "makeup": round(float(np.clip(params.vca_measured_gr_db, 0.5, 6.0)), 1),
-        },
-    )
-    if c1_raw:
-        states["Presets/Channels/mainvocal/3 - C1 comp Mono.vstpreset"] = c1_raw
-        states["Presets/Channels/harmvocal/3 - C1 comp Mono.vstpreset"] = c1_raw
-        states["Presets/Channels/harmvocal2/3 - C1 comp Mono.vstpreset"] = c1_raw
-
-    l1_raw = _dump_isolated(waves_shell, "L1 limiter Mono", {"threshold": -2.0, "ceiling": -0.3})
-    if l1_raw:
-        states["Presets/Channels/mainvocal/4 - L1 limiter Mono.vstpreset"] = l1_raw
-
-    hd_raw = _dump_isolated(
+    # --- 3. FX Channels: H-Delay, Doubler2, R2 Plate, PhoenixVerb Early Room, Parallel Saturation Knob ---
+    hd_pre = _dump_preset(
+        "h_delay",
         waves_shell,
         "H-Delay Stereo",
+        None,
         {
             "mix": 100.0,
             "bpm": float(np.clip(bpm, 40.0, 240.0)),
@@ -256,33 +443,79 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             "lopass": 4000.0,
         },
     )
-    if hd_raw:
-        states["Presets/Channels/H-Delay Stereo/1 - H-Delay Stereo.vstpreset"] = hd_raw
+    if hd_pre:
+        presets["Presets/Channels/H-Delay Stereo/1 - H-Delay Stereo.vstpreset"] = hd_pre
 
-    db2_raw = _dump_isolated(waves_shell, "Doubler2 Stereo", {"direct_onoff": False})
-    if db2_raw:
-        states["Presets/Channels/Doubler2 Stereo/1 - Doubler2 Stereo.vstpreset"] = db2_raw
+    db2_pre = _dump_preset("doubler2", waves_shell, "Doubler2 Stereo", None, {"direct_onoff": False})
+    if db2_pre:
+        presets["Presets/Channels/Doubler2 Stereo/1 - Doubler2 Stereo.vstpreset"] = db2_pre
 
-    # 3. Exponential Audio R2: Verified Chorus-Free Short Studio Plate
     r_time = 1.25 if params.archetype_chain == "intimate_ballad_sparse" else 0.92
     predly = round(float(np.clip(60000.0 / max(bpm, 60.0) / 16.0, 18.0, 38.0)), 1)
-    r2_raw = _dump_isolated(
-        r2_path,
+    r2_pre = _dump_preset(
+        "r2",
+        str(pmap["exponential_r2"].loadable_path),
         None,
+        "r2",
+        {"rvb_time": r_time, "predelay_ms": predly, "lpf_hz": 5750.0},
+    )
+    if r2_pre:
+        presets["Presets/Channels/R2/1 - R2.vstpreset"] = r2_pre
+
+    if pmap["phoenix_verb"].exists:
+        ph_pre = _dump_preset(
+            "phoenix_verb",
+            str(pmap["phoenix_verb"].loadable_path),
+            None,
+            "phoenix",
+            {"size_m": 8.0, "rvb_time": 0.42, "predelay_ms": 12.0},
+        )
+        if ph_pre:
+            presets["Presets/Channels/PhoenixVerb EarlyRoom/1 - PhoenixVerb.vstpreset"] = ph_pre
+
+    if pmap["saturation_knob"].exists:
+        sat_pre = _dump_preset(
+            "saturation_knob",
+            str(pmap["saturation_knob"].loadable_path),
+            None,
+            "sat",
+            {"amount": float(params.parallel_sat_amount), "sat_type": "KEEP LOW"},
+        )
+        if sat_pre:
+            presets["Presets/Channels/Saturation Knob Parallel/1 - Saturation Knob.vstpreset"] = sat_pre
+
+    # --- 4. Master Bus 1:1 Glue & True-Peak Limiting (`VCA Compressor` + `Wave Breaker`) ---
+    vca_master = _dump_preset(
+        "vca_compressor",
+        str(pmap["vca_compressor"].loadable_path),
+        None,
+        "vca",
         {
-            "mix": 100.0,
-            "revbtype": "Plate",
-            "rvb_time": r_time,
-            "predelay": predly,
-            "chordpth": 0.0,
-            "reverbfc": 5750.0,
-            "earlyffc": 5750.0,
+            "threshold_db": -16.0,
+            "ratio": 1.6,
+            "attack_norm": 2.30,
+            "release_norm": 0.70,
+            "sc_hpf_hz": 110.0,
+            "output_db": 1.0,
+            "dry_wet": 100.0,
+            "output_drive": 0.6,
         },
     )
-    if r2_raw:
-        states["Presets/Channels/R2/1 - R2.vstpreset"] = r2_raw
+    if vca_master:
+        presets["Presets/Channels/Main/1 - VCA Compressor.vstpreset"] = vca_master
 
-    return states
+    if pmap["wave_breaker"].exists:
+        wb_master = _dump_preset(
+            "wave_breaker",
+            str(pmap["wave_breaker"].loadable_path),
+            None,
+            None,
+            {"threshold_db": -0.8},
+        )
+        if wb_master:
+            presets["Presets/Channels/Main/2 - Wave Breaker.vstpreset"] = wb_master
+
+    return presets
 
 
 def build_studio_one_song(
@@ -300,11 +533,12 @@ def build_studio_one_song(
     chain_params: VocalChainParams | None = None,
     review_markers: list[ReviewMarker] | None = None,
 ) -> Path:
-    """Build a complete Studio One 5 `.song` file with beat-accurate clips, markers, and presets."""
+    """Build a complete Studio One 5 `.song` file with true 1:1 commercial VST3 chains, FX buses & markers."""
     output_song_dir.mkdir(parents=True, exist_ok=True)
     output_song_path = output_song_dir / f"{song_name}.song"
     patched_presets = patched_presets or {}
     review_markers = review_markers or []
+    s1_specs = load_s1_plugin_specs()
 
     sec_per_beat = 60.0 / max(bpm, 40.0)
     tempo_norm = (bpm - 10.0) / 390.0
@@ -316,6 +550,7 @@ def build_studio_one_song(
     song_xml_str = template_files["Song/song.xml"].decode("utf-8").replace("\r\n", "\n")
     pool_xml_str = template_files["Song/mediapool.xml"].decode("utf-8").replace("\r\n", "\n")
     mixer_xml_str = template_files["Devices/audiomixer.xml"].decode("utf-8").replace("\r\n", "\n")
+    console_xml_str = template_files.get("Devices/mixerconsole.xml", b"").decode("utf-8").replace("\r\n", "\n")
 
     now_str = datetime.now().strftime("%Y/%m/%d %H:%M:%S.000")
     clip_records: list[dict] = []
@@ -482,10 +717,12 @@ def build_studio_one_song(
 
     extra_media_tracks_xml: list[str] = []
     extra_mixer_channels_xml: list[str] = []
+    new_console_uids: list[str] = []
 
     for idx_e, (spec, rec) in enumerate(extra_clips, start=4):
         track_uid = _new_uid()
         chan_uid = _new_uid()
+        new_console_uids.append(chan_uid)
         spk_type = "Stereo" if spec.stereo else "Mono"
         mute_flag = "1" if spec.mute else "0"
         fader_lin = _db_to_s1_fader_gain(spec.gain_db)
@@ -520,13 +757,165 @@ def build_studio_one_song(
         )
 
     mixer_xml_out = mixer_xml_str
+
+    # --- Inject True 1:1 Commercial VST3 Chain into `mainvocal`, `メイン`, and FX Channels! ---
     if chain_params is not None:
+        # 1. Replace `mainvocal` Inserts block with the exact archetype-matched real VST3 plugins
+        main_fx_slots: list[str] = []
+        slot_specs: list[tuple[str, str]] = [
+            ("persistent_q", "Presets/Channels/mainvocal/1 - Persistent Q.vstpreset"),
+            ("vca_compressor", "Presets/Channels/mainvocal/2 - VCA Compressor.vstpreset"),
+        ]
+        if chain_params.archetype_chain == "dense_rock_edm":
+            slot_specs.append(("mv2_mono", "Presets/Channels/mainvocal/3 - MV2 Mono.vstpreset"))
+        else:
+            slot_specs.append(("uad_la2a", "Presets/Channels/mainvocal/3 - UADx LA-2A Tube Compressor.vstpreset"))
+            if chain_params.archetype_chain == "intimate_ballad_sparse":
+                slot_specs.append(("slick_eq", "Presets/Channels/mainvocal/4 - TDR VOS SlickEQ.vstpreset"))
+            else:
+                slot_specs.append(("uad_pultec", "Presets/Channels/mainvocal/4 - UADx Pultec EQP-1A EQ.vstpreset"))
+
+        for s_idx, (s_key, p_rel) in enumerate(slot_specs, start=1):
+            if p_rel in patched_presets:
+                main_fx_slots.append(_render_fx_slot_xml(s_idx, s1_specs[s_key], p_rel, stereo_channel=False))
+
+        if main_fx_slots:
+            new_main_inserts = (
+                '\t\t\t\t<Attributes x:id="Inserts">\n'
+                + "\n".join(main_fx_slots)
+                + '\n\t\t\t\t\t<Attributes x:id="Presets" pname="AutoMIX v4" dirty="0"/>\n'
+                + "\t\t\t\t</Attributes>"
+            )
+            m_start = mixer_xml_out.find('label="mainvocal"')
+            if m_start != -1:
+                ins_s = mixer_xml_out.find('\n\t\t\t\t<Attributes x:id="Inserts">', m_start)
+                ins_e = mixer_xml_out.find("\n\t\t\t\t</Attributes>\n", ins_s)
+                if ins_s != -1 and ins_e != -1:
+                    mixer_xml_out = (
+                        mixer_xml_out[: ins_s + 1]
+                        + new_main_inserts
+                        + mixer_xml_out[ins_e + len("\n\t\t\t\t</Attributes>") :]
+                    )
+
+        # 2. Inject Master Bus Glue (`VCA Compressor` + `Wave Breaker`) directly into `メイン` AudioOutputChannel!
+        master_slots: list[str] = []
+        if "Presets/Channels/Main/1 - VCA Compressor.vstpreset" in patched_presets:
+            master_slots.append(
+                _render_fx_slot_xml(1, s1_specs["vca_compressor"], "Presets/Channels/Main/1 - VCA Compressor.vstpreset", True)
+            )
+        if "Presets/Channels/Main/2 - Wave Breaker.vstpreset" in patched_presets:
+            master_slots.append(
+                _render_fx_slot_xml(2, s1_specs["wave_breaker"], "Presets/Channels/Main/2 - Wave Breaker.vstpreset", True)
+            )
+        if master_slots:
+            master_ins_target = (
+                '\t\t\t\t<Attributes x:id="Inserts">\n'
+                '\t\t\t\t\t<Attributes x:id="Presets" pname="デフォルト" dirty="0"/>\n'
+                '\t\t\t\t</Attributes>\n'
+                '\t\t\t\t<Attributes x:id="PostFaderInserts">'
+            )
+            master_ins_repl = (
+                '\t\t\t\t<Attributes x:id="Inserts">\n'
+                + "\n".join(master_slots)
+                + '\n\t\t\t\t\t<Attributes x:id="Presets" pname="Master Glue" dirty="0"/>\n'
+                '\t\t\t\t</Attributes>\n'
+                '\t\t\t\t<Attributes x:id="PostFaderInserts">'
+            )
+            mixer_xml_out = mixer_xml_out.replace(master_ins_target, master_ins_repl, 1)
+
+        # 3. Add Dedicated FX Channels: Parallel Saturation Knob (Channel04) & PhoenixVerb Early Room (Channel05)!
+        extra_fx_channels: list[str] = []
+        extra_sends_for_main: list[str] = []
+        fx_ch_num = 4
+        send_num = 4
+
+        if "Presets/Channels/Saturation Knob Parallel/1 - Saturation Knob.vstpreset" in patched_presets:
+            sat_uid = _new_uid()
+            new_console_uids.append(sat_uid)
+            sat_slot = _render_fx_slot_xml(
+                1,
+                s1_specs["saturation_knob"],
+                "Presets/Channels/Saturation Knob Parallel/1 - Saturation Knob.vstpreset",
+                True,
+            )
+            extra_fx_channels.append(
+                f'\t\t\t<AudioEffectChannel gain="1" pan="0.5" name="Channel{fx_ch_num:02d}" label="Saturation Parallel" '
+                f'mute="0" solo="0" soloSafe="1" color="FFD35400">\n'
+                f'\t\t\t\t<SpeakerSetup x:id="speakerType" type="Stereo"/>\n'
+                f'\t\t\t\t<UID x:id="uniqueID" uid="{sat_uid}"/>\n'
+                f'\t\t\t\t<Connection x:id="destination" objectID="{{636828DD-7358-4765-B2A2-106A2780EE51}}/Input" friendlyName="メイン"/>\n'
+                f'\t\t\t\t<Attributes x:id="Automation" mode="0"/>\n'
+                f'\t\t\t\t<Attributes x:id="Inserts">\n{sat_slot}\n'
+                f'\t\t\t\t\t<Attributes x:id="Presets" pname="デフォルト" dirty="0"/>\n'
+                f'\t\t\t\t</Attributes>\n'
+                f'\t\t\t\t<Attributes x:id="CueMix"><Attributes x:id="slots" version="1"/></Attributes>\n'
+                f'\t\t\t\t<Attributes x:id="InputFX" gain="0" invertPhaseL="0" invertPhaseR="0"/>\n'
+                f"\t\t\t</AudioEffectChannel>"
+            )
+            sat_send_lin = round(float(np.clip(chain_params.parallel_sat_wet_pct / 100.0, 0.04, 0.35)), 6)
+            extra_sends_for_main.append(
+                f'\t\t\t\t\t<Attributes name="Send{send_num:02d}" bypass="0" prefader="0" level="{sat_send_lin}" pan="0.5">\n'
+                f'\t\t\t\t\t\t<Connection x:id="destination" objectID="{sat_uid}/Input" friendlyName="Saturation Parallel"/>\n'
+                f"\t\t\t\t\t</Attributes>"
+            )
+            fx_ch_num += 1
+            send_num += 1
+
+        if "Presets/Channels/PhoenixVerb EarlyRoom/1 - PhoenixVerb.vstpreset" in patched_presets:
+            ph_uid = _new_uid()
+            new_console_uids.append(ph_uid)
+            ph_slot = _render_fx_slot_xml(
+                1,
+                s1_specs["phoenix_verb"],
+                "Presets/Channels/PhoenixVerb EarlyRoom/1 - PhoenixVerb.vstpreset",
+                True,
+            )
+            extra_fx_channels.append(
+                f'\t\t\t<AudioEffectChannel gain="1" pan="0.5" name="Channel{fx_ch_num:02d}" label="Phoenix EarlyRoom" '
+                f'mute="0" solo="0" soloSafe="1" color="FF2980B9">\n'
+                f'\t\t\t\t<SpeakerSetup x:id="speakerType" type="Stereo"/>\n'
+                f'\t\t\t\t<UID x:id="uniqueID" uid="{ph_uid}"/>\n'
+                f'\t\t\t\t<Connection x:id="destination" objectID="{{636828DD-7358-4765-B2A2-106A2780EE51}}/Input" friendlyName="メイン"/>\n'
+                f'\t\t\t\t<Attributes x:id="Automation" mode="0"/>\n'
+                f'\t\t\t\t<Attributes x:id="Inserts">\n{ph_slot}\n'
+                f'\t\t\t\t\t<Attributes x:id="Presets" pname="デフォルト" dirty="0"/>\n'
+                f'\t\t\t\t</Attributes>\n'
+                f'\t\t\t\t<Attributes x:id="CueMix"><Attributes x:id="slots" version="1"/></Attributes>\n'
+                f'\t\t\t\t<Attributes x:id="InputFX" gain="0" invertPhaseL="0" invertPhaseR="0"/>\n'
+                f"\t\t\t</AudioEffectChannel>"
+            )
+            er_send_lin = _db_to_s1_fader_gain(chain_params.early_room_send_db)
+            extra_sends_for_main.append(
+                f'\t\t\t\t\t<Attributes name="Send{send_num:02d}" bypass="0" prefader="0" level="{er_send_lin}" pan="0.5">\n'
+                f'\t\t\t\t\t\t<Connection x:id="destination" objectID="{ph_uid}/Input" friendlyName="Phoenix EarlyRoom"/>\n'
+                f"\t\t\t\t\t</Attributes>"
+            )
+
+        if extra_fx_channels:
+            mixer_xml_out = mixer_xml_out.replace(
+                "\t\t\t</AudioEffectChannel>\n\t\t</ChannelGroup>\n\t</Attributes>\n</AudioMixer>",
+                "\t\t\t</AudioEffectChannel>\n"
+                + "\n".join(extra_fx_channels)
+                + "\n\t\t</ChannelGroup>\n\t</Attributes>\n</AudioMixer>",
+            )
+
+        if extra_sends_for_main:
+            r2_send_anchor = (
+                '\t\t\t\t\t\t<Connection x:id="destination" objectID="{9E67D54D-94FA-4A21-8BFA-151F51BBA20D}/Input" friendlyName="R2"/>\n'
+                "\t\t\t\t\t</Attributes>"
+            )
+            mixer_xml_out = mixer_xml_out.replace(
+                r2_send_anchor,
+                r2_send_anchor + "\n" + "\n".join(extra_sends_for_main),
+                1,
+            )
+
+        # 4. Calibrate Faders, Wide Harmony Pans & Existing Send Levels
         main_lin = _db_to_s1_fader_gain(chain_params.vocal_fader_db)
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel01" label="mainvocal"',
             f'<AudioTrackChannel gain="{main_lin}" pan="0.5" name="Channel01" label="mainvocal"',
         )
-        # Pan user harmvocal / harmvocal2 wide L/R (0.18 / 0.82) at balanced -7.8 dB!
         h_lin = _db_to_s1_fader_gain(-7.8)
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel02" label="harmvocal"',
@@ -560,14 +949,25 @@ def build_studio_one_song(
             1,
         )
 
+    # Register all newly added channels in `Devices/mixerconsole.xml` ScreenBank so they appear immediately!
+    if console_xml_str and new_console_uids:
+        uid_lines = "\n".join(f'\t\t\t\t<UID uid="{u}"/>' for u in new_console_uids)
+        sb_anchor = '<ChannelShowHidePreset x:id="ScreenBank" name="" version="1">\n\t\t\t<List x:id="visible">'
+        if sb_anchor in console_xml_str:
+            console_xml_str = console_xml_str.replace(sb_anchor, sb_anchor + "\n" + uid_lines, 1)
+        template_files["Devices/mixerconsole.xml"] = console_xml_str.replace("\n", "\r\n").encode("utf-8")
+
     template_files["Song/mediapool.xml"] = pool_xml_out.replace("\n", "\r\n").encode("utf-8")
     template_files["Song/song.xml"] = song_xml_out.replace("\n", "\r\n").encode("utf-8")
     template_files["Devices/audiomixer.xml"] = mixer_xml_out.replace("\n", "\r\n").encode("utf-8")
 
-    for preset_rel_path, new_comp_bytes in patched_presets.items():
-        if preset_rel_path in template_files:
+    # Embed all verified Steinberg `.vstpreset` files (both newly injected 1:1 slots & updated template slots!)
+    for preset_rel_path, preset_bytes in patched_presets.items():
+        if len(preset_bytes) >= 48 and preset_bytes[:4] == b"VST3":
+            template_files[preset_rel_path] = preset_bytes
+        elif preset_rel_path in template_files:
             template_files[preset_rel_path] = patch_vstpreset_component_state(
-                template_files[preset_rel_path], new_comp_bytes
+                template_files[preset_rel_path], preset_bytes
             )
 
     with zipfile.ZipFile(output_song_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:

@@ -9,7 +9,9 @@ from pathlib import Path
 
 import numpy as np
 
+from mix_automation.analysis.reference_extractor import synthesize_acoustic_knn_target
 from mix_automation.analysis.relative_profile import (
+    classify_backing_archetype,
     compute_anchor_propagation,
     compute_section_relative_profile,
 )
@@ -20,12 +22,16 @@ from mix_automation.creative.fx_and_harmony import (
 from mix_automation.dsp.pitch_timing import ReviewMarker
 from mix_automation.dsp.vst3_optimizer import (
     SongSection,
+    VocalChainParams,
+    apply_dynamic_instrumental_unmasking,
     detect_song_sections,
     solve_differentiable_intrinsic_eq_gpu,
 )
 from mix_automation.io.audio_loader import consolidate_vocal_stem_folder
 from mix_automation.io.song_builder import (
+    DEFAULT_S1_PLUGIN_SPECS,
     build_studio_one_song,
+    create_vstpreset_bytes,
     patch_vstpreset_component_state,
     write_pcm24_wav,
 )
@@ -281,3 +287,166 @@ def test_gpu_differentiable_intrinsic_eq_warmstart() -> None:
     # Should cut excessive 560Hz mud and boost deficient 2.9kHz presence!
     assert eq["mud_cut_db"] < -1.0
     assert eq["presence_gain_db"] > 1.0
+
+
+def test_bark_adaptive_spectral_unmasking_preserves_side_and_carves_mid() -> None:
+    sr = 44100
+    t = np.linspace(0.0, 2.0, sr * 2, endpoint=False)
+    # Backing track has strong 2.2 kHz Mid signal colliding with vocal + distinct 1.1 kHz Side signal
+    mid_sig = (0.30 * np.sin(2 * np.pi * 2200 * t) + 0.25 * np.sin(2 * np.pi * 90 * t)).astype(np.float32)
+    side_sig = (0.18 * np.sin(2 * np.pi * 1100 * t)).astype(np.float32)
+    inst_st = np.stack([mid_sig + side_sig, mid_sig - side_sig], axis=0)
+    # Active vocal sings strongly at 2.2 kHz
+    voc = (0.28 * np.sin(2 * np.pi * 2200 * t)).astype(np.float32)
+
+    out_st = apply_dynamic_instrumental_unmasking(inst_st, voc, sr=sr, max_dip_db=3.0)
+    out_mid = 0.5 * (out_st[0] + out_st[1])
+    out_side = 0.5 * (out_st[0] - out_st[1])
+
+    # Side channel must remain 100% untouched!
+    assert np.allclose(out_side, side_sig, atol=1e-5)
+    # Mid 2.2 kHz collision band must be measurably carved while 90 Hz sub-bass stays untouched!
+    f, p_in = np.fft.rfftfreq(len(mid_sig), 1 / sr), np.abs(np.fft.rfft(mid_sig)) ** 2
+    p_out = np.abs(np.fft.rfft(out_mid)) ** 2
+    dip_2k2_db = 10.0 * np.log10((np.sum(p_out[(f > 2000) & (f < 2400)]) + 1e-12) / (np.sum(p_in[(f > 2000) & (f < 2400)]) + 1e-12))
+    dip_sub_db = 10.0 * np.log10((np.sum(p_out[(f > 70) & (f < 110)]) + 1e-12) / (np.sum(p_in[(f > 70) & (f < 110)]) + 1e-12))
+    assert dip_2k2_db < -1.0
+    assert abs(dip_sub_db) < 0.15
+
+
+def test_acoustic_knn_and_full_song_archetype_classification() -> None:
+    import json
+
+    profiles_path = Path(r"C:\MIX_automation\profiles\pro_target_profiles.json")
+    if not profiles_path.exists():
+        return
+    data = json.loads(profiles_path.read_text(encoding="utf-8"))
+    songs = data.get("songs", [])
+    if len(songs) < 10:
+        return
+
+    # Sparse ballad query vs dense rock query
+    ballad_arch = classify_backing_archetype(
+        inst_crest_db=11.0,
+        inst_band_levels_db={"core_presence": -30.0, "body_warmth": -24.0},
+        full_inst_mid_density_index=0.14,
+        backing_dynamic_range_db=7.5,
+        full_inst_crest_db=11.4,
+        chorus_inst_mid_density_index=0.25,
+    )
+    rock_arch = classify_backing_archetype(
+        inst_crest_db=9.0,
+        inst_band_levels_db={"core_presence": -24.0, "body_warmth": -24.0},
+        full_inst_mid_density_index=0.58,
+        backing_dynamic_range_db=2.2,
+        full_inst_crest_db=9.5,
+        chorus_inst_mid_density_index=0.68,
+    )
+    assert ballad_arch == "intimate_ballad_sparse"
+    assert rock_arch == "dense_rock_edm"
+
+    # Run k-NN synthesis on a real sparse ballad profile from the dataset
+    sample_prof = compute_section_relative_profile(
+        np.random.default_rng(1).standard_normal(44100).astype(np.float32) * 0.1,
+        np.random.default_rng(2).standard_normal((2, 44100)).astype(np.float32) * 0.1,
+        sr=44100,
+    )
+    sparse_desc = {"full_inst_mid_density_index": 0.15, "backing_dynamic_range_db": 7.8}
+    knn_prof, neighbors, v_shift = synthesize_acoustic_knn_target(
+        songs, sample_prof, sparse_desc, query_median_f0_hz=255.0, k=7
+    )
+    assert len(neighbors) >= 5
+    assert 0.0 <= v_shift <= 1.35
+    assert "knn_" in knn_prof.backing_archetype
+
+
+def test_studio_one_v4_true_1to1_vst3_injection(tmp_path: Path) -> None:
+    template_path = Path(r"C:\MIX_automation\data\templates\test20261124\test20261124.song")
+    if not template_path.exists():
+        return
+
+    sr = 44100
+    wav_path = tmp_path / "main.wav"
+    write_pcm24_wav(wav_path, np.zeros(sr * 10, dtype=np.float32), sr)
+
+    dummy_presets = {
+        "Presets/Channels/mainvocal/1 - Persistent Q.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["persistent_q"].class_id, b"PQ_STATE"
+        ),
+        "Presets/Channels/mainvocal/2 - VCA Compressor.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["vca_compressor"].class_id, b"VCA_STATE"
+        ),
+        "Presets/Channels/mainvocal/3 - UADx LA-2A Tube Compressor.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["uad_la2a"].class_id, b"LA2A_STATE"
+        ),
+        "Presets/Channels/mainvocal/4 - TDR VOS SlickEQ.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["slick_eq"].class_id, b"SLICK_STATE"
+        ),
+        "Presets/Channels/Saturation Knob Parallel/1 - Saturation Knob.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["saturation_knob"].class_id, b"SAT_STATE"
+        ),
+        "Presets/Channels/PhoenixVerb EarlyRoom/1 - PhoenixVerb.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["phoenix_verb"].class_id, b"PHX_STATE"
+        ),
+        "Presets/Channels/Main/1 - VCA Compressor.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["vca_compressor"].class_id, b"MVCA_STATE"
+        ),
+        "Presets/Channels/Main/2 - Wave Breaker.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["wave_breaker"].class_id, b"WB_STATE"
+        ),
+    }
+
+    params = VocalChainParams(
+        archetype_chain="intimate_ballad_sparse",
+        selected_plugins=["Persistent Q", "VCA Compressor", "UADx LA-2A", "TDR SlickEQ"],
+        hpf_hz=95.0,
+        body_gain_db=0.5,
+        mud_cut_db=-2.0,
+        core_mid_gain_db=-0.5,
+        presence_gain_db=1.5,
+        air_shelf_db=2.0,
+        vca_threshold_db=-24.0,
+        vca_measured_gr_db=2.5,
+        comp2_param=38.0,
+        comp2_measured_gr_db=1.5,
+        parallel_sat_amount=1.4,
+        parallel_sat_wet_pct=10.0,
+        vocal_fader_db=0.0,
+        early_room_send_db=-18.5,
+        slap_delay_send_db=-19.5,
+        tempo_delay_send_db=-21.0,
+        plate_reverb_send_db=-20.0,
+        doubler_send_db=-22.0,
+        unmask_mid_dip_db=1.2,
+    )
+
+    out_song = build_studio_one_song(
+        template_song_path=template_path,
+        output_song_dir=tmp_path,
+        song_name="True1to1Check",
+        bpm=96.0,
+        sr=sr,
+        main_vocal_wav=wav_path,
+        sections=[SongSection(0, "01_Chorus", 0.0, 10.0, True, -15.0, 0.0, None)],
+        extra_tracks=[],
+        patched_presets=dummy_presets,
+        chain_params=params,
+    )
+
+    with zipfile.ZipFile(out_song, "r") as zf:
+        names = set(zf.namelist())
+        mixer_xml = zf.read("Devices/audiomixer.xml").decode("utf-8")
+        console_xml = zf.read("Devices/mixerconsole.xml").decode("utf-8")
+
+    # Verify XML parses cleanly with zero syntax corruption!
+    ET.fromstring(mixer_xml.lstrip("\ufeff").replace("<AudioMixer>", '<AudioMixer xmlns:x="http://www.presonus.com/xml">', 1))
+    ET.fromstring(console_xml.lstrip("\ufeff").replace("<MixerConsole>", '<MixerConsole xmlns:x="http://www.presonus.com/xml">', 1))
+
+    assert "VCA Compressor" in mixer_xml
+    assert "UADx LA-2A Tube Compressor" in mixer_xml
+    assert "TDR VOS SlickEQ" in mixer_xml
+    assert "Saturation Parallel" in mixer_xml
+    assert "Phoenix EarlyRoom" in mixer_xml
+    assert "Wave Breaker" in mixer_xml
+    for p_rel in dummy_presets:
+        assert p_rel in names

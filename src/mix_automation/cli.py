@@ -106,7 +106,17 @@ def mix_song(
         "auto",
         "--style",
         "-s",
-        help="Target style: auto | consensus | azusagawa | toy | saburou | aokiyo | aoru | hoshirubesho | nanadakiima",
+        help="Target style: auto (44-song acoustic k-NN) | consensus | azusagawa | toy | saburou | aokiyo | aoru | hoshirubesho | nanadakiima | sou",
+    ),
+    taste: str | None = typer.Option(
+        None,
+        "--taste",
+        help="Optional preferred MIXer aesthetic to blend onto acoustic k-NN (e.g. azusagawa, sou, aoru, toy)",
+    ),
+    taste_weight: float = typer.Option(
+        0.35,
+        "--taste-weight",
+        help="Blend ratio (0.0-0.85) for --taste when specified",
     ),
     auto_pitch: bool = typer.Option(
         False,
@@ -117,7 +127,7 @@ def mix_song(
     profiles_json: Path = typer.Option(DEFAULT_PROFILES_JSON, "--profiles", "-p", help="Target profiles JSON"),
     output_root: Path = typer.Option(PROJECT_ROOT / "data" / "outputs", "--out-dir", "-o", help="Output directory"),
 ) -> None:
-    """Run full v2 automated vocal mixing (Stages ①-④) and generate Studio One 5 .song + Master WAV."""
+    """Run full v4 automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
     from mix_automation.pipeline import run_full_automix_for_song
 
     report = run_full_automix_for_song(
@@ -127,10 +137,12 @@ def mix_song(
         output_root=output_root,
         style=style,
         force_auto_pitch=auto_pitch,
+        taste_style=taste,
+        taste_weight=taste_weight if taste else 0.0,
     )
-    console.print("\n[bold green]v3 Auto-MIX Complete![/bold green]")
+    console.print("\n[bold green]v4 Auto-MIX Complete![/bold green]")
     console.print(f"  Archetype & Target   : [magenta]{report['optimized_chain_params']['archetype_chain']} -> {report['resolved_target_profile']}[/magenta]")
-    console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan]")
+    console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan] ({len(report.get('studio_one_injected_presets', []))} VST3 presets)")
     console.print(f"  Mastered 2mix WAV    : [cyan]{report['master_wav']}[/cyan]")
     console.print(f"  Processed Vocal Bus  : [cyan]{report['vocal_bus_wav']}[/cyan]\n")
 

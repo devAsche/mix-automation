@@ -134,12 +134,78 @@ def _apply_k_weighting_mono(x: np.ndarray, sr: int) -> np.ndarray:
         return signal.sosfilt(sos_hp, x)
 
 
-def classify_backing_archetype(inst_crest_db: float, inst_band_levels_db: dict[str, float]) -> str:
-    """Classify backing track into one of 3 production archetypes for plugin chain selection."""
+def compute_backing_full_descriptors(inst_stereo: np.ndarray, sr: int) -> dict[str, float]:
+    """Compute full-song backing track descriptors for accurate genre/density classification & k-NN matching."""
+    i_mono, _ = _to_mono_and_side(inst_stereo)
+    if len(i_mono) < sr:
+        return {
+            "full_inst_mid_density_index": 0.50,
+            "full_inst_crest_db": 10.0,
+            "backing_dynamic_range_db": 3.0,
+            "inst_spectral_flatness_midhi": 0.55,
+        }
+
+    # 1. Dynamic range across active 1.0s frames (p95 - p25 separates dynamic ballads from brickwalled rock)
+    step = sr
+    n_f = max(1, len(i_mono) // step)
+    frm_rms = np.sqrt(np.mean(i_mono[: n_f * step].reshape(n_f, step) ** 2, axis=1) + EPS)
+    frm_db = 20.0 * np.log10(frm_rms)
+    act = frm_db > (float(np.percentile(frm_db, 95)) - 35.0)
+    dyn_range = float(np.percentile(frm_db[act], 95) - np.percentile(frm_db[act], 25)) if np.sum(act) >= 4 else 2.5
+
+    # 2. Full-song crest factor
+    pk_db = float(_db(np.percentile(np.abs(i_mono), 99.5), is_power=False))
+    rms_db = float(_db(np.sqrt(np.mean(i_mono**2) + EPS), is_power=False))
+    full_crest = max(pk_db - rms_db, 0.0)
+
+    # 3. Welch spectrum for full-song mid/presence density & 1-8kHz spectral flatness
+    freqs, psd = signal.welch(i_mono, fs=sr, nperseg=min(4096, len(i_mono)))
+    zone_m = (freqs >= 180.0) & (freqs <= 6000.0)
+    pres_m = (freqs >= 1800.0) & (freqs < 4500.0)
+    hi_m = (freqs >= 1000.0) & (freqs <= 8000.0)
+
+    z_db = float(_db(np.sum(psd[zone_m]), is_power=True))
+    p_db = float(_db(np.sum(psd[pres_m]), is_power=True))
+    pres_rel = p_db - z_db
+    full_dens = float(np.clip((12.0 - full_crest) / 5.0 * 0.55 + (pres_rel + 12.0) / 10.0 * 0.45, 0.0, 1.0))
+
+    p_hi = psd[hi_m] + 1e-18
+    sfm_hi = float(np.exp(np.mean(np.log(p_hi))) / np.mean(p_hi)) if p_hi.size > 0 else 0.55
+
+    return {
+        "full_inst_mid_density_index": round(full_dens, 3),
+        "full_inst_crest_db": round(full_crest, 2),
+        "backing_dynamic_range_db": round(dyn_range, 2),
+        "inst_spectral_flatness_midhi": round(sfm_hi, 4),
+    }
+
+
+def classify_backing_archetype(
+    inst_crest_db: float,
+    inst_band_levels_db: dict[str, float],
+    full_inst_mid_density_index: float | None = None,
+    backing_dynamic_range_db: float | None = None,
+    full_inst_crest_db: float | None = None,
+    chorus_inst_mid_density_index: float | None = None,
+) -> str:
+    """Classify backing track into 3 validated production archetypes using chorus + full-song structure."""
+    if full_inst_mid_density_index is not None:
+        ch_dens = chorus_inst_mid_density_index if chorus_inst_mid_density_index is not None else full_inst_mid_density_index
+        dyn_r = backing_dynamic_range_db if backing_dynamic_range_db is not None else 3.0
+        f_crest = full_inst_crest_db if full_inst_crest_db is not None else inst_crest_db
+        eff_dens = 0.55 * full_inst_mid_density_index + 0.45 * ch_dens
+
+        if eff_dens <= 0.30 or (full_inst_mid_density_index <= 0.37 and dyn_r >= 4.9 and f_crest >= 10.4):
+            return "intimate_ballad_sparse"
+        if eff_dens <= 0.485:
+            return "groovy_mid_pop"
+        return "dense_rock_edm"
+
+    # Legacy single-section fallback (when full-song backing audio is unavailable)
     mid_hi_density = inst_band_levels_db["core_presence"] - inst_band_levels_db["body_warmth"]
-    if inst_crest_db >= 11.4 and mid_hi_density < -3.2:
+    if inst_crest_db >= 11.0 and mid_hi_density < -2.8:
         return "intimate_ballad_sparse"
-    if inst_crest_db <= 10.2 or mid_hi_density > -2.4:
+    if inst_crest_db <= 9.8 or mid_hi_density > -2.0:
         return "dense_rock_edm"
     return "groovy_mid_pop"
 

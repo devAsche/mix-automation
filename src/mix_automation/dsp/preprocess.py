@@ -280,14 +280,14 @@ def run_self_calibrating_deess_and_soothe2(
             deess = load_plugin(str(pmap["rx10_deess"].loadable_path))
             st_probe = np.stack([probe, probe], axis=0).astype(np.float32)
 
-            # 5-step 1D bisection over relative threshold [-12.0 .. 0.0] to hit ~2.4 dB GR ONLY on sibilants!
-            lo_t, hi_t = -12.0, -0.2
-            best_t = -3.0
+            # 6-step 1D bisection over relative threshold [-20.0 .. -0.2] to hit ~2.4 dB GR ONLY on sibilants!
+            lo_t, hi_t = -20.0, -0.2
+            best_t = -4.0
             best_err = 999.0
             best_gr = 0.0
             best_atk = 0.0
 
-            for _ in range(5):
+            for _ in range(6):
                 mid_t = 0.5 * (lo_t + hi_t)
                 configure_rx10_spectral_deess(deess, threshold_db=mid_t, cutoff_hz=cfg.deess_cutoff_hz)
                 y_p = np.mean(deess(st_probe, sr, reset=True), axis=0)
