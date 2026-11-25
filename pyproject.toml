@@ -1,6 +1,6 @@
 [project]
 name = "mix-automation"
-version = "0.6.0"
+version = "0.7.0"
 description = "Reference-grade automated vocal mixing engine tailored for Studio One 5 & commercial VST3 chains"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -18,6 +18,8 @@ dependencies = [
     "pydantic>=2.9.0",
     "typer>=0.12.5",
     "rich>=13.9.0",
+    "pykakasi>=2.3.0",
+    "mido>=1.3.2",
 ]
 
 [project.optional-dependencies]

@@ -21,6 +21,8 @@ data/references/*
 data/templates/*
 data/outputs/*
 !data/**/README.md
+youtube_references/*
+!youtube_references/README.md
 workspace/
 *.wav
 *.mp3
