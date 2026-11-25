@@ -20,15 +20,19 @@ from scipy import signal
 from mix_automation.config.plugin_registry import get_plugin_map
 from mix_automation.dsp.vst3_adapter import (
     configure_clean_plate_r2,
+    configure_khs_dual_delay_spot,
+    configure_mautopitch_hard_tune,
     configure_persistent_q_5band,
     configure_persistent_q_precision,
     configure_rx10_spectral_deess,
     configure_softube_saturation,
     configure_softube_vca,
     configure_soothe2_precision,
+    configure_trash2_vocal_grit,
     configure_uad_la2a,
     configure_vocalsynth2_radio,
 )
+from mix_automation.io.song_builder import export_stage3_fx_vst3_states
 
 
 def _band_db(y: np.ndarray, sr: int, lo: float, hi: float) -> float:
@@ -182,3 +186,46 @@ def test_v6_persistent_q_16band_dynamic_spectral_and_soothe2_and_vocalsynth2() -
         configure_vocalsynth2_radio(vs, freq_hz=1650.0, drive=3.8, distort_mix=42.0)
         y_vs = vs(st, sr, reset=True)
         assert float(np.sqrt(np.mean(y_vs**2))) > 0.02, "VocalSynth 2 radio chain output silence!"
+
+
+def test_v7_mautopitch_khs_delay_trash2_and_stage3_vstpresets_zero_juce_leak() -> None:
+    pm = get_plugin_map()
+    sr = 44100
+    t = np.linspace(0.0, 2.0, sr * 2, endpoint=False)
+
+    if pm["mautopitch"].exists:
+        mp = load_plugin(str(pm["mautopitch"].loadable_path))
+        c_major = [True, False, True, False, True, True, False, True, False, True, False, True]
+        configure_mautopitch_hard_tune(mp, scale_mask=c_major, speed=95.0, depth=100.0)
+        v_tune = (0.25 * np.sin(2.0 * np.pi * 272.0 * t)).astype(np.float32)
+        y_mp = mp(np.stack([v_tune, v_tune], axis=0), sr, reset=True)
+        assert float(np.sqrt(np.mean(y_mp**2))) > 0.02, "MAutoPitch hard-tune output silence!"
+
+    if pm["khs_dual_delay"].exists:
+        dly = load_plugin(str(pm["khs_dual_delay"].loadable_path))
+        configure_khs_dual_delay_spot(dly, delay_ms=250.0, feedback=40.0, spread=80.0, duck=15.0, mix_pct=100.0)
+        burst = np.zeros(sr * 2, dtype=np.float32)
+        burst[: int(0.18 * sr)] = (0.35 * np.sin(2.0 * np.pi * 440.0 * t[: int(0.18 * sr)])).astype(np.float32)
+        y_dly = dly(np.stack([burst, burst], axis=0), sr, reset=True)
+        tail_rms = float(np.sqrt(np.mean(y_dly[:, int(0.24 * sr) : int(0.80 * sr)] ** 2)))
+        assert tail_rms > 0.01, f"kHs Dual Delay produced no echo tail (rms={tail_rms:.5f})"
+
+    if pm["izotope_trash2"].exists:
+        t2 = load_plugin(str(pm["izotope_trash2"].loadable_path))
+        configure_trash2_vocal_grit(t2, drive=4.2, style=0.5, wet_mix=60.0, low_cut_hz=380.0, high_cut_hz=4200.0)
+        sine_in = (0.28 * np.sin(2.0 * np.pi * 600.0 * t)).astype(np.float32)
+        y_t2 = np.mean(t2(np.stack([sine_in, sine_in], axis=0), sr, reset=True), axis=0)
+        assert float(np.sqrt(np.mean(y_t2**2))) > 0.02, "iZotope Trash 2 output silence!"
+        harm_delta = _band_db(y_t2, sr, 1100.0, 2500.0) - _band_db(sine_in, sr, 1100.0, 2500.0)
+        assert harm_delta > 10.0, f"iZotope Trash 2 added insufficient harmonics ({harm_delta:.2f} dB)"
+
+    fx_presets = export_stage3_fx_vst3_states(
+        {"radio_voice", "hard_autotune", "distortion_grit", "spot_delay_throw"},
+        bpm=128.0,
+        scale_mask=[True] * 12,
+    )
+    assert len(fx_presets) > 0
+    for rel_path, raw_bytes in fx_presets.items():
+        assert raw_bytes[:4] == b"VST3", f"{rel_path} is not a Steinberg .vstpreset"
+        assert b"List" in raw_bytes, f"{rel_path} missing Steinberg List header"
+        assert b"<VST3PluginState>" not in raw_bytes, f"JUCE leak found in {rel_path}!"

@@ -22,6 +22,7 @@ Exports EVERY v6 ultra-precision DSP module 1:1 into Studio One 5 via decoded na
 from __future__ import annotations
 
 import base64
+import html
 import json
 import os
 import re
@@ -58,6 +59,7 @@ class TrackMediaSpec:
     gain_db: float = 0.0
     mute: bool = False
     pan: float = 0.5
+    insert_slots: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,15 +82,23 @@ DEFAULT_S1_PLUGIN_SPECS: dict[str, S1PluginClassSpec] = {
     "mv2_mono": S1PluginClassSpec("MV2 Mono", "{5653544D-5632-4D6D-7632-206D6F6E6F00}", "VST3/Dynamics", False),
     "uad_la2a": S1PluginClassSpec("UADx LA-2A Tube Compressor", "{ABCDEF01-9182-FAEB-5541-44785533444A}", "VST3/Dynamics", True),
     "uad_pultec": S1PluginClassSpec("UADx Pultec EQP-1A EQ", "{ABCDEF01-9182-FAEB-5541-44785533414E}", "VST3/EQ", True),
+    "uad_pultec_meq5": S1PluginClassSpec("UADx Pultec MEQ-5 EQ", "{ABCDEF01-9182-FAEB-5541-447855334152}", "VST3/EQ", True),
     "slick_eq": S1PluginClassSpec("TDR VOS SlickEQ", "{56535454-6431-3074-6472-20766F732073}", "VST3/EQ", True),
     "soothe2": S1PluginClassSpec("soothe2", "{ABCDEF01-9182-FAEB-4F65-6B5353746842}", "VST3/Dynamics", True),
+    "initial_dynamic_eq": S1PluginClassSpec("Initial Dynamic EQ", "{ABCDEF01-9182-FAEB-4961-756464596E33}", "VST3", True),
     "vocalsynth2": S1PluginClassSpec("VocalSynth 2", "{56535456-7853-3256-6F63-616C53796E74}", "VST3/Mixing", True),
+    "mautopitch": S1PluginClassSpec("MAutoPitch", "{4D656C64-6170-726F-4D61-75544D617554}", "VST3/Pitch & Time", True),
+    "izotope_trash2": S1PluginClassSpec("iZotope Trash 2", "{5653545A-6E54-3269-5A6F-746F70652054}", "VST3/Distortion", True),
     "saturation_knob": S1PluginClassSpec("Saturation Knob", "{F73F44A6-96F4-40AF-B187-1EAFA5E2AF01}", "VST3/Distortion", True),
     "phoenix_verb": S1PluginClassSpec("PhoenixVerb", "{5653544D-4373-7270-686F-656E69787665}", "VST3/Reverb", True),
+    "rev_plate_140": S1PluginClassSpec("Rev PLATE-140", "{41727475-4156-4953-5265-506C50726F63}", "VST3/Reverb", True),
     "r2": S1PluginClassSpec("R2", "{5653544D-4373-3272-3200-000000000000}", "VST3/Reverb", True),
+    "ozone9_elements": S1PluginClassSpec("Ozone 9 Elements", "{5653545A-6E45-394F-7A6F-6E6520392045}", "VST3/Mastering", True),
     "wave_breaker": S1PluginClassSpec("Wave Breaker", "{F2AEE70D-00DE-4F4E-5050-6C7950507762}", "VST3/Dynamics", True),
     "h_delay": S1PluginClassSpec("H-Delay Stereo", "{56535448-4244-5368-2D64-656C61792073}", "VST3/Delay", True),
+    "khs_dual_delay": S1PluginClassSpec("kHs Dual Delay", "{00ED3532-00A9-4557-0028-037A00175A0E}", "VST3/Spatial", True),
     "doubler2": S1PluginClassSpec("Doubler2 Stereo", "{56535457-4432-5364-6F75-626C65723220}", "VST3/Modulation", True),
+    "vocal_doubler": S1PluginClassSpec("Vocal Doubler", "{56535449-5A56-4456-6F63-616C20446F75}", "VST3/Modulation", True),
 }
 
 
@@ -143,7 +153,8 @@ def load_s1_plugin_specs() -> dict[str, S1PluginClassSpec]:
         for m in re.finditer(r"<ClassDescription\s+([^>]+)>", txt, re.S):
             attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
             if "VST3" in attrs.get("subCategory", "") and attrs.get("classID"):
-                by_name[attrs.get("name", "").lower()] = (attrs["classID"], attrs["subCategory"])
+                p_name = html.unescape(attrs.get("name", "")).lower()
+                by_name[p_name] = (html.unescape(attrs["classID"]), html.unescape(attrs["subCategory"]))
 
         for key, spec in list(specs.items()):
             hit = by_name.get(spec.name.lower())
@@ -333,57 +344,88 @@ def _replace_channel_inserts(mixer_xml: str, channel_label: str, slots_xml: list
     return mixer_xml[: ins_s + 1] + new_block + mixer_xml[ins_e + len("\n\t\t\t\t</Attributes>") :]
 
 
+_VST3_DUMP_WORKER_SCRIPT = (
+    "import base64, json, sys\n"
+    "from pedalboard import load_plugin\n"
+    "from mix_automation.dsp.vst3_adapter import (\n"
+    "    configure_clean_plate_r2, configure_early_room_phoenix,\n"
+    "    configure_persistent_q_5band, configure_persistent_q_harmony_hollow,\n"
+    "    configure_persistent_q_precision, configure_slick_eq,\n"
+    "    configure_softube_saturation, configure_softube_vca,\n"
+    "    configure_soothe2_precision, configure_uad_la2a, configure_uad_pultec,\n"
+    "    configure_vocalsynth2_radio, set_vst3_param_strict\n"
+    ")\n"
+    "spec = json.loads(sys.argv[1])\n"
+    "p = load_plugin(spec['path'], plugin_name=spec.get('plugin_name')) if spec.get('plugin_name') else load_plugin(spec['path'])\n"
+    "fn = spec.get('helper')\n"
+    "kw = spec.get('kwargs', {})\n"
+    "if fn == 'pq_prec':\n"
+    "    kw['surgical_notches'] = [tuple(x) for x in kw.get('surgical_notches', [])]\n"
+    "    configure_persistent_q_precision(p, **kw)\n"
+    "elif fn == 'pq_harm': configure_persistent_q_harmony_hollow(p, **kw)\n"
+    "elif fn == 'pq_bp':\n"
+    "    set_vst3_param_strict(p, 'bypass', False)\n"
+    "    set_vst3_param_strict(p, 'mix', 100.0)\n"
+    "    set_vst3_param_strict(p, 'band_1_enabled', True)\n"
+    "    set_vst3_param_strict(p, 'band_1_type', 'Highpass')\n"
+    "    set_vst3_param_strict(p, 'band_1_frequency', 240.0)\n"
+    "    set_vst3_param_strict(p, 'band_1_slope', 18.0)\n"
+    "    set_vst3_param_strict(p, 'band_2_enabled', True)\n"
+    "    set_vst3_param_strict(p, 'band_2_type', 'Lowpass')\n"
+    "    set_vst3_param_strict(p, 'band_2_frequency', 4000.0)\n"
+    "    set_vst3_param_strict(p, 'band_2_slope', 18.0)\n"
+    "elif fn == 'pq': configure_persistent_q_5band(p, **kw)\n"
+    "elif fn == 'vca': configure_softube_vca(p, **kw)\n"
+    "elif fn == 'la2a': configure_uad_la2a(p, **kw)\n"
+    "elif fn == 'pultec': configure_uad_pultec(p, **kw)\n"
+    "elif fn == 'slick': configure_slick_eq(p, **kw)\n"
+    "elif fn == 'soothe2': configure_soothe2_precision(p, **kw)\n"
+    "elif fn == 'sat': configure_softube_saturation(p, **kw)\n"
+    "elif fn == 'phoenix': configure_early_room_phoenix(p, **kw)\n"
+    "elif fn == 'r2': configure_clean_plate_r2(p, **kw)\n"
+    "elif fn == 'vs2_radio': configure_vocalsynth2_radio(p, **kw)\n"
+    "else:\n"
+    "    for k, v in kw.items():\n"
+    "        if k in p.parameters: set_vst3_param_strict(p, k, v)\n"
+    "print('STATE_B64:' + base64.b64encode(p.raw_state).decode('ascii'))\n"
+)
+
+
+def _dump_vst3_preset(
+    s1_spec: S1PluginClassSpec,
+    vst_path: str,
+    plugin_name: str | None,
+    helper: str | None,
+    kwargs: dict,
+) -> bytes | None:
+    """Load a VST3 plugin in an isolated subprocess and unwrap its state into a native `.vstpreset`."""
+    if not Path(vst_path).exists():
+        return None
+    payload = json.dumps({"path": vst_path, "plugin_name": plugin_name, "helper": helper, "kwargs": kwargs})
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _VST3_DUMP_WORKER_SCRIPT, payload],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+        for line in proc.stdout.splitlines():
+            if line.startswith("STATE_B64:"):
+                juce_blob = base64.b64decode(line[len("STATE_B64:") :])
+                comp_bytes, cont_bytes = extract_steinberg_comp_and_cont(juce_blob)
+                return create_vstpreset_bytes(s1_spec.class_id, comp_bytes, cont_bytes)
+    except Exception:
+        return None
+    return None
+
+
 def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[str, bytes]:
     """Load every real commercial VST3 plugin in isolated subprocesses and synthesize native Steinberg `.vstpreset`s."""
     pmap = get_plugin_map()
     s1_specs = load_s1_plugin_specs()
     waves_shell = str(VST3_ROOT / "WaveShell1-VST3 14.12_x64.vst3")
     presets: dict[str, bytes] = {}
-
-    worker_script = (
-        "import base64, json, sys\n"
-        "from pedalboard import load_plugin\n"
-        "from mix_automation.dsp.vst3_adapter import (\n"
-        "    configure_clean_plate_r2, configure_early_room_phoenix,\n"
-        "    configure_persistent_q_5band, configure_persistent_q_harmony_hollow,\n"
-        "    configure_persistent_q_precision, configure_slick_eq,\n"
-        "    configure_softube_saturation, configure_softube_vca,\n"
-        "    configure_soothe2_precision, configure_uad_la2a, configure_uad_pultec,\n"
-        "    set_vst3_param_strict\n"
-        ")\n"
-        "spec = json.loads(sys.argv[1])\n"
-        "p = load_plugin(spec['path'], plugin_name=spec.get('plugin_name')) if spec.get('plugin_name') else load_plugin(spec['path'])\n"
-        "fn = spec.get('helper')\n"
-        "kw = spec.get('kwargs', {})\n"
-        "if fn == 'pq_prec':\n"
-        "    kw['surgical_notches'] = [tuple(x) for x in kw.get('surgical_notches', [])]\n"
-        "    configure_persistent_q_precision(p, **kw)\n"
-        "elif fn == 'pq_harm': configure_persistent_q_harmony_hollow(p, **kw)\n"
-        "elif fn == 'pq_bp':\n"
-        "    set_vst3_param_strict(p, 'bypass', False)\n"
-        "    set_vst3_param_strict(p, 'mix', 100.0)\n"
-        "    set_vst3_param_strict(p, 'band_1_enabled', True)\n"
-        "    set_vst3_param_strict(p, 'band_1_type', 'Highpass')\n"
-        "    set_vst3_param_strict(p, 'band_1_frequency', 240.0)\n"
-        "    set_vst3_param_strict(p, 'band_1_slope', 18.0)\n"
-        "    set_vst3_param_strict(p, 'band_2_enabled', True)\n"
-        "    set_vst3_param_strict(p, 'band_2_type', 'Lowpass')\n"
-        "    set_vst3_param_strict(p, 'band_2_frequency', 4000.0)\n"
-        "    set_vst3_param_strict(p, 'band_2_slope', 18.0)\n"
-        "elif fn == 'pq': configure_persistent_q_5band(p, **kw)\n"
-        "elif fn == 'vca': configure_softube_vca(p, **kw)\n"
-        "elif fn == 'la2a': configure_uad_la2a(p, **kw)\n"
-        "elif fn == 'pultec': configure_uad_pultec(p, **kw)\n"
-        "elif fn == 'slick': configure_slick_eq(p, **kw)\n"
-        "elif fn == 'soothe2': configure_soothe2_precision(p, **kw)\n"
-        "elif fn == 'sat': configure_softube_saturation(p, **kw)\n"
-        "elif fn == 'phoenix': configure_early_room_phoenix(p, **kw)\n"
-        "elif fn == 'r2': configure_clean_plate_r2(p, **kw)\n"
-        "else:\n"
-        "    for k, v in kw.items():\n"
-        "        if k in p.parameters: set_vst3_param_strict(p, k, v)\n"
-        "print('STATE_B64:' + base64.b64encode(p.raw_state).decode('ascii'))\n"
-    )
 
     def _dump_preset(
         spec_key: str,
@@ -392,25 +434,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         helper: str | None,
         kwargs: dict,
     ) -> bytes | None:
-        if not Path(vst_path).exists():
-            return None
-        payload = json.dumps({"path": vst_path, "plugin_name": plugin_name, "helper": helper, "kwargs": kwargs})
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-c", worker_script, payload],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=22,
-            )
-            for line in proc.stdout.splitlines():
-                if line.startswith("STATE_B64:"):
-                    juce_blob = base64.b64decode(line[len("STATE_B64:") :])
-                    comp_bytes, cont_bytes = extract_steinberg_comp_and_cont(juce_blob)
-                    return create_vstpreset_bytes(s1_specs[spec_key].class_id, comp_bytes, cont_bytes)
-        except Exception:
-            return None
-        return None
+        return _dump_vst3_preset(s1_specs[spec_key], vst_path, plugin_name, helper, kwargs)
 
     # --- 1. Main Vocal True 1:1 v6 Ultra-Precision VST3 Chain ---
     pq_main = _dump_preset(
@@ -629,6 +653,99 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
     return presets
 
 
+def export_stage3_fx_vst3_states(
+    active_fx_types: set[str],
+    bpm: float = 120.0,
+    scale_mask: list[bool] | None = None,
+) -> dict[str, bytes]:
+    """Export native Steinberg `.vstpreset` binaries for active Stage 3 spot-FX tracks."""
+    active = {str(x).strip().lower() for x in active_fx_types}
+    if not active:
+        return {}
+
+    pmap = get_plugin_map()
+    s1_specs = load_s1_plugin_specs()
+    presets: dict[str, bytes] = {}
+
+    if "radio_voice" in active and pmap["izotope_vocalsynth2"].exists:
+        vs_pre = _dump_vst3_preset(
+            s1_specs["vocalsynth2"],
+            str(pmap["izotope_vocalsynth2"].loadable_path),
+            None,
+            "vs2_radio",
+            {"freq_hz": 1650.0, "drive": 3.8, "distort_mix": 42.0},
+        )
+        if vs_pre:
+            presets["Presets/Channels/fx_radio_vocalsynth2/1 - VocalSynth 2.vstpreset"] = vs_pre
+
+    if "hard_autotune" in active and pmap["mautopitch"].exists:
+        mp_kw: dict[str, object] = {}
+        if scale_mask is not None and len(scale_mask) >= 12:
+            note_keys = ("c", "c_sharp", "d", "d_sharp", "e", "f", "f_sharp", "g", "g_sharp", "a", "a_sharp", "b")
+            for idx_n, nk in enumerate(note_keys):
+                mp_kw[nk] = bool(scale_mask[idx_n])
+        mp_kw.update(
+            {
+                "depth_automatic_tuning": 100.0,
+                "speed_automatic_tuning": 95.0,
+                "keep_formants_effects": 100.0,
+                "dry_wet_effects": "100% wet, 0% dry",
+            }
+        )
+        mp_pre = _dump_vst3_preset(
+            s1_specs["mautopitch"],
+            str(pmap["mautopitch"].loadable_path),
+            None,
+            None,
+            mp_kw,
+        )
+        if mp_pre:
+            presets["Presets/Channels/fx_autotune_mautopitch/1 - MAutoPitch.vstpreset"] = mp_pre
+
+    if "distortion_grit" in active and pmap["izotope_trash2"].exists:
+        t2_pre = _dump_vst3_preset(
+            s1_specs["izotope_trash2"],
+            str(pmap["izotope_trash2"].loadable_path),
+            None,
+            None,
+            {
+                "global_bypass": False,
+                "trash_module_bypass": False,
+                "trash_bypass": False,
+                "trash_stg1_enable": True,
+                "trash_stg1_drive": 3.6,
+                "trash_stg1_filter_enable": True,
+                "trash_stg1_filter_low_freq": 380.0,
+                "trash_stg1_filter_high_freq": 4200.0,
+                "global_mix": 55.0,
+            },
+        )
+        if t2_pre:
+            presets["Presets/Channels/fx_distortion_trash2/1 - iZotope Trash 2.vstpreset"] = t2_pre
+
+    if "spot_delay_throw" in active and pmap["khs_dual_delay"].exists:
+        khs_pre = _dump_vst3_preset(
+            s1_specs["khs_dual_delay"],
+            str(pmap["khs_dual_delay"].loadable_path),
+            None,
+            None,
+            {
+                "bypass": False,
+                "feedback": 36.0,
+                "spread": 75.0,
+                "duck": 25.0,
+                "mix": 100.0,
+                "sync_mode": "sync",
+                "delay_time_steps": 1.0,
+                "delay_denominator": "8",
+            },
+        )
+        if khs_pre:
+            presets["Presets/Channels/fx_spot_delay/1 - kHs Dual Delay.vstpreset"] = khs_pre
+
+    return presets
+
+
 def build_studio_one_song(
     template_song_path: Path,
     output_song_dir: Path,
@@ -644,6 +761,8 @@ def build_studio_one_song(
     chain_params: VocalChainParams | None = None,
     review_markers: list[ReviewMarker] | None = None,
     harmony_fader_db: float = -8.6,
+    fine_main_events: list[tuple[float, float, float, str]] | None = None,
+    tempo_segments: list[tuple[float, float]] | None = None,
 ) -> Path:
     """Build a complete Studio One 5 `.song` file with native Steinberg `.vstpreset`s & v6 exact console parity."""
     output_song_dir.mkdir(parents=True, exist_ok=True)
@@ -652,8 +771,37 @@ def build_studio_one_song(
     review_markers = review_markers or []
     s1_specs = load_s1_plugin_specs()
 
-    sec_per_beat = 60.0 / max(bpm, 40.0)
-    tempo_norm = (bpm - 10.0) / 390.0
+    norm_tempo_segs: list[tuple[float, float]] = []
+    if tempo_segments:
+        sorted_segs = sorted((max(0.0, float(b)), max(40.0, float(tb))) for b, tb in tempo_segments)
+        if sorted_segs[0][0] > 1e-6:
+            norm_tempo_segs.append((0.0, max(float(bpm), 40.0)))
+        for b_pos, seg_bpm in sorted_segs:
+            if norm_tempo_segs and abs(b_pos - norm_tempo_segs[-1][0]) <= 1e-6:
+                norm_tempo_segs[-1] = (norm_tempo_segs[-1][0], seg_bpm)
+            else:
+                norm_tempo_segs.append((b_pos, seg_bpm))
+    if not norm_tempo_segs:
+        norm_tempo_segs = [(0.0, max(float(bpm), 40.0))]
+
+    init_bpm = norm_tempo_segs[0][1]
+    sec_per_beat = 60.0 / init_bpm
+
+    def _sec_to_beat(t_sec: float) -> float:
+        if t_sec <= 0.0:
+            return 0.0
+        rem = float(t_sec)
+        for idx_seg, (b0, seg_bpm) in enumerate(norm_tempo_segs):
+            spb = 60.0 / seg_bpm
+            if idx_seg + 1 < len(norm_tempo_segs):
+                b1 = norm_tempo_segs[idx_seg + 1][0]
+                seg_dur = max(0.0, (b1 - b0) * spb)
+                if rem <= seg_dur:
+                    return b0 + rem / spb
+                rem -= seg_dur
+            else:
+                return b0 + rem / spb
+        return t_sec / sec_per_beat
 
     with zipfile.ZipFile(template_song_path, "r") as zin:
         template_files = {name: zin.read(name) for name in zin.namelist()}
@@ -690,11 +838,57 @@ def build_studio_one_song(
     extra_clips = [(spec, _register_wav(spec.name, spec.wav_path)) for spec in extra_tracks if spec.wav_path.exists()]
 
     max_dur_sec = max((r["duration_sec"] for r in clip_records), default=240.0) + 12.0
-    max_beats = max_dur_sec / sec_per_beat
+    max_beats = _sec_to_beat(max_dur_sec)
+
+    main_events_xml: list[str] = []
+    if fine_main_events:
+        for s_raw, e_raw, cg_db, ev_label in fine_main_events:
+            s_sec = max(0.0, min(float(s_raw), main_clip["duration_sec"]))
+            e_sec = max(s_sec, min(float(e_raw), main_clip["duration_sec"]))
+            if e_sec - s_sec < 0.05:
+                continue
+            start_beats = _sec_to_beat(s_sec)
+            len_beats = max(0.01, _sec_to_beat(e_sec) - start_beats)
+            offset_beats = s_sec / sec_per_beat
+            lin_level = _db_to_s1_fader_gain(float(cg_db))
+            ev_name = _safe_xml_attr(str(ev_label))
+            main_events_xml.append(
+                f'\t\t\t\t\t<AudioEvent clipID="{main_clip["media_id"]}" timeFormat="2" '
+                f'start="{start_beats:.8f}" offset="{offset_beats:.8f}" length="{len_beats:.8f}" '
+                f'name="{ev_name}" speed="1" transpose="0" tune="0" normalize="0" modification="0">\n'
+                f'\t\t\t\t\t\t<Attributes x:id="volumeCurve" level="{lin_level:.8f}"/>\n'
+                f'\t\t\t\t\t</AudioEvent>'
+            )
+    elif sections:
+        for sec in sections:
+            s_sec = max(0.0, min(sec.start_sec, main_clip["duration_sec"]))
+            e_sec = max(s_sec, min(sec.end_sec, main_clip["duration_sec"]))
+            if e_sec - s_sec < 0.05:
+                continue
+            start_beats = _sec_to_beat(s_sec)
+            len_beats = max(0.01, _sec_to_beat(e_sec) - start_beats)
+            offset_beats = s_sec / sec_per_beat
+            lin_level = _db_to_s1_fader_gain(sec.clip_gain_db)
+            ev_name = _safe_xml_attr(f"main_{sec.label}")
+            main_events_xml.append(
+                f'\t\t\t\t\t<AudioEvent clipID="{main_clip["media_id"]}" timeFormat="2" '
+                f'start="{start_beats:.8f}" offset="{offset_beats:.8f}" length="{len_beats:.8f}" '
+                f'name="{ev_name}" speed="1" transpose="0" tune="0" normalize="0" modification="0">\n'
+                f'\t\t\t\t\t\t<Attributes x:id="volumeCurve" level="{lin_level:.8f}"/>\n'
+                f'\t\t\t\t\t</AudioEvent>'
+            )
+    if not main_events_xml:
+        len_beats = _sec_to_beat(main_clip["duration_sec"])
+        main_events_xml.append(
+            f'\t\t\t\t\t<AudioEvent clipID="{main_clip["media_id"]}" timeFormat="2" '
+            f'length="{len_beats:.8f}" name="mainvocal" speed="1" transpose="0" tune="0" normalize="0" modification="0">\n'
+            f'\t\t\t\t\t\t<Attributes x:id="volumeCurve" level="1"/>\n'
+            f'\t\t\t\t\t</AudioEvent>'
+        )
 
     clip_xml_blocks: list[str] = []
     for rec in clip_records:
-        use_cnt = len(sections) if rec["key"] == "mainvocal" and sections else 1
+        use_cnt = max(1, len(main_events_xml)) if rec["key"] == "mainvocal" else 1
         clip_xml_blocks.append(
             f'\t\t\t<AudioClip mediaID="{rec["media_id"]}" useCount="{use_cnt}" peak="{rec["peak"]:.10f}">\n'
             f'\t\t\t\t<Url x:id="path" type="1" url="{rec["url"]}"/>\n'
@@ -726,35 +920,8 @@ def build_studio_one_song(
         f'url="{output_song_path.resolve().as_uri()}"',
     )
 
-    main_events_xml: list[str] = []
-    if sections:
-        for sec in sections:
-            s_sec = max(0.0, min(sec.start_sec, main_clip["duration_sec"]))
-            e_sec = max(s_sec, min(sec.end_sec, main_clip["duration_sec"]))
-            if e_sec - s_sec < 0.05:
-                continue
-            start_beats = s_sec / sec_per_beat
-            len_beats = (e_sec - s_sec) / sec_per_beat
-            lin_level = _db_to_s1_fader_gain(sec.clip_gain_db)
-            ev_name = _safe_xml_attr(f"main_{sec.label}")
-            main_events_xml.append(
-                f'\t\t\t\t\t<AudioEvent clipID="{main_clip["media_id"]}" timeFormat="2" '
-                f'start="{start_beats:.8f}" offset="{start_beats:.8f}" length="{len_beats:.8f}" '
-                f'name="{ev_name}" speed="1" transpose="0" tune="0" normalize="0" modification="0">\n'
-                f'\t\t\t\t\t\t<Attributes x:id="volumeCurve" level="{lin_level:.8f}"/>\n'
-                f'\t\t\t\t\t</AudioEvent>'
-            )
-    else:
-        len_beats = main_clip["duration_sec"] / sec_per_beat
-        main_events_xml.append(
-            f'\t\t\t\t\t<AudioEvent clipID="{main_clip["media_id"]}" timeFormat="2" '
-            f'length="{len_beats:.8f}" name="mainvocal" speed="1" transpose="0" tune="0" normalize="0" modification="0">\n'
-            f'\t\t\t\t\t\t<Attributes x:id="volumeCurve" level="1"/>\n'
-            f'\t\t\t\t\t</AudioEvent>'
-        )
-
     def _single_event_list_xml(rec: dict, name: str) -> str:
-        lb = rec["duration_sec"] / sec_per_beat
+        lb = _sec_to_beat(rec["duration_sec"])
         safe_n = _safe_xml_attr(name)
         return (
             f'\t\t\t\t<List x:id="Events">\n'
@@ -765,16 +932,44 @@ def build_studio_one_song(
             f'\t\t\t\t</List>'
         )
 
+    env_points_xml: list[str] = []
+    seg_blocks_xml: list[str] = []
+    for idx_seg, (b0, seg_bpm) in enumerate(norm_tempo_segs):
+        t_norm = (seg_bpm - 10.0) / 390.0
+        spb = 60.0 / seg_bpm
+        if idx_seg == 0:
+            env_points_xml.append(f'\t\t\t\t\t<EnvelopePoint value="{t_norm:.16f}"/>')
+            s_attr = "0"
+        else:
+            env_points_xml.append(f'\t\t\t\t\t<EnvelopePoint time="{b0:.6f}" value="{t_norm:.16f}"/>')
+            s_attr = f"{b0:.6f}"
+        e_attr = (
+            f"{norm_tempo_segs[idx_seg + 1][0]:.6f}"
+            if idx_seg + 1 < len(norm_tempo_segs)
+            else "1.7976931348623156386368421785227527018228425601508e+200"
+        )
+        seg_blocks_xml.append(
+            f'\t\t\t\t<TempoMapSegment curveType="0" start="{s_attr}" end="{e_attr}"\n'
+            f'\t\t\t\t                 tempo="{spb:.16f}"/>'
+        )
+    tempo_map_xml = (
+        '\t\t\t<TempoMap x:id="tempoMap">\n'
+        '\t\t\t\t<Attributes x:id="envelope">\n'
+        + "\n".join(env_points_xml)
+        + "\n\t\t\t\t</Attributes>\n"
+        + "\n".join(seg_blocks_xml)
+        + "\n\t\t\t</TempoMap>"
+    )
+
     song_xml_out = song_xml_str
     song_xml_out = song_xml_out.replace('sampleRate="44100"', f'sampleRate="{sr}"')
     song_xml_out = song_xml_out.replace('length="300"', f'length="{max_dur_sec:.2f}"')
-    song_xml_out = song_xml_out.replace(
-        'value="0.34871794871794875581016981413995381444692611694336"',
-        f'value="{tempo_norm:.16f}"',
-    )
-    song_xml_out = song_xml_out.replace(
-        'tempo="0.41095890410958896277193730384169612079858779907227"',
-        f'tempo="{sec_per_beat:.16f}"',
+    song_xml_out = re.sub(
+        r'\t\t\t<TempoMap x:id="tempoMap">.*?</TempoMap>',
+        tempo_map_xml,
+        song_xml_out,
+        count=1,
+        flags=re.S,
     )
     song_xml_out = song_xml_out.replace(
         'start="730.0000000000001136868377216160297393798828125"',
@@ -784,13 +979,13 @@ def build_studio_one_song(
     all_marker_lines: list[str] = []
     for sec in sections:
         if sec.start_sec > 0.5:
-            b_pos = sec.start_sec / sec_per_beat
+            b_pos = _sec_to_beat(sec.start_sec)
             tag = f"[{sec.label}]" + (" ★Anchor" if sec.is_anchor else "")
             all_marker_lines.append(
                 f'\t\t\t\t<MarkerEvent start="{b_pos:.6f}" timeFormat="2" name="{_safe_xml_attr(tag)}"/>'
             )
     for rm in review_markers:
-        b_pos = max(0.05, rm.time_sec / sec_per_beat)
+        b_pos = max(0.05, _sec_to_beat(rm.time_sec))
         all_marker_lines.append(
             f'\t\t\t\t<MarkerEvent start="{b_pos:.6f}" timeFormat="2" name="{_safe_xml_attr(rm.name)}"/>'
         )
@@ -827,6 +1022,10 @@ def build_studio_one_song(
         )
         song_xml_out = song_xml_out.replace(t_h2, t_h2 + "\n" + _single_event_list_xml(harm2_clip, "harmvocal2"))
 
+    for spec in extra_tracks:
+        template_files[f"Envelopes/{spec.name}/ボリューム.envelopex"] = b"{i\x06events[]}"
+        template_files[f"Envelopes/{spec.name}/パン.envelopex"] = b"{i\x07bipolari\x01i\x06events[]}"
+
     extra_media_tracks_xml: list[str] = []
     extra_mixer_channels_xml: list[str] = []
     new_console_uids: list[str] = []
@@ -845,9 +1044,35 @@ def build_studio_one_song(
             f'version="1" trackID="{track_uid}" timeFormat="2" name="{safe_spec_name}" color="{spec.color}">\n'
             f'\t\t\t\t<SpeakerSetup x:id="trackFormat" type="{spk_type}"/>\n'
             f'\t\t\t\t<UID x:id="channelID" uid="{chan_uid}"/>\n'
+            f'\t\t\t\t<Attributes x:id="AutomationRegionList" visible="0">\n'
+            f'\t\t\t\t\t<AutomationRegion title="ボリューム" identity="param:///AudioMixer/{chan_uid}/volume" '
+            f'metaIdentity="AudioTrackChannel/volume" color="FFFFD829" mute="0">\n'
+            f'\t\t\t\t\t\t<Url x:id="points" type="1" url="media:///Envelopes/{safe_spec_name}/ボリューム.envelopex"/>\n'
+            f'\t\t\t\t\t</AutomationRegion>\n'
+            f'\t\t\t\t\t<AutomationRegion title="パン" identity="param:///AudioMixer/{chan_uid}/pan" '
+            f'metaIdentity="AudioTrackChannel/pan" color="FFC7FF3A" mute="0">\n'
+            f'\t\t\t\t\t\t<Url x:id="points" type="1" url="media:///Envelopes/{safe_spec_name}/パン.envelopex"/>\n'
+            f'\t\t\t\t\t</AutomationRegion>\n'
+            f'\t\t\t\t</Attributes>\n'
             f"{_single_event_list_xml(rec, spec.name)}\n"
             f"\t\t\t</MediaTrack>"
         )
+
+        extra_slots: list[str] = []
+        for s_key, p_rel in spec.insert_slots:
+            if p_rel in patched_presets and s_key in s1_specs:
+                extra_slots.append(
+                    _render_fx_slot_xml(len(extra_slots) + 1, s1_specs[s_key], p_rel, stereo_channel=spec.stereo)
+                )
+        if extra_slots:
+            inserts_block = (
+                '\t\t\t\t<Attributes x:id="Inserts">\n'
+                + "\n".join(extra_slots)
+                + '\n\t\t\t\t\t<Attributes x:id="Presets" pname="AutoMIX Stage3 FX" dirty="0"/>\n'
+                + "\t\t\t\t</Attributes>"
+            )
+        else:
+            inserts_block = '\t\t\t\t<Attributes x:id="Inserts"><Attributes x:id="Presets" pname="デフォルト" dirty="0"/></Attributes>'
 
         extra_mixer_channels_xml.append(
             f'\t\t\t<AudioTrackChannel gain="{fader_lin}" pan="{spec.pan}" name="Channel{idx_e:02d}" '
@@ -856,7 +1081,7 @@ def build_studio_one_song(
             f'\t\t\t\t<UID x:id="uniqueID" uid="{chan_uid}"/>\n'
             f'\t\t\t\t<Connection x:id="destination" objectID="{{636828DD-7358-4765-B2A2-106A2780EE51}}/Input" friendlyName="メイン"/>\n'
             f'\t\t\t\t<Attributes x:id="Automation" mode="0"/>\n'
-            f'\t\t\t\t<Attributes x:id="Inserts"><Attributes x:id="Presets" pname="デフォルト" dirty="0"/></Attributes>\n'
+            f"{inserts_block}\n"
             f'\t\t\t\t<Attributes x:id="InputFX" gain="0" invertPhaseL="0" invertPhaseR="0"/>\n'
             f'\t\t\t\t<Attributes x:id="Sends"><Attributes x:id="Presets" pname="デフォルト" dirty="0"/></Attributes>\n'
             f"\t\t\t</AudioTrackChannel>"

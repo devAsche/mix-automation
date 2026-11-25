@@ -24,15 +24,20 @@ Solves every v1 creative flaw identified during listening evaluation:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
 
 import librosa
+import mido
 import numpy as np
 import psola
 import pyloudnorm as pyln
 from pedalboard import (
     Compressor,
     Delay,
+    Distortion,
+    Gain,
     HighpassFilter,
     LowpassFilter,
     PeakFilter,
@@ -43,7 +48,11 @@ from pedalboard import (
 from scipy import ndimage, signal
 
 from mix_automation.config.plugin_registry import get_plugin_map
+from mix_automation.dsp.lyrics_aligner import find_lyric_snippet_at_span
 from mix_automation.dsp.vst3_adapter import (
+    configure_khs_dual_delay_spot,
+    configure_mautopitch_hard_tune,
+    configure_trash2_vocal_grit,
     configure_vocalsynth2_biovox_gloss,
     configure_vocalsynth2_radio,
 )
@@ -54,12 +63,13 @@ from mix_automation.dsp.vst3_optimizer import SongSection
 class CreativeFXEvent:
     """Reference-verified localized vocal effect cue on the timeline."""
 
-    fx_type: str  # "ethereal_reverb_throw" | "radio_voice"
+    fx_type: str  # "ethereal_reverb_throw" | "radio_voice" | "hard_autotune" | "spot_delay_throw" | "distortion_grit"
     start_sec: float
     end_sec: float
     confidence: float
     ref_evidence_db: float
     reason: str
+    lyric_snippet: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -91,6 +101,26 @@ class HarmonyGenerationResult:
     total_harmony_notes: int
     chord_clash_notes_rescued: int
     suggestions: list[HarmonySuggestion]
+    counter_melody_notes: list[dict] = field(default_factory=list)
+    midi_guide_path: str | None = None
+
+
+def _echo_autocorr_peak(tail_env: np.ndarray, lag_frames: int) -> float:
+    """Compute zero-mean normalized autocorrelation peak near `lag_frames` with rebound check."""
+    if lag_frames < 2 or len(tail_env) < lag_frames + 8:
+        return 0.0
+    win = max(5, min(lag_frames - 1, 15))
+    trend = ndimage.uniform_filter1d(tail_env.astype(np.float64), size=win)
+    hp = tail_env.astype(np.float64) - trend
+    best = 0.0
+    for lag in range(max(2, lag_frames - 2), min(len(hp) - 4, lag_frames + 3)):
+        a = hp[:-lag]
+        b = hp[lag:]
+        denom = float(np.linalg.norm(a) * np.linalg.norm(b)) + 1e-12
+        c = float(np.dot(a, b)) / denom
+        if c > best:
+            best = c
+    return best
 
 
 def detect_creative_fx_events(
@@ -98,8 +128,10 @@ def detect_creative_fx_events(
     inst_mono: np.ndarray,
     sr: int,
     ref_vocal_mono: np.ndarray | None = None,
+    lyrics_alignment: Any | None = None,
+    bpm: float = 120.0,
 ) -> list[CreativeFXEvent]:
-    """Detect localized reverb throws & radio-voice sections STRICTLY verified against original vocal."""
+    """Detect multi-class Stage-3 FX cues STRICTLY verified against original reference vocal."""
     if ref_vocal_mono is None or len(ref_vocal_mono) < sr * 8:
         # Without original vocal evidence, never hallucinate arbitrary throws!
         return []
@@ -114,25 +146,31 @@ def detect_creative_fx_events(
     u_framed = lead_vocal_mono[: n_frames * hop].reshape(n_frames, hop)
     r_framed = ref_vocal_mono[: n_frames * hop].reshape(n_frames, hop)
 
-    u_rms_db = 20.0 * np.log10(np.sqrt(np.mean(u_framed**2, axis=1) + 1e-12))
-    r_rms_db = 20.0 * np.log10(np.sqrt(np.mean(r_framed**2, axis=1) + 1e-12))
+    u_rms_lin = np.sqrt(np.mean(u_framed**2, axis=1) + 1e-12)
+    r_rms_lin = np.sqrt(np.mean(r_framed**2, axis=1) + 1e-12)
+    u_rms_db = 20.0 * np.log10(u_rms_lin)
+    r_rms_db = 20.0 * np.log10(r_rms_lin)
 
     u_peak_db = float(np.percentile(u_rms_db, 96))
     r_peak_db = float(np.percentile(r_rms_db, 96))
     u_active = u_rms_db >= (u_peak_db - 24.0)
     r_active = r_rms_db >= (r_peak_db - 26.0)
 
-    # 1. Reference-Verified Ethereal Reverb/Delay Throw Detection
+    # 1. Reference-Verified Ethereal Reverb Throw & Rhythmic Spot Delay Throw Detection
     labels, n_phrases = ndimage.label(u_active)
     candidate_throws: list[tuple[int, int, float, float]] = []
     all_valid_rest_tails_db: list[float] = []
+    delay_throw_end_frames: set[int] = set()
+
+    lag_eighth_f = max(4, int(round((60.0 / max(bpm, 60.0)) * 0.5 / 0.02)))
+    lag_quarter_f = max(8, int(round((60.0 / max(bpm, 60.0)) / 0.02)))
 
     for p_idx in range(1, n_phrases + 1):
         idxs = np.where(labels == p_idx)[0]
-        if len(idxs) * 0.02 < 0.45:
+        if len(idxs) * 0.02 < 0.40:
             continue
         end_f = int(idxs[-1])
-        look_end = min(n_frames, end_f + int(1.25 / 0.02))
+        look_end = min(n_frames, end_f + int(1.50 / 0.02))
         gap_f = 0
         for f in range(end_f + 1, look_end):
             if not u_active[f]:
@@ -140,17 +178,58 @@ def detect_creative_fx_events(
             else:
                 break
         gap_sec = gap_f * 0.02
+        if gap_sec < 0.55:
+            continue
+
+        pre_s = max(0, end_f - 20)
+        if not np.any(r_active[pre_s : end_f + 2]):
+            continue
+        ref_pre_db = float(np.percentile(r_rms_db[pre_s : end_f + 1], 80))
+
+        # 1a. Rhythmic Spot Delay Throw check (1/8 or 1/4 beat echo pulses in post-phrase rest)
+        d_tail_s = min(n_frames, end_f + 1)
+        d_tail_e = min(n_frames, end_f + gap_f)
+        if d_tail_e - d_tail_s >= max(16, lag_eighth_f + 8):
+            d_slice_lin = r_rms_lin[d_tail_s:d_tail_e]
+            d_slice_db = r_rms_db[d_tail_s:d_tail_e]
+            d_rel_db = float(np.mean(d_slice_db)) - ref_pre_db
+            # Require audible tail energy above noise floor without sustained dry singing
+            if -36.0 <= d_rel_db <= -5.5:
+                ac_8 = _echo_autocorr_peak(d_slice_lin, lag_eighth_f)
+                ac_4 = _echo_autocorr_peak(d_slice_lin, lag_quarter_f)
+                best_ac = max(ac_8, ac_4)
+                win_hp = max(5, min(lag_eighth_f - 1, 15))
+                hp_tail = d_slice_lin.astype(np.float64) - ndimage.uniform_filter1d(
+                    d_slice_lin.astype(np.float64), size=win_hp
+                )
+                mod_depth = float(np.std(hp_tail) / (np.mean(d_slice_lin) + 1e-9))
+                if best_ac >= 0.42 and mod_depth >= 0.08:
+                    subdiv = "1/8" if ac_8 >= ac_4 else "1/4"
+                    t0 = round(max(int(idxs[0]) * 0.02, end_f * 0.02 - 0.34), 2)
+                    t1 = round(end_f * 0.02 + 0.05, 2)
+                    delay_throw_end_frames.add(end_f)
+                    events.append(
+                        CreativeFXEvent(
+                            fx_type="spot_delay_throw",
+                            start_sec=t0,
+                            end_sec=t1,
+                            confidence=round(float(np.clip(best_ac, 0.45, 0.96)), 2),
+                            ref_evidence_db=round(d_rel_db + 30.0, 2),
+                            reason=f"本家休符({gap_sec:.2f}秒)で{subdiv}拍周期ディレイ反復(r={best_ac:.2f})を検出",
+                            lyric_snippet=find_lyric_snippet_at_span(lyrics_alignment, t0, t1),
+                        )
+                    )
+                    continue
+
         if gap_sec < 0.65:
             continue
 
-        # Inspect reference vocal pre-phrase [end_f - 20 : end_f] vs post-phrase tail [end_f + 4 : end_f + 26]
-        pre_s = max(0, end_f - 20)
+        # 1b. Diffuse Ethereal Reverb Throw check
         tail_s = min(n_frames, end_f + 4)   # +80ms after phrase offset
         tail_e = min(n_frames, end_f + 26)  # up to +520ms into the vocal rest
-        if tail_e - tail_s < 10 or not np.any(r_active[pre_s : end_f + 2]):
+        if tail_e - tail_s < 10:
             continue
 
-        ref_pre_db = float(np.percentile(r_rms_db[pre_s : end_f + 1], 80))
         ref_tail_slice = r_rms_db[tail_s:tail_e]
         ref_tail_db = float(np.mean(ref_tail_slice))
 
@@ -167,7 +246,7 @@ def detect_creative_fx_events(
         # If tail_rel_db > -6.0 dB, the original singer is still sustaining a dry note rather than a reverb tail
         if tail_rel_db <= -6.0:
             all_valid_rest_tails_db.append(max(tail_rel_db, -36.0))
-            if tail_rel_db >= -34.0:
+            if tail_rel_db >= -34.0 and end_f not in delay_throw_end_frames:
                 candidate_throws.append((int(idxs[0]), end_f, gap_sec, tail_rel_db))
 
     if candidate_throws and all_valid_rest_tails_db:
@@ -178,26 +257,27 @@ def detect_creative_fx_events(
         for start_f, end_f, gap_sec, tail_rel_db in candidate_throws:
             excess_db = tail_rel_db - baseline_tail_db
             if tail_rel_db >= trigger_thresh_db:
-                t0 = max(start_f * 0.02, end_f * 0.02 - 0.34)
-                t1 = end_f * 0.02 + 0.05
+                t0 = round(max(start_f * 0.02, end_f * 0.02 - 0.34), 2)
+                t1 = round(end_f * 0.02 + 0.05, 2)
                 conf = round(float(np.clip((excess_db - 5.0) / 8.0, 0.35, 0.98)), 2)
                 verified_throws.append(
                     CreativeFXEvent(
                         fx_type="ethereal_reverb_throw",
-                        start_sec=round(t0, 2),
-                        end_sec=round(t1, 2),
+                        start_sec=t0,
+                        end_sec=t1,
                         confidence=conf,
                         ref_evidence_db=round(excess_db, 2),
                         reason=(
                             f"本家ボーカルの該当休符（{gap_sec:.2f}秒）にて通常比 +{excess_db:.1f}dB の長い空間余韻を検出"
                         ),
+                        lyric_snippet=find_lyric_snippet_at_span(lyrics_alignment, t0, t1),
                     )
                 )
         # Keep at most top 6 highest-confidence genuine moments so throws stay special
         verified_throws.sort(key=lambda e: e.confidence, reverse=True)
         events.extend(sorted(verified_throws[:6], key=lambda e: e.start_sec))
 
-    # 2. Reference-Verified Radio / Telephone Band-Limited Vocal Detection
+    # 2. Reference-Verified Radio / Telephone Band-Limited Vocal & Distortion Grit Detection
     freqs, _, Z_ref = signal.stft(ref_vocal_mono[:n], fs=sr, nperseg=2048, noverlap=1024)
     P_ref = np.abs(Z_ref) ** 2
     low_m = (freqs >= 95) & (freqs < 330)
@@ -209,7 +289,9 @@ def detect_creative_fx_events(
     hi_e = np.sum(P_ref[hi_m], axis=0) + 1e-12
     tot_db = 10.0 * np.log10(low_e + mid_e + hi_e)
     act_stft = tot_db > (np.percentile(tot_db, 95) - 20.0)
+    hop_stft = 1024 / sr
 
+    radio_mask = np.zeros_like(act_stft, dtype=bool)
     if np.sum(act_stft) >= 30:
         ml_db = 10.0 * np.log10(mid_e / low_e)
         mh_db = 10.0 * np.log10(mid_e / hi_e)
@@ -223,7 +305,6 @@ def detect_creative_fx_events(
             & (mh_db > max(15.0, med_mh + 9.5))
         )
         r_labels, r_num = ndimage.label(ndimage.binary_closing(radio_mask, structure=np.ones(6)))
-        hop_stft = 1024 / sr
         for r_i in range(1, r_num + 1):
             r_idxs = np.where(r_labels == r_i)[0]
             if len(r_idxs) * hop_stft >= 0.95:
@@ -238,6 +319,123 @@ def detect_creative_fx_events(
                         confidence=0.86,
                         ref_evidence_db=ev_db,
                         reason=f"本家ボーカルにて通常比 +{ev_db:.1f}dB の帯域制限（ラジオ/電話ボイス演出）を検出",
+                        lyric_snippet=find_lyric_snippet_at_span(lyrics_alignment, t0, t1),
+                    )
+                )
+
+        # 2b. Distortion Grit Detection (1.2-4.2 kHz flatness & harmonic saturation ratio jump >= +6.5 dB, non-radio)
+        grit_m = (freqs >= 1200.0) & (freqs <= 4200.0)
+        fund_m = (freqs >= 180.0) & (freqs <= 650.0)
+        if np.any(grit_m) and np.any(fund_m):
+            P_g = P_ref[grit_m] + 1e-12
+            flatness_db = 10.0 * np.log10(
+                np.exp(np.mean(np.log(P_g), axis=0)) / (np.mean(P_g, axis=0) + 1e-12)
+            )
+            sat_ratio_db = 10.0 * np.log10(
+                (np.sum(P_ref[grit_m], axis=0) + 1e-12) / (np.sum(P_ref[fund_m], axis=0) + 1e-12)
+            )
+            grit_score_db = flatness_db + sat_ratio_db
+            med_sat = float(np.median(sat_ratio_db[act_stft]))
+            med_grit = float(np.median(grit_score_db[act_stft]))
+            grit_mask = (
+                act_stft
+                & (~radio_mask)
+                & ((sat_ratio_db - med_sat) >= 3.5)
+                & ((grit_score_db - med_grit) >= 6.5)
+            )
+            g_labels, g_num = ndimage.label(ndimage.binary_closing(grit_mask, structure=np.ones(5)))
+            for g_i in range(1, g_num + 1):
+                g_idxs = np.where(g_labels == g_i)[0]
+                if len(g_idxs) * hop_stft >= 0.80:
+                    t0 = round(float(g_idxs[0] * hop_stft), 2)
+                    t1 = round(float((g_idxs[-1] + 1) * hop_stft), 2)
+                    ev_db = round(float(np.mean(grit_score_db[g_idxs] - med_grit)), 2)
+                    events.append(
+                        CreativeFXEvent(
+                            fx_type="distortion_grit",
+                            start_sec=t0,
+                            end_sec=t1,
+                            confidence=round(float(np.clip(0.55 + (ev_db - 6.5) * 0.04, 0.60, 0.94)), 2),
+                            ref_evidence_db=ev_db,
+                            reason=f"本家ボーカルにて 1.2-4.2kHz 倍音歪み/サチュレーション +{ev_db:.1f}dB を検出",
+                            lyric_snippet=find_lyric_snippet_at_span(lyrics_alignment, t0, t1),
+                        )
+                    )
+
+    # 3. Reference-Verified Hard Auto-Tune Detection (sub-cent contour: robotic < 2.6ct + sharp step vs natural > 6.5ct)
+    dt_at = 0.02
+    r_f0: np.ndarray | None = None
+    u_f0: np.ndarray | None = None
+    try:
+        import parselmouth
+
+        r_snd = parselmouth.Sound(ref_vocal_mono[:n].astype(np.float64), sampling_frequency=float(sr))
+        u_snd = parselmouth.Sound(lead_vocal_mono[:n].astype(np.float64), sampling_frequency=float(sr))
+        r_p = r_snd.to_pitch(time_step=dt_at, pitch_floor=75.0, pitch_ceiling=900.0)
+        u_p = u_snd.to_pitch(time_step=dt_at, pitch_floor=75.0, pitch_ceiling=900.0)
+        r_f0 = np.asarray(r_p.selected_array["frequency"], dtype=np.float64)
+        u_f0 = np.asarray(u_p.selected_array["frequency"], dtype=np.float64)
+        n_at = min(len(r_f0), len(u_f0))
+        r_f0, u_f0 = r_f0[:n_at], u_f0[:n_at]
+        r_valid = r_f0 > 0.0
+        u_valid = u_f0 > 0.0
+    except Exception:
+        pyin_hop = max(256, int(round(sr * dt_at)))
+        r_f0, r_vf, r_vp = librosa.pyin(ref_vocal_mono[:n], fmin=75.0, fmax=900.0, sr=sr, hop_length=pyin_hop)
+        u_f0, u_vf, u_vp = librosa.pyin(lead_vocal_mono[:n], fmin=75.0, fmax=900.0, sr=sr, hop_length=pyin_hop)
+        n_at = min(len(r_f0), len(u_f0))
+        r_f0, u_f0 = r_f0[:n_at], u_f0[:n_at]
+        r_valid = (~np.isnan(r_f0)) & r_vf[:n_at] & (r_vp[:n_at] > 0.65)
+        u_valid = (~np.isnan(u_f0)) & u_vf[:n_at] & (u_vp[:n_at] > 0.65)
+
+    if r_f0 is not None and u_f0 is not None and np.sum(r_valid) >= 24 and np.sum(u_valid) >= 16:
+        r_midi = 69.0 + 12.0 * np.log2(np.where(r_valid, r_f0, 220.0) / 440.0)
+        u_midi = 69.0 + 12.0 * np.log2(np.where(u_valid, u_f0, 220.0) / 440.0)
+        r_diff = np.abs(np.diff(r_midi, prepend=r_midi[0])) * 100.0
+        u_diff = np.abs(np.diff(u_midi, prepend=u_midi[0])) * 100.0
+
+        min_len_f = int(round(0.85 / dt_at))
+        bridge_f = max(2, int(round(0.12 / dt_at)))
+        r_spans = ndimage.binary_closing(r_valid, structure=np.ones(bridge_f, dtype=bool))
+        at_labels, at_num = ndimage.label(r_spans)
+        for a_i in range(1, at_num + 1):
+            a_idxs = np.where(at_labels == a_i)[0]
+            if len(a_idxs) < min_len_f:
+                continue
+            f0_s, f1_s = int(a_idxs[0]), int(a_idxs[-1]) + 1
+            r_consec = r_valid[f0_s + 1 : f1_s] & r_valid[f0_s : f1_s - 1]
+            r_steady = r_consec & (r_diff[f0_s + 1 : f1_s] < 35.0)
+            u_consec = u_valid[f0_s + 1 : f1_s] & u_valid[f0_s : f1_s - 1]
+            u_steady = u_consec & (u_diff[f0_s + 1 : f1_s] < 45.0)
+            if np.sum(r_steady) < 12 or np.sum(u_steady) < 8:
+                continue
+
+            med_r_ct = float(np.median(r_diff[f0_s + 1 : f1_s][r_steady]))
+            med_u_ct = float(np.median(u_diff[f0_s + 1 : f1_s][u_steady]))
+
+            # Sharp instantaneous semitone jumps (>= 80 ct within 1-3 frames) inside quantized phrase
+            sharp_jump = bool(np.any(r_diff[f0_s + 1 : f1_s][r_consec] >= 80.0))
+            if not sharp_jump:
+                for step_k in (2, 3):
+                    if f1_s - f0_s > step_k:
+                        pair_v = r_valid[f0_s + step_k : f1_s] & r_valid[f0_s : f1_s - step_k]
+                        j_ct = np.abs(r_midi[f0_s + step_k : f1_s] - r_midi[f0_s : f1_s - step_k]) * 100.0
+                        if np.any(j_ct[pair_v] >= 85.0):
+                            sharp_jump = True
+                            break
+
+            if med_r_ct < 2.6 and sharp_jump and med_u_ct > 6.5:
+                t0 = round(float(f0_s * dt_at), 2)
+                t1 = round(float(f1_s * dt_at), 2)
+                events.append(
+                    CreativeFXEvent(
+                        fx_type="hard_autotune",
+                        start_sec=t0,
+                        end_sec=t1,
+                        confidence=round(float(np.clip((med_u_ct - med_r_ct) / 10.0, 0.55, 0.96)), 2),
+                        ref_evidence_db=round(med_u_ct - med_r_ct, 2),
+                        reason=f"本家ピッチ微細変動 {med_r_ct:.2f}ct＋急峻ステップ遷移を検出（原声 {med_u_ct:.1f}ct）",
+                        lyric_snippet=find_lyric_snippet_at_span(lyrics_alignment, t0, t1),
                     )
                 )
 
@@ -245,25 +443,104 @@ def detect_creative_fx_events(
     return events
 
 
-def apply_verified_radio_fx_inline(
+def _apply_hard_autotune_segment(
+    seg: np.ndarray,
+    sr: int,
+    mauto_plug: Any | None,
+    scale_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Apply MAutoPitch hard-tune (or robotic quantized TD-PSOLA fallback) to a vocal segment."""
+    if mauto_plug is not None:
+        try:
+            st_seg = np.stack([seg, seg], axis=0).astype(np.float32)
+            out_seg = np.mean(mauto_plug(st_seg, sr, reset=True), axis=0, dtype=np.float32)
+            if float(np.sqrt(np.mean(out_seg**2))) > 1e-5:
+                return out_seg
+        except Exception:
+            pass
+
+    try:
+        hop = max(128, int(sr / 100))
+        f0, vf, _ = librosa.pyin(seg, fmin=75.0, fmax=850.0, sr=sr, hop_length=hop)
+        valid = (~np.isnan(f0)) & vf
+        if np.any(valid):
+            midi = librosa.hz_to_midi(np.where(valid, f0, 220.0))
+            if scale_mask is not None and len(scale_mask) == 12 and np.any(scale_mask):
+                allowed = np.where(np.asarray(scale_mask, dtype=bool))[0]
+                q_midi = np.empty_like(midi)
+                for i, m in enumerate(midi):
+                    octv = int(np.floor(m / 12.0)) * 12
+                    cands = np.concatenate([allowed + octv - 12, allowed + octv, allowed + octv + 12])
+                    q_midi[i] = cands[int(np.argmin(np.abs(cands - m)))]
+            else:
+                q_midi = np.round(midi)
+            target_f0 = np.where(valid, librosa.midi_to_hz(q_midi), np.nan)
+            return psola.vocode(
+                seg.astype(np.float64),
+                sample_rate=sr,
+                target_pitch=target_f0,
+                fmin=75.0,
+                fmax=900.0,
+            ).astype(np.float32)[: len(seg)]
+    except Exception:
+        pass
+    return seg.astype(np.float32)
+
+
+def apply_verified_inline_fx_chain(
     lead_mono: np.ndarray,
     sr: int,
     events: list[CreativeFXEvent],
-) -> np.ndarray:
-    """Apply smooth 40ms-crossfaded VocalSynth 2 (or bandpass fallback) radio FX at verified `radio_voice` spans."""
-    radio_events = [ev for ev in events if ev.fx_type == "radio_voice"]
-    if not radio_events:
-        return lead_mono
+    scale_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Apply Stage-3 inline FX (`radio_voice`, `hard_autotune`, `distortion_grit`) + return spot stems."""
+    inline_types = {"radio_voice", "hard_autotune", "distortion_grit"}
+    inline_events = [ev for ev in events if ev.fx_type in inline_types]
+    if not inline_events:
+        return lead_mono.astype(np.float32), {}
 
-    out = lead_mono.copy()
+    out = lead_mono.copy().astype(np.float32)
+    n = len(out)
+    spot_stems: dict[str, np.ndarray] = {}
     pmap = get_plugin_map()
+
     vs_plug = None
-    if "izotope_vocalsynth2" in pmap and pmap["izotope_vocalsynth2"].exists:
-        try:
-            vs_plug = load_plugin(str(pmap["izotope_vocalsynth2"].loadable_path))
-            configure_vocalsynth2_radio(vs_plug, freq_hz=1650.0, drive=3.8, distort_mix=42.0)
-        except Exception:
-            vs_plug = None
+    if any(ev.fx_type == "radio_voice" for ev in inline_events):
+        if "izotope_vocalsynth2" in pmap and pmap["izotope_vocalsynth2"].exists:
+            try:
+                vs_plug = load_plugin(str(pmap["izotope_vocalsynth2"].loadable_path))
+                configure_vocalsynth2_radio(vs_plug, freq_hz=1650.0, drive=3.8, distort_mix=42.0)
+            except Exception:
+                vs_plug = None
+
+    mauto_plug = None
+    if any(ev.fx_type == "hard_autotune" for ev in inline_events):
+        if "mautopitch" in pmap and pmap["mautopitch"].exists:
+            try:
+                mauto_plug = load_plugin(str(pmap["mautopitch"].loadable_path))
+                configure_mautopitch_hard_tune(mauto_plug, scale_mask=scale_mask, speed=95.0, depth=100.0)
+            except Exception:
+                mauto_plug = None
+
+    trash_plug = None
+    trash_board = None
+    if any(ev.fx_type == "distortion_grit" for ev in inline_events):
+        if "izotope_trash2" in pmap and pmap["izotope_trash2"].exists:
+            try:
+                trash_plug = load_plugin(str(pmap["izotope_trash2"].loadable_path))
+                configure_trash2_vocal_grit(
+                    trash_plug, drive=3.6, style=0.5, wet_mix=55.0, low_cut_hz=380.0, high_cut_hz=4200.0
+                )
+                trash_board = Pedalboard(
+                    [
+                        HighpassFilter(cutoff_frequency_hz=380.0),
+                        trash_plug,
+                        LowpassFilter(cutoff_frequency_hz=4200.0),
+                    ]
+                )
+            except Exception:
+                trash_plug = None
+                trash_board = None
 
     radio_board = Pedalboard(
         [
@@ -273,9 +550,16 @@ def apply_verified_radio_fx_inline(
             Compressor(threshold_db=-20.0, ratio=4.5, attack_ms=4.0, release_ms=70.0),
         ]
     )
+    grit_board = Pedalboard(
+        [
+            HighpassFilter(cutoff_frequency_hz=380.0),
+            Distortion(drive_db=11.0),
+            LowpassFilter(cutoff_frequency_hz=4200.0),
+            Gain(gain_db=-3.0),
+        ]
+    )
 
-    n = len(out)
-    for ev in radio_events:
+    for ev in inline_events:
         s0 = max(0, int(ev.start_sec * sr))
         s1 = min(n, int(ev.end_sec * sr))
         if s1 - s0 < 1024:
@@ -284,15 +568,32 @@ def apply_verified_radio_fx_inline(
         dry_rms = float(np.sqrt(np.mean(dry_seg**2) + 1e-12))
         if dry_rms < 1e-4:
             continue
-        if vs_plug is not None:
-            st_seg = np.stack([dry_seg, dry_seg], axis=0).astype(np.float32)
-            rad_seg = np.mean(vs_plug(st_seg, sr, reset=True), axis=0, dtype=np.float32)
-            if float(np.sqrt(np.mean(rad_seg**2))) < 1e-5:
-                rad_seg = radio_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
-        else:
-            rad_seg = radio_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
-        rad_rms = float(np.sqrt(np.mean(rad_seg**2) + 1e-12))
-        rad_seg = (rad_seg * min((dry_rms * 0.90) / rad_rms, 2.5)).astype(np.float32)
+
+        fx_seg: np.ndarray
+        target_scale = 0.96
+        if ev.fx_type == "radio_voice":
+            target_scale = 0.90
+            if vs_plug is not None:
+                st_seg = np.stack([dry_seg, dry_seg], axis=0).astype(np.float32)
+                fx_seg = np.mean(vs_plug(st_seg, sr, reset=True), axis=0, dtype=np.float32)
+                if float(np.sqrt(np.mean(fx_seg**2))) < 1e-5:
+                    fx_seg = radio_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
+            else:
+                fx_seg = radio_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
+        elif ev.fx_type == "hard_autotune":
+            fx_seg = _apply_hard_autotune_segment(dry_seg, sr=sr, mauto_plug=mauto_plug, scale_mask=scale_mask)
+        else:  # distortion_grit
+            if trash_board is not None:
+                st_seg = np.stack([dry_seg, dry_seg], axis=0).astype(np.float32)
+                fx_seg = np.mean(trash_board(st_seg, sr), axis=0, dtype=np.float32)
+                if float(np.sqrt(np.mean(fx_seg**2))) < 1e-5:
+                    fx_seg = grit_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
+            else:
+                fx_seg = grit_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
+
+        fx_seg = fx_seg[: len(dry_seg)]
+        fx_rms = float(np.sqrt(np.mean(fx_seg**2) + 1e-12))
+        fx_seg = (fx_seg * min((dry_rms * target_scale) / fx_rms, 2.5)).astype(np.float32)
 
         xf = min(int(0.04 * sr), len(dry_seg) // 4)
         w = np.ones(len(dry_seg), dtype=np.float32)
@@ -300,9 +601,99 @@ def apply_verified_radio_fx_inline(
             ramp = (0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, xf))).astype(np.float32)
             w[:xf] = ramp
             w[-xf:] = ramp[::-1]
-        out[s0:s1] = dry_seg * (1.0 - w) + rad_seg * w
 
-    return out.astype(np.float32)
+        out[s0:s1] = dry_seg * (1.0 - w) + fx_seg * w
+        if ev.fx_type not in spot_stems:
+            spot_stems[ev.fx_type] = np.zeros(n, dtype=np.float32)
+        spot_stems[ev.fx_type][s0:s1] = (fx_seg * w).astype(np.float32)
+
+    return out.astype(np.float32), spot_stems
+
+
+def apply_verified_radio_fx_inline(
+    lead_mono: np.ndarray,
+    sr: int,
+    events: list[CreativeFXEvent],
+) -> np.ndarray:
+    """Backwards-compatible wrapper applying smooth 40ms-crossfaded radio FX at `radio_voice` spans."""
+    radio_events = [ev for ev in events if ev.fx_type == "radio_voice"]
+    if not radio_events:
+        return lead_mono
+    processed, _ = apply_verified_inline_fx_chain(lead_mono, sr=sr, events=radio_events)
+    return processed
+
+
+def render_spot_delay_throw_stem(
+    processed_lead_mono: np.ndarray,
+    sr: int,
+    events: list[CreativeFXEvent],
+    bpm: float = 120.0,
+) -> np.ndarray:
+    """Render rhythmic stereo spot-delay throw stem ONLY at verified `spot_delay_throw` cues."""
+    n = len(processed_lead_mono)
+    delay_events = [ev for ev in events if ev.fx_type == "spot_delay_throw"]
+    if not delay_events:
+        return np.zeros((2, n), dtype=np.float32)
+
+    source_feed = np.zeros(n, dtype=np.float32)
+    active_samples = processed_lead_mono[np.abs(processed_lead_mono) > 1e-4]
+    lead_rms = float(np.sqrt(np.mean(active_samples**2) + 1e-12)) if active_samples.size > 0 else 0.05
+
+    for ev in delay_events:
+        s0 = max(0, int(ev.start_sec * sr))
+        s1 = min(n, int(ev.end_sec * sr))
+        if s1 - s0 < 512:
+            continue
+        seg = processed_lead_mono[s0:s1].copy()
+        fade = min(int(0.04 * sr), len(seg) // 3)
+        if fade > 4:
+            seg[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+            seg[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        source_feed[s0:s1] += seg * float(0.55 + 0.30 * ev.confidence)
+
+    if np.max(np.abs(source_feed)) < 1e-5:
+        return np.zeros((2, n), dtype=np.float32)
+
+    is_quarter = any("1/4" in ev.reason for ev in delay_events)
+    beat_mult = 1.0 if is_quarter else 0.5
+    delay_ms = float(np.clip((60.0 / max(bpm, 60.0)) * 1000.0 * beat_mult, 120.0, 680.0))
+
+    pmap = get_plugin_map()
+    st_feed = np.stack([source_feed, source_feed], axis=0)
+    wet_out: np.ndarray | None = None
+
+    if "khs_dual_delay" in pmap and pmap["khs_dual_delay"].exists:
+        try:
+            dly = load_plugin(str(pmap["khs_dual_delay"].loadable_path))
+            configure_khs_dual_delay_spot(dly, delay_ms=delay_ms, feedback=36.0, spread=75.0, duck=25.0, mix_pct=100.0)
+            board = Pedalboard(
+                [
+                    HighpassFilter(cutoff_frequency_hz=340.0),
+                    LowpassFilter(cutoff_frequency_hz=5400.0),
+                    dly,
+                ]
+            )
+            wet_out = board(st_feed, sr)
+        except Exception:
+            wet_out = None
+
+    if wet_out is None:
+        board = Pedalboard(
+            [
+                HighpassFilter(cutoff_frequency_hz=340.0),
+                LowpassFilter(cutoff_frequency_hz=5400.0),
+                Delay(delay_seconds=delay_ms / 1000.0, feedback=0.36, mix=1.0),
+            ]
+        )
+        wet_out = board(st_feed, sr)
+
+    # Tastefully cap spot-delay throws at <= -14.5 dB relative to lead vocal!
+    max_allowed_rms = max(lead_rms * (10.0 ** (-14.5 / 20.0)), 1e-4)
+    wet_act = wet_out[np.abs(wet_out) > 1e-5]
+    cur_rms = float(np.sqrt(np.mean(wet_act**2) + 1e-12)) if wet_act.size > 0 else 1e-6
+    if cur_rms > max_allowed_rms:
+        wet_out = wet_out * (max_allowed_rms / cur_rms)
+    return wet_out.astype(np.float32)
 
 
 def apply_vocalsynth2_harmony_gloss(
@@ -606,23 +997,15 @@ def _render_candidate_intervals_via_nectar3(
     return candidates, "td_psola_fallback"
 
 
-def _select_and_stitch_chord_safe_harmony(
-    candidates: dict[int, np.ndarray],
-    allowed_intervals: tuple[int, int, int],
+def _extract_sung_note_spans(
     lead_f0: np.ndarray,
     voiced_mask: np.ndarray,
-    chord_chroma: np.ndarray,
-    local_scale: np.ndarray,
-    sr: int,
-    hop: int = 512,
-) -> tuple[np.ndarray, int, int]:
-    """Select the most consonant interval per sung note and crossfade strictly at note boundaries."""
-    n_frames = min(len(lead_f0), chord_chroma.shape[1], local_scale.shape[1])
-    n_samples = len(next(iter(candidates.values())))
+) -> list[tuple[int, int, int]]:
+    """Segment continuous F0 contour into discrete quantized sung notes `(start_f, end_f, midi_note)`."""
+    n_frames = min(len(lead_f0), len(voiced_mask))
     midi_cont = librosa.hz_to_midi(np.where(np.isnan(lead_f0[:n_frames]), 60.0, lead_f0[:n_frames]))
     midi_round = np.round(midi_cont).astype(int)
 
-    # Segment into discrete sung notes (split when unvoiced OR when pitch changes >= 1 semitone)
     note_spans: list[tuple[int, int, int]] = []
     in_note = False
     start_f = 0
@@ -646,6 +1029,68 @@ def _select_and_stitch_chord_safe_harmony(
                 in_note = False
     if in_note and (n_frames - start_f) >= 2:
         note_spans.append((start_f, n_frames, cur_midi))
+    return note_spans
+
+
+def _score_chord_safe_interval(
+    p_lead: int,
+    c_vec: np.ndarray,
+    s_vec: np.ndarray,
+    allowed_intervals: tuple[int, ...],
+    prev_choice: int,
+) -> tuple[int, int, float, dict[int, float]]:
+    """Score candidate harmonic intervals against local backing chord chroma & sliding scale."""
+    naive_int = allowed_intervals[0]
+    for cand_3rd in allowed_intervals[:2]:
+        if s_vec[(p_lead + cand_3rd) % 12] > 0.5:
+            naive_int = cand_3rd
+            break
+
+    best_int = naive_int
+    best_score = -999.0
+    scores_by_int: dict[int, float] = {}
+
+    for cand_int in allowed_intervals:
+        h_pc = (p_lead + cand_int) % 12
+        chord_support = float(c_vec[h_pc])
+        in_scale = float(s_vec[h_pc])
+
+        adj_energy = max(float(c_vec[(h_pc - 1) % 12]), float(c_vec[(h_pc + 1) % 12]))
+        semitone_clash = adj_energy * max(0.0, 1.0 - 0.75 * chord_support)
+        tritone_clash = float(c_vec[(h_pc + 6) % 12]) * (0.35 if chord_support < 0.25 else 0.0)
+        third_prior = 0.45 if abs(cand_int) in (3, 4) else 0.0
+        continuity_bonus = 0.15 if cand_int == prev_choice else 0.0
+
+        score = (
+            2.65 * chord_support
+            + 1.35 * in_scale
+            - 3.10 * semitone_clash
+            - tritone_clash
+            + third_prior
+            + continuity_bonus
+        )
+        scores_by_int[cand_int] = score
+        if score > best_score:
+            best_score = score
+            best_int = cand_int
+
+    return best_int, naive_int, best_score, scores_by_int
+
+
+def _select_and_stitch_chord_safe_harmony(
+    candidates: dict[int, np.ndarray],
+    allowed_intervals: tuple[int, int, int],
+    lead_f0: np.ndarray,
+    voiced_mask: np.ndarray,
+    chord_chroma: np.ndarray,
+    local_scale: np.ndarray,
+    sr: int,
+    hop: int = 512,
+) -> tuple[np.ndarray, int, int]:
+    """Select the most consonant interval per sung note and crossfade strictly at note boundaries."""
+    n_frames = min(len(lead_f0), chord_chroma.shape[1], local_scale.shape[1])
+    n_samples = len(next(iter(candidates.values())))
+    note_spans = _extract_sung_note_spans(lead_f0[:n_frames], voiced_mask[:n_frames])
 
     # Frame-level interval assignment (held constant across unvoiced gaps to avoid unnecessary switches)
     chosen_per_frame = np.full(n_frames, allowed_intervals[0], dtype=int)
@@ -657,44 +1102,13 @@ def _select_and_stitch_chord_safe_harmony(
         c_vec = np.mean(chord_chroma[:, f0_i:f1_i], axis=1)
         s_vec = np.round(np.mean(local_scale[:, f0_i:f1_i], axis=1))
 
-        # Naive static diatonic choice (+3 vs +4 or -3 vs -4 based purely on scale)
-        naive_int = allowed_intervals[0]
-        for cand_3rd in allowed_intervals[:2]:
-            if s_vec[(p_lead + cand_3rd) % 12] > 0.5:
-                naive_int = cand_3rd
-                break
-
-        best_int = naive_int
-        best_score = -999.0
-        scores_by_int: dict[int, float] = {}
-
-        for cand_int in allowed_intervals:
-            h_pc = (p_lead + cand_int) % 12
-            chord_support = float(c_vec[h_pc])
-            in_scale = float(s_vec[h_pc])
-
-            # Check adjacent semitone clash against active backing chord tones!
-            adj_energy = max(float(c_vec[(h_pc - 1) % 12]), float(c_vec[(h_pc + 1) % 12]))
-            semitone_clash = adj_energy * max(0.0, 1.0 - 0.75 * chord_support)
-
-            # Check tritone clash against dominant bass/chord root if unsupported
-            tritone_clash = float(c_vec[(h_pc + 6) % 12]) * (0.35 if chord_support < 0.25 else 0.0)
-
-            third_prior = 0.45 if abs(cand_int) in (3, 4) else 0.0
-            continuity_bonus = 0.15 if cand_int == prev_choice else 0.0
-
-            score = (
-                2.65 * chord_support
-                + 1.35 * in_scale
-                - 3.10 * semitone_clash
-                - tritone_clash
-                + third_prior
-                + continuity_bonus
-            )
-            scores_by_int[cand_int] = score
-            if score > best_score:
-                best_score = score
-                best_int = cand_int
+        best_int, naive_int, best_score, scores_by_int = _score_chord_safe_interval(
+            p_lead=p_lead,
+            c_vec=c_vec,
+            s_vec=s_vec,
+            allowed_intervals=allowed_intervals,
+            prev_choice=prev_choice,
+        )
 
         if best_int != naive_int and (best_score - scores_by_int.get(naive_int, best_score)) >= 0.55:
             rescued_count += 1
@@ -721,6 +1135,280 @@ def _select_and_stitch_chord_safe_harmony(
     return out.astype(np.float32), len(note_spans), rescued_count
 
 
+def _nearest_midi_in_register(pitch_class: int, anchor_midi: int, lo: int = 50, hi: int = 84) -> int:
+    """Map `pitch_class` (0..11) to the octave closest to `anchor_midi` clamped to `[lo, hi]`."""
+    cands = [pitch_class + 12 * oct_i for oct_i in range(2, 9)]
+    valid = [c for c in cands if lo <= c <= hi] or cands
+    return min(valid, key=lambda c: abs(c - anchor_midi))
+
+
+def _compute_counter_melody_notes(
+    note_spans: list[tuple[int, int, int]],
+    chord_chroma: np.ndarray,
+    local_scale: np.ndarray,
+    sections: list[SongSection],
+    bpm: float,
+    sr: int,
+    hop: int,
+) -> list[dict]:
+    """Generate chord-safe Call & Response motifs in phrase-end rests + High-5th/Octave obligato pads."""
+    if not note_spans or chord_chroma.shape[1] == 0:
+        return []
+
+    frame_dt = hop / float(sr)
+    n_frames = chord_chroma.shape[1]
+    eighth_sec = float(np.clip(60.0 / max(bpm, 60.0) * 0.5, 0.14, 0.42))
+    counter_notes: list[dict] = []
+
+    chorus_sections = [s for s in sections if s.label.endswith("_Chorus")]
+    final_chorus_labels = {s.label for s in chorus_sections[1:]} if len(chorus_sections) >= 2 else {s.label for s in chorus_sections}
+
+    def _find_section(t_sec: float) -> SongSection | None:
+        for sec in sections:
+            if sec.start_sec <= t_sec <= sec.end_sec:
+                return sec
+        return None
+
+    # 1. Call & Response (追っかけコーラス) in Chorus / Pre-Chorus phrase-ending rests (>= 0.75s)
+    for idx_n, (f0_i, f1_i, lead_m) in enumerate(note_spans):
+        end_sec = f1_i * frame_dt
+        next_start_sec = note_spans[idx_n + 1][0] * frame_dt if idx_n + 1 < len(note_spans) else n_frames * frame_dt
+        gap_sec = next_start_sec - end_sec
+        if gap_sec < 0.75:
+            continue
+
+        sec = _find_section(end_sec)
+        if sec is None:
+            continue
+        is_chorus = sec.label.endswith("_Chorus")
+        is_late_pre = "Verse_PreChorus" in sec.label and (end_sec >= sec.start_sec + 0.55 * (sec.end_sec - sec.start_sec))
+        if not (is_chorus or is_late_pre):
+            continue
+
+        r0_f = min(n_frames - 1, f1_i + max(1, int(round(0.08 / frame_dt))))
+        r1_f = min(n_frames, f1_i + max(3, int(round(min(gap_sec - 0.10, 0.85) / frame_dt))))
+        if r1_f <= r0_f:
+            continue
+
+        c_vec = np.mean(chord_chroma[:, r0_f:r1_f], axis=1)
+        s_vec = np.round(np.mean(local_scale[:, r0_f:r1_f], axis=1))
+        # Rank pitch classes that belong to active backing chord & scale
+        pc_scores = [(float(c_vec[pc]) + 0.45 * float(s_vec[pc]), pc) for pc in range(12)]
+        pc_scores.sort(reverse=True)
+        top_pcs = [pc for sc, pc in pc_scores[:4] if sc >= 0.55]
+        if len(top_pcs) < 2:
+            top_pcs = [pc for _, pc in pc_scores[:3]]
+
+        motif_count = 3 if gap_sec >= max(1.05, eighth_sec * 4.2) else 2
+        anchor = int(np.clip(lead_m + 3, 55, 79))
+        motif_pitches: list[int] = []
+        for k_m in range(motif_count):
+            pc = top_pcs[k_m % len(top_pcs)]
+            m_note = _nearest_midi_in_register(pc, anchor_midi=anchor - k_m)
+            if motif_pitches and m_note == motif_pitches[-1] and len(top_pcs) > 1:
+                m_note = _nearest_midi_in_register(top_pcs[(k_m + 1) % len(top_pcs)], anchor_midi=anchor)
+            motif_pitches.append(m_note)
+
+        cursor_sec = end_sec + 0.12
+        for k_m, m_note in enumerate(motif_pitches):
+            dur = eighth_sec * (1.5 if k_m == motif_count - 1 else 0.92)
+            if cursor_sec + 0.12 >= next_start_sec - 0.06:
+                break
+            n_end = min(next_start_sec - 0.06, cursor_sec + dur)
+            counter_notes.append(
+                {
+                    "role": "call_response",
+                    "section": sec.label,
+                    "start_sec": round(cursor_sec, 3),
+                    "end_sec": round(n_end, 3),
+                    "midi": int(m_note),
+                    "note_name": str(librosa.midi_to_note(m_note)),
+                    "velocity": 84,
+                }
+            )
+            cursor_sec += eighth_sec
+
+    # 2. High-Fifth / Octave Obligato Pad in Final Chorus(es) on sustained anchors
+    for sec in chorus_sections:
+        if sec.label not in final_chorus_labels:
+            continue
+        sec_notes = [(f0_i, f1_i, lm) for (f0_i, f1_i, lm) in note_spans if sec.start_sec <= f0_i * frame_dt < sec.end_sec]
+        last_pad_end = -1.0
+        for f0_i, f1_i, lead_m in sec_notes:
+            t0 = f0_i * frame_dt
+            t1 = f1_i * frame_dt
+            if (t1 - t0) < 0.55 or t0 < last_pad_end + 0.20:
+                continue
+            c_vec = np.mean(chord_chroma[:, f0_i:f1_i], axis=1)
+            s_vec = np.round(np.mean(local_scale[:, f0_i:f1_i], axis=1))
+            fifth_pc = (lead_m + 7) % 12
+            fifth_clash = max(float(c_vec[(fifth_pc - 1) % 12]), float(c_vec[(fifth_pc + 1) % 12]))
+            use_fifth = (float(c_vec[fifth_pc]) >= 0.45 or float(s_vec[fifth_pc]) > 0.5) and fifth_clash < 0.65
+            pad_midi = lead_m + 7 if use_fifth and lead_m + 7 <= 84 else min(84, lead_m + 12)
+            counter_notes.append(
+                {
+                    "role": "obligato_pad",
+                    "section": sec.label,
+                    "start_sec": round(t0, 3),
+                    "end_sec": round(t1, 3),
+                    "midi": int(pad_midi),
+                    "note_name": str(librosa.midi_to_note(pad_midi)),
+                    "velocity": 72,
+                }
+            )
+            last_pad_end = t1
+
+    counter_notes.sort(key=lambda d: (d["start_sec"], d["midi"]))
+    return counter_notes
+
+
+def _add_quantized_midi_track(
+    mid: mido.MidiFile,
+    track_name: str,
+    channel: int,
+    program: int,
+    notes: list[tuple[float, float, int, int]],
+    bpm: float,
+    include_tempo: bool = False,
+) -> None:
+    """Append a cleanly quantized, non-overlapping named MIDI track to `mid`."""
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.MetaMessage("track_name", name=track_name, time=0))
+    if include_tempo:
+        track.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(max(bpm, 40.0)), time=0))
+    track.append(mido.Message("program_change", channel=channel, program=program, time=0))
+
+    ticks_per_sec = mid.ticks_per_beat * (max(bpm, 40.0) / 60.0)
+    grid = max(30, mid.ticks_per_beat // 4)  # 16th-note quantization grid
+
+    events: list[tuple[int, int, mido.Message]] = []
+    last_end_tick = 0
+    for s_sec, e_sec, pitch, vel in sorted(notes, key=lambda x: (x[0], x[2])):
+        t0 = int(round((s_sec * ticks_per_sec) / grid)) * grid
+        t1 = int(round((e_sec * ticks_per_sec) / grid)) * grid
+        t0 = max(t0, last_end_tick)
+        t1 = max(t1, t0 + grid)
+        note_val = int(np.clip(pitch, 36, 96))
+        vel_val = int(np.clip(vel, 30, 120))
+        events.append((t0, 1, mido.Message("note_on", channel=channel, note=note_val, velocity=vel_val, time=0)))
+        events.append((t1, 0, mido.Message("note_off", channel=channel, note=note_val, velocity=0, time=0)))
+        last_end_tick = t1
+
+    events.sort(key=lambda item: (item[0], item[1]))
+    prev_tick = 0
+    for tick, _, msg in events:
+        msg.time = max(0, tick - prev_tick)
+        track.append(msg)
+        prev_tick = tick
+    track.append(mido.MetaMessage("end_of_track", time=0))
+
+
+def _build_harmony_midi_notes(
+    note_spans: list[tuple[int, int, int]],
+    chord_chroma: np.ndarray,
+    local_scale: np.ndarray,
+    allowed_intervals: tuple[int, int, int],
+    arr_mask: np.ndarray | None,
+    sr: int,
+    hop: int,
+) -> list[tuple[float, float, int, int]]:
+    """Compute chord-safe quantized MIDI note tuples `(start_sec, end_sec, midi, velocity)`."""
+    frame_dt = hop / float(sr)
+    out: list[tuple[float, float, int, int]] = []
+    prev_choice = allowed_intervals[0]
+    for f0_i, f1_i, lead_m in note_spans:
+        if arr_mask is not None:
+            s_mid = min(len(arr_mask) - 1, int(((f0_i + f1_i) * 0.5) * hop))
+            if float(arr_mask[s_mid]) < 0.05:
+                continue
+        c_vec = np.mean(chord_chroma[:, f0_i:f1_i], axis=1)
+        s_vec = np.round(np.mean(local_scale[:, f0_i:f1_i], axis=1))
+        best_int, _, _, _ = _score_chord_safe_interval(
+            p_lead=lead_m % 12,
+            c_vec=c_vec,
+            s_vec=s_vec,
+            allowed_intervals=allowed_intervals,
+            prev_choice=prev_choice,
+        )
+        prev_choice = best_int
+        out.append((f0_i * frame_dt, f1_i * frame_dt, lead_m + best_int, 82))
+    return out
+
+
+def _write_counter_melody_midi_file(
+    out_midi_path: Path,
+    bpm: float,
+    note_spans: list[tuple[int, int, int]],
+    chord_chroma: np.ndarray,
+    local_scale: np.ndarray,
+    upper_mask: np.ndarray | None,
+    lower_mask: np.ndarray | None,
+    counter_notes: list[dict],
+    sr: int,
+    hop: int,
+) -> Path:
+    """Write the 4-track Director & Harmony MIDI guide cleanly to `out_midi_path`."""
+    frame_dt = hop / float(sr)
+    lead_notes = [(f0_i * frame_dt, f1_i * frame_dt, lm, 92) for f0_i, f1_i, lm in note_spans]
+    upper_notes = _build_harmony_midi_notes(note_spans, chord_chroma, local_scale, (3, 4, 5), upper_mask, sr, hop)
+    lower_notes = _build_harmony_midi_notes(note_spans, chord_chroma, local_scale, (-3, -4, -5), lower_mask, sr, hop)
+    counter_tuples = [
+        (float(d["start_sec"]), float(d["end_sec"]), int(d["midi"]), int(d["velocity"])) for d in counter_notes
+    ]
+    out_p = Path(out_midi_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    mid = mido.MidiFile(ticks_per_beat=480)
+    _add_quantized_midi_track(mid, "Lead Melody Guide", channel=0, program=52, notes=lead_notes, bpm=bpm, include_tempo=True)
+    _add_quantized_midi_track(mid, "Upper Harmony (+3rd/4th)", channel=1, program=53, notes=upper_notes, bpm=bpm)
+    _add_quantized_midi_track(mid, "Lower Harmony (-3rd/4th)", channel=2, program=53, notes=lower_notes, bpm=bpm)
+    _add_quantized_midi_track(
+        mid, "Director Counter-Melody & Call-Response", channel=3, program=54, notes=counter_tuples, bpm=bpm
+    )
+    mid.save(str(out_p))
+    return out_p
+
+
+def generate_counter_melody_and_export_midi(
+    out_midi_path: Path,
+    bpm: float,
+    lead_vocal_mono: np.ndarray,
+    inst_mono: np.ndarray,
+    sections: list[SongSection],
+    sr: int,
+) -> tuple[Path, list[dict]]:
+    """Propose Call-and-Response + High-5th/Octave obligato counter-melodies and export 4-track MIDI."""
+    n = min(len(lead_vocal_mono), len(inst_mono))
+    hop = 512
+    chord_chroma, local_scale = _compute_sliding_chord_and_scale_profiles(inst_mono[:n], sr=sr, hop=hop)
+    f0, voiced_flag, voiced_prob = librosa.pyin(lead_vocal_mono[:n], fmin=70.0, fmax=900.0, sr=sr, hop_length=hop)
+    valid_voiced = (~np.isnan(f0)) & voiced_flag & (voiced_prob > 0.65)
+    note_spans = _extract_sung_note_spans(f0, valid_voiced)
+    upper_mask, lower_mask, _ = _build_section_arrangement_plan(sections, n_samples=n, sr=sr)
+    counter_notes = _compute_counter_melody_notes(
+        note_spans=note_spans,
+        chord_chroma=chord_chroma,
+        local_scale=local_scale,
+        sections=sections,
+        bpm=bpm,
+        sr=sr,
+        hop=hop,
+    )
+    saved = _write_counter_melody_midi_file(
+        out_midi_path=out_midi_path,
+        bpm=bpm,
+        note_spans=note_spans,
+        chord_chroma=chord_chroma,
+        local_scale=local_scale,
+        upper_mask=upper_mask,
+        lower_mask=lower_mask,
+        counter_notes=counter_notes,
+        sr=sr,
+        hop=hop,
+    )
+    return saved, counter_notes
+
+
 def generate_nectar3_harmonies_and_plan(
     lead_vocal_mono: np.ndarray,
     inst_mono: np.ndarray,
@@ -728,6 +1416,8 @@ def generate_nectar3_harmonies_and_plan(
     sections: list[SongSection],
     existing_user_harmonies: list[np.ndarray] | None = None,
     use_vst3: bool = True,
+    out_midi_path: Path | None = None,
+    bpm: float = 120.0,
 ) -> HarmonyGenerationResult:
     """Generate Nectar 3 chord-safe Upper & Lower harmonies for both Turn-Key Mix and DAW Guide use."""
     n = len(lead_vocal_mono)
@@ -755,7 +1445,8 @@ def generate_nectar3_harmonies_and_plan(
     f0, voiced_flag, voiced_prob = librosa.pyin(
         lead_vocal_mono, fmin=70.0, fmax=900.0, sr=sr, hop_length=hop
     )
-    valid_voiced = (~np.isnan(f0)) & voiced_flag & (voiced_prob > 0.65) & (combined_Gate[::hop][: len(f0)] > 0.01)
+    full_valid = (~np.isnan(f0)) & voiced_flag & (voiced_prob > 0.65)
+    valid_voiced = full_valid & (combined_Gate[::hop][: len(f0)] > 0.01)
 
     all_intervals = (3, 4, 5, -3, -4, -5)
     candidates, engine_name = _render_candidate_intervals_via_nectar3(
@@ -852,6 +1543,32 @@ def generate_nectar3_harmonies_and_plan(
         axis=0,
     ).astype(np.float32)
 
+    all_note_spans = _extract_sung_note_spans(f0, full_valid)
+    counter_notes = _compute_counter_melody_notes(
+        note_spans=all_note_spans,
+        chord_chroma=chord_chroma,
+        local_scale=local_scale,
+        sections=sections,
+        bpm=bpm,
+        sr=sr,
+        hop=hop,
+    )
+    midi_path_str: str | None = None
+    if out_midi_path is not None:
+        saved_midi = _write_counter_melody_midi_file(
+            out_midi_path=out_midi_path,
+            bpm=bpm,
+            note_spans=all_note_spans,
+            chord_chroma=chord_chroma,
+            local_scale=local_scale,
+            upper_mask=upper_arr_mask,
+            lower_mask=lower_arr_mask,
+            counter_notes=counter_notes,
+            sr=sr,
+            hop=hop,
+        )
+        midi_path_str = str(saved_midi)
+
     return HarmonyGenerationResult(
         upper_guide_mono=upper_guide,
         lower_guide_mono=lower_guide,
@@ -860,4 +1577,6 @@ def generate_nectar3_harmonies_and_plan(
         total_harmony_notes=max(notes_up, notes_low),
         chord_clash_notes_rescued=rescued_up + rescued_low,
         suggestions=suggestions,
+        counter_melody_notes=counter_notes,
+        midi_guide_path=midi_path_str,
     )

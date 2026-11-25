@@ -46,6 +46,7 @@ models/weights/
 
 # OS / IDE / External Binaries
 tools/*.exe
+tools/*.ps1
 .DS_Store
 Thumbs.db
 .vscode/

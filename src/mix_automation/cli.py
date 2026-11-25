@@ -152,11 +152,13 @@ def mix_song(
         taste_weight=taste_weight,
         enable_nectar_in_mix=enable_nectar_mix,
     )
-    console.print("\n[bold green]v6 Auto-MIX Complete![/bold green]")
+    console.print("\n[bold green]v7 Auto-MIX Complete![/bold green]")
     console.print(f"  Archetype & Target   : [magenta]{report['optimized_chain_params']['archetype_chain']} -> {report['resolved_target_profile']}[/magenta]")
     console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan] ({len(report.get('studio_one_injected_presets', []))} native VST3 presets)")
     console.print(f"  Mastered 2mix WAV    : [cyan]{report['master_wav']}[/cyan]")
-    console.print(f"  Processed Vocal Bus  : [cyan]{report['vocal_bus_wav']}[/cyan]\n")
+    console.print(f"  Processed Vocal Bus  : [cyan]{report['vocal_bus_wav']}[/cyan]")
+    if report.get("director_midi_guide"):
+        console.print(f"  Director MIDI Guide  : [cyan]{report['director_midi_guide']}[/cyan]\n")
 
 
 @app.command("propagate-anchor")
@@ -203,6 +205,169 @@ def inspect_song_cmd(
     console.print(f"[magenta]Preset entries ({len(summary.preset_entries)}):[/magenta] {summary.preset_entries}")
     console.print(f"[green]Media entries ({len(summary.media_entries)}):[/green] {summary.media_entries}")
     console.print(f"[yellow]Detected Devices:[/yellow] {summary.detected_plugin_names}\n")
+
+
+@app.command("learn-preferences")
+def learn_preferences(
+    auto_song: Path = typer.Argument(..., exists=True, help="Auto-generated Studio One 5 .song file"),
+    user_song: Path = typer.Argument(..., exists=True, help="User-adjusted Studio One 5 .song file"),
+    offsets: Path = typer.Option(
+        DEFAULT_PROFILES_JSON.parent / "user_preference_offsets.json",
+        "--offsets",
+        "-o",
+        help="Path to save/update bounded EMA user_preference_offsets.json",
+    ),
+    alpha: float = typer.Option(0.35, "--alpha", help="EMA learning rate (0.05-1.0)"),
+) -> None:
+    """Learn persistent user mixing preference offsets from DAW tweaks between auto & user .song files."""
+    from mix_automation.analysis.preference_learner import update_user_preference_offsets
+
+    record = update_user_preference_offsets(
+        auto_song_path=auto_song,
+        user_song_path=user_song,
+        offsets_json_path=offsets,
+        alpha=alpha,
+    )
+
+    table = Table(title=f"Learned User Preference Offsets (Sessions: {record['num_sessions']}, alpha={record['alpha']})")
+    table.add_column("Target Dimension", style="cyan")
+    table.add_column("EMA Offset (dB)", justify="right", style="green")
+    table.add_column("Last Session Delta (dB)", justify="right", style="magenta")
+
+    last_d = record.get("last_session", {}).get("extracted_deltas", {})
+    last_sends = last_d.get("send_deltas_db", {})
+    last_pq = last_d.get("persistent_q_mix_band_deltas_db", {})
+
+    table.add_row(
+        "Vocal Level (K-LUFS V/I)",
+        f"{record['k_lufs_vi_offset_db']:+.3f}",
+        f"{last_d.get('mainvocal_fader_delta_db', 0.0) + last_d.get('main_bus_fader_delta_db', 0.0) + last_d.get('mean_clip_gain_delta_db', 0.0):+.3f}",
+    )
+    table.add_row(
+        "Spatial Wet-Tail",
+        f"{record['wet_tail_offset_db']:+.3f}",
+        f"{last_sends.get('plate_reverb', 0.0):+.3f} (Plate)",
+    )
+    table.add_row(
+        "Harmony / Width (Side-Mid)",
+        f"{record['vocal_side_mid_offset_db']:+.3f}",
+        f"{last_d.get('harmvocal_fader_delta_db', 0.0):+.3f} (Harm)",
+    )
+    for band_name, val in record.get("intrinsic_band_offsets_db", {}).items():
+        table.add_row(
+            f"EQ Band: {band_name}",
+            f"{val:+.3f}",
+            f"{last_pq.get(band_name, 0.0):+.3f}",
+        )
+
+    console.print(table)
+    console.print(f"[green]Updated preference offsets -> {offsets}[/green]\n")
+
+
+@app.command("scan-references")
+def scan_references(
+    inbox: Path = typer.Option(
+        PROJECT_ROOT / "youtube_references",
+        "--inbox",
+        "-i",
+        help="Candidate reference inbox root (containing artist/song folders)",
+    ),
+) -> None:
+    """Scan youtube_references inbox and enforce all 4 acoustic/alignment quality gates."""
+    from mix_automation.analysis.reference_extractor import scan_youtube_references_inbox
+
+    summary = scan_youtube_references_inbox(inbox_root=inbox)
+
+    table = Table(title=f"Reference Inbox Quality Gate Audit — {inbox}")
+    table.add_column("Candidate", style="cyan")
+    table.add_column("Cover ID", style="dim")
+    table.add_column("Archetype", style="magenta")
+    table.add_column("Key Shift", justify="center")
+    table.add_column("Paired Calib", justify="center")
+    table.add_column("Gate", justify="center")
+    table.add_column("Rejection Reasons")
+
+    for cand in summary.get("candidates", []):
+        gate_str = "[green]PASS[/green]" if cand["passed"] else "[red]FAIL[/red]"
+        ks_str = f"{cand['key_shift_semitones']:+d}st" if cand["key_shifted"] else "0st"
+        calib_str = "[green]YES[/green]" if cand["paired_calibration_eligible"] else "[yellow]NO[/yellow]"
+        reasons = "; ".join(cand.get("rejection_reasons", [])) or "-"
+        table.add_row(
+            f"{cand['group']}/{cand['slug']}",
+            str(cand.get("cover_id") or "-"),
+            str(cand.get("backing_archetype", "-")),
+            ks_str,
+            calib_str,
+            gate_str,
+            reasons,
+        )
+
+    console.print(table)
+    console.print(
+        f"[bold]Evaluated {summary['total_candidates']} candidates: "
+        f"[green]{summary['passed_count']} passed[/green], "
+        f"[red]{summary['rejected_count']} rejected[/red], "
+        f"key-shifted={summary['key_shifted_count']}, "
+        f"paired-calib-eligible={summary['paired_calibration_eligible_count']}[/bold]\n"
+    )
+
+
+@app.command("benchmark-ab")
+def benchmark_ab(
+    outputs_dir: Path = typer.Option(
+        PROJECT_ROOT / "data" / "outputs",
+        "--outputs-dir",
+        help="Completed AutoMIX outputs root",
+    ),
+    out_dir: Path = typer.Option(
+        PROJECT_ROOT / "docs" / "reports" / "ab_blind_test",
+        "--out-dir",
+        help="Destination folder for -14 LUFS clips & interactive A/B console HTML",
+    ),
+) -> None:
+    """Extract loudness-normalized (-14 LUFS) A/B listening clips, run Do-Not-Regress checks & build HTML console."""
+    from mix_automation.analysis.ab_harness import (
+        extract_loudness_normalized_ab_clips,
+        generate_ab_blind_console_html,
+    )
+
+    summary = extract_loudness_normalized_ab_clips(
+        outputs_root=outputs_dir,
+        out_ab_dir=out_dir,
+        raw_root=PROJECT_ROOT / "data" / "raw",
+    )
+    html_path = generate_ab_blind_console_html(summary, out_dir / "index.html")
+
+    table = Table(title="Do-Not-Regress Multi-Song Acoustic & Studio One 5 Audit")
+    table.add_column("Song / Run", style="cyan")
+    table.add_column("K-LUFS Err", justify="center")
+    table.add_column("No Scoop", justify="center")
+    table.add_column("No HF Sizzle", justify="center")
+    table.add_column("S1 Zero-JUCE", justify="center")
+    table.add_column("Overall", justify="center")
+
+    def _badge(ok: bool, detail: str) -> str:
+        return f"[green]PASS[/green] ({detail})" if ok else f"[red]FAIL[/red] ({detail})"
+
+    for s in summary.get("songs", []):
+        hc = s.get("health_checks", {})
+        hm = s.get("health_metrics", {})
+        overall = "[green]PASS[/green]" if s.get("all_health_checks_passed") else "[red]FAIL[/red]"
+        table.add_row(
+            s["run_id"],
+            _badge(bool(hc.get("klufs_error_db")), f"{hm.get('klufs_abs_error_db', 0.0):.2f}dB"),
+            _badge(bool(hc.get("no_lower_mid_scoop")), f"{hm.get('achieved_body_warmth', 0.0):.1f}"),
+            _badge(bool(hc.get("no_hf_sizzle")), f"{hm.get('achieved_air_sheen', 0.0):.1f}dB"),
+            _badge(bool(hc.get("studio_one_zero_juce_leak")), f"leak={hm.get('juce_leak_count', '?')}"),
+            overall,
+        )
+
+    console.print(table)
+    console.print(
+        f"[bold]Audited {summary['songs_evaluated']} songs — "
+        f"Passed: {summary['songs_passed']} / {summary['songs_evaluated']}[/bold]"
+    )
+    console.print(f"[cyan]Interactive Blind A/B Console -> {html_path}[/cyan]\n")
 
 
 if __name__ == "__main__":

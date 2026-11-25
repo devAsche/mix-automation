@@ -16,6 +16,7 @@ Fixes every v2 preprocessing defect empirically uncovered during DSP forensics:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import librosa
 import numpy as np
@@ -24,6 +25,7 @@ from pedalboard import Pedalboard, load_plugin
 from scipy import ndimage, signal
 
 from mix_automation.config.plugin_registry import get_plugin_map
+from mix_automation.dsp.lyrics_aligner import LyricsPhonemeAlignment, align_lyrics_and_phonemes
 from mix_automation.dsp.pitch_timing import PitchTimingReport, run_smart_pitch_and_timing_stage
 from mix_automation.dsp.vst3_adapter import (
     configure_rx10_spectral_deess,
@@ -350,8 +352,13 @@ def preprocess_vocal_pipeline(
     sr: int,
     ref_vocal_mono: np.ndarray | None = None,
     cfg: PreprocessConfig | None = None,
-) -> tuple[np.ndarray, PitchTimingReport, tuple[np.ndarray, int, str], PreprocessCalibrationReport]:
-    """Execute complete v3 self-calibrating, attack-preserving Stage 1 pre-processing."""
+    lyrics_path: Path | None = None,
+    return_alignment: bool = False,
+) -> (
+    tuple[np.ndarray, PitchTimingReport, tuple[np.ndarray, int, str], PreprocessCalibrationReport]
+    | tuple[np.ndarray, PitchTimingReport, tuple[np.ndarray, int, str], PreprocessCalibrationReport, LyricsPhonemeAlignment]
+):
+    """Execute complete v7 self-calibrating, phoneme/attack-preserving Stage 1 pre-processing."""
     cfg = cfg or PreprocessConfig()
 
     v = strip_silence_gate(raw_mono_vocal, sr=sr)
@@ -360,6 +367,7 @@ def preprocess_vocal_pipeline(
         v = run_rx10_cleanup(v, sr=sr, cfg=cfg)
         v = strip_silence_gate(v, sr=sr)
 
+    alignment = align_lyrics_and_phonemes(v, sr=sr, lyrics_path=lyrics_path)
     scale_info = detect_key_scale_mask(inst_mono, sr=sr)
     scale_mask, _, _ = scale_info
     v, pt_report = run_smart_pitch_and_timing_stage(
@@ -369,6 +377,7 @@ def preprocess_vocal_pipeline(
         ref_vocal_mono=ref_vocal_mono,
         force_pitch=cfg.force_auto_pitch,
         enable_auto_align=cfg.enable_auto_align,
+        lyrics_alignment=alignment,
     )
 
     if cfg.enable_gain_rider:
@@ -378,4 +387,6 @@ def preprocess_vocal_pipeline(
     v, _ = stage_vocal_loudness(v, sr=sr, target_lufs=cfg.target_staged_lufs)
     v, calib_report = run_self_calibrating_deess_and_soothe2(v, sr=sr, cfg=cfg)
 
+    if return_alignment:
+        return v, pt_report, scale_info, calib_report, alignment
     return v, pt_report, scale_info, calib_report

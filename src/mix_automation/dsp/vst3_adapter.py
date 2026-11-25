@@ -22,7 +22,14 @@ _KHZ_RE = re.compile(r"^\s*([-+]?\d+)[kK](\d+)?\s*$")
 
 
 def _parse_numeric_token(token: str) -> float | None:
-    s = token.strip().lower()
+    s = (
+        token.replace("\u2212", "-")
+        .replace("\u2013", "-")
+        .replace("\u202f", " ")
+        .replace("\u00a0", " ")
+        .strip()
+        .lower()
+    )
     if s == "fast":
         return 0.0
     if s == "slow":
@@ -659,3 +666,89 @@ def configure_early_room_phoenix(
     set_vst3_param_strict(plug, "predelay", float(np.clip(predelay_ms, 3.0, 30.0)))
     set_vst3_param_strict(plug, "earlylvl", 0.0)
     set_vst3_param_strict(plug, "damp_fc", 5200.0)
+
+
+def configure_mautopitch_hard_tune(
+    plug: Any,
+    scale_mask: list[bool] | np.ndarray | None = None,
+    speed: float = 95.0,
+    depth: float = 100.0,
+    formant_shift: float = 0.0,
+) -> None:
+    """Configure MeldaProduction MAutoPitch for crisp Stage-3 hard-tune / robotic pitch quantization."""
+    if "bypass" in plug.parameters:
+        bp_vv = getattr(plug.parameters["bypass"], "valid_values", None) or []
+        if "Off" in bp_vv:
+            set_vst3_param_strict(plug, "bypass", "Off")
+        elif False in bp_vv:
+            set_vst3_param_strict(plug, "bypass", False)
+
+    set_vst3_param_strict(plug, "depth_automatic_tuning", float(np.clip(depth, 0.0, 100.0)))
+    set_vst3_param_strict(plug, "speed_automatic_tuning", float(np.clip(speed, 0.0, 100.0)))
+    set_vst3_param_strict(plug, "keep_formants_effects", 100.0)
+    set_vst3_param_strict(plug, "formant_shift_effects", float(np.clip(formant_shift, -12.0, 12.0)))
+    set_vst3_param_strict(plug, "dry_wet_effects", "100% wet, 0% dry")
+
+    note_keys = ("c", "c_sharp", "d", "d_sharp", "e", "f", "f_sharp", "g", "g_sharp", "a", "a_sharp", "b")
+    if scale_mask is not None and len(scale_mask) == 12:
+        bool_mask = [bool(x) for x in scale_mask]
+        if not any(bool_mask):
+            bool_mask = [True] * 12
+    else:
+        bool_mask = [True] * 12
+
+    for nk, enabled in zip(note_keys, bool_mask):
+        set_vst3_param_strict(plug, nk, enabled)
+
+
+def configure_khs_dual_delay_spot(
+    plug: Any,
+    delay_ms: float = 250.0,
+    feedback: float = 36.0,
+    spread: float = 75.0,
+    duck: float = 25.0,
+    mix_pct: float = 100.0,
+) -> None:
+    """Configure Kilohearts Dual Delay for rhythmic Stage-3 spot delay throws."""
+    set_vst3_param_strict(plug, "bypass", False)
+    set_vst3_param_strict(plug, "sync_mode", "time")
+    set_vst3_param_strict(plug, "delay_time_seconds", float(np.clip(delay_ms, 50.0, 900.0)))
+    set_vst3_param_strict(plug, "feedback", float(np.clip(feedback, 0.0, 95.0)))
+    set_vst3_param_strict(plug, "crosstalk", 40.0)
+    set_vst3_param_strict(plug, "spread", float(np.clip(spread, 0.0, 100.0)))
+    set_vst3_param_strict(plug, "duck", float(np.clip(duck, 0.0, 100.0)))
+    set_vst3_param_strict(plug, "mix", float(np.clip(mix_pct, 0.0, 100.0)))
+
+
+def configure_trash2_vocal_grit(
+    plug: Any,
+    drive: float = 3.6,
+    style: float = 0.5,
+    wet_mix: float = 55.0,
+    low_cut_hz: float = 380.0,
+    high_cut_hz: float = 4200.0,
+) -> None:
+    """Configure iZotope Trash 2 strictly band-limited (380-4200 Hz) for zero-sizzle vocal grit."""
+    set_vst3_param_strict(plug, "global_bypass", False)
+    set_vst3_param_strict(plug, "trash_module_bypass", False)
+    set_vst3_param_strict(plug, "trash_bypass", False)
+    if "gain_input_lock" in plug.parameters:
+        set_vst3_param_strict(plug, "gain_input_lock", True)
+        set_vst3_param_strict(plug, "gain_input_locked_db", float(np.clip(4.0 + drive * 0.8, 2.0, 9.5)))
+    set_vst3_param_strict(plug, "trash_stg1_enable", True)
+    set_vst3_param_strict(plug, "trash_stg1_shape_enable", True)
+    # Drive `-18 LUFS` studio vocals cleanly into Trash 2's nonlinear knee with compensated post-gain
+    set_vst3_param_strict(plug, "trash_stg1_pre", float(np.clip(12.0 + drive * 1.4, 8.0, 20.0)))
+    set_vst3_param_strict(plug, "trash_stg1_drive", float(np.clip(drive, 0.0, 10.0)))
+    set_vst3_param_strict(plug, "trash_stg1_style", float(np.clip(style, 0.0, 1.0)))
+    set_vst3_param_strict(plug, "trash_stg1_tension_scale", float(np.clip(32.0 + drive * 5.0, 20.0, 75.0)))
+    set_vst3_param_strict(plug, "trash_stg1_gain", -6.0)
+    set_vst3_param_strict(plug, "trash_stg1_mix", 100.0)
+    set_vst3_param_strict(plug, "trash_stg1_filter_enable", True)
+    set_vst3_param_strict(plug, "trash_stg1_filter_low_freq", float(np.clip(low_cut_hz, 120.0, 1200.0)))
+    set_vst3_param_strict(plug, "trash_stg1_filter_high_freq", float(np.clip(high_cut_hz, 2000.0, 6500.0)))
+    if "gain_output_lock" in plug.parameters:
+        set_vst3_param_strict(plug, "gain_output_lock", True)
+        set_vst3_param_strict(plug, "gain_output_locked_db", -3.0)
+    set_vst3_param_strict(plug, "global_mix", float(np.clip(wet_mix, 0.0, 100.0)))
+    set_vst3_param_strict(plug, "limiter_enable", True)

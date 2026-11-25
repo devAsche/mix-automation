@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
+import librosa
 import numpy as np
 import pyloudnorm as pyln
 import torch
@@ -287,6 +288,625 @@ def apply_dynamic_distance_tone_soften(
     return out
 
 
+# --- v7 Multi-Section Adaptive Tone Sculpting, Fine Distance Clip-Gain Events & Tempo Map ---
+
+_MULTISECTION_BAND_SPECS: tuple[tuple[str, float, float], ...] = (
+    ("low_warmth_220", 220.0, 1.15),
+    ("boxiness_520", 520.0, 1.35),
+    ("core_presence_2600", 2600.0, 1.25),
+    ("top_edge_6500", 6500.0, 1.10),
+)
+
+
+def _classify_section_regime(idx: int, label: str, anchor_idx: int) -> str:
+    low = label.lower()
+    if "instrumental" in low:
+        return "Instrumental"
+    if idx == anchor_idx:
+        return "Anchor_Chorus"
+    if "quiet" in low or "breakdown" in low or "bridge" in low:
+        return "Quiet_Breakdown"
+    if "verse" in low or "prechorus" in low:
+        return "Verse_PreChorus"
+    if "chorus" in low:
+        return "Other_Chorus"
+    return "Verse_PreChorus"
+
+
+def _rbj_peaking_sos_np(f0: float, q: float, gain_db: float, sr: int) -> np.ndarray | None:
+    if abs(gain_db) < 0.04 or f0 <= 0.0 or f0 >= 0.48 * sr:
+        return None
+    amp = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * np.pi * f0 / float(sr)
+    cos_w0 = np.cos(w0)
+    alpha = np.sin(w0) / (2.0 * q)
+    b0 = 1.0 + alpha * amp
+    b1 = -2.0 * cos_w0
+    b2 = 1.0 - alpha * amp
+    a0 = 1.0 + alpha / amp
+    a1 = -2.0 * cos_w0
+    a2 = 1.0 - alpha / amp
+    return np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]], dtype=np.float64)
+
+
+def _find_local_vocal_dip_sample(
+    sig: np.ndarray,
+    target_sample: int,
+    sr: int,
+    min_sample: int,
+    max_sample: int,
+    search_window_sec: float = 0.45,
+) -> int:
+    """Snap a boundary sample to the quietest nearby vocal dip/pause without leaving bounds."""
+    if min_sample >= max_sample:
+        return min(max(target_sample, min_sample), max_sample)
+    rad = int(search_window_sec * sr)
+    lo = max(min_sample, target_sample - rad)
+    hi = min(max_sample, target_sample + rad)
+    if hi - lo < max(int(0.04 * sr), 64):
+        return min(max(target_sample, min_sample), max_sample)
+
+    seg = sig[lo:hi].astype(np.float64)
+    hop = max(int(sr * 0.015), 64)
+    win = max(int(sr * 0.035), hop)
+    n_f = max(1, (len(seg) - win) // hop + 1)
+    if n_f <= 2:
+        return min(max(target_sample, min_sample), max_sample)
+
+    frm_rms = np.empty(n_f, dtype=np.float64)
+    centers = np.empty(n_f, dtype=np.int64)
+    for fi in range(n_f):
+        s_i = fi * hop
+        frm_rms[fi] = np.sqrt(np.mean(seg[s_i : s_i + win] ** 2) + 1e-12)
+        centers[fi] = lo + s_i + win // 2
+
+    peak_ref = float(np.max(frm_rms)) + 1e-9
+    dist_penalty = ((centers - target_sample) / max(float(rad), 1.0)) ** 2
+    score = (frm_rms / peak_ref) + 0.08 * dist_penalty
+    best = int(centers[int(np.argmin(score))])
+    return min(max(best, min_sample), max_sample)
+
+
+def _solve_section_4band_delta(
+    regime: str,
+    sec_prof: SectionRelativeProfile,
+    anchor_prof: SectionRelativeProfile,
+    target_profile: SectionRelativeProfile,
+    verse_intimacy_shift_db: float,
+) -> dict[str, float]:
+    """Solve bounded 4-band differential section tone & presence deltas in [-2.2, +1.8] dB (0 HF boost)."""
+    if regime in ("Instrumental", "Anchor_Chorus"):
+        return {name: 0.0 for name, _, _ in _MULTISECTION_BAND_SPECS}
+
+    intimacy = float(np.clip(verse_intimacy_shift_db, 0.0, 1.5))
+    dens_drop = max(0.0, anchor_prof.inst_mid_density_index - sec_prof.inst_mid_density_index)
+    pres_drop = max(
+        0.0, anchor_prof.inst_band_levels_db["core_presence"] - sec_prof.inst_band_levels_db["core_presence"]
+    )
+    pres_jump = max(
+        0.0, sec_prof.inst_band_levels_db["core_presence"] - anchor_prof.inst_band_levels_db["core_presence"]
+    )
+    sib_drop = max(
+        0.0, anchor_prof.inst_band_levels_db["sibilance"] - sec_prof.inst_band_levels_db["sibilance"]
+    )
+
+    ref_body = 0.75 * anchor_prof.vocal_intrinsic_bands_db["body_warmth"] + 0.25 * target_profile.vocal_intrinsic_bands_db["body_warmth"]
+    ref_mud = 0.75 * anchor_prof.vocal_intrinsic_bands_db["boxiness_mud"] + 0.25 * target_profile.vocal_intrinsic_bands_db["boxiness_mud"]
+    ref_pres = 0.75 * anchor_prof.vocal_intrinsic_bands_db["core_presence"] + 0.25 * target_profile.vocal_intrinsic_bands_db["core_presence"]
+
+    body_err = ref_body - sec_prof.vocal_intrinsic_bands_db["body_warmth"]
+    mud_excess = sec_prof.vocal_intrinsic_bands_db["boxiness_mud"] - ref_mud
+    pres_intr_err = ref_pres - sec_prof.vocal_intrinsic_bands_db["core_presence"]
+    pres_margin_err = anchor_prof.band_margins_db["core_presence"] - sec_prof.band_margins_db["core_presence"]
+
+    if regime == "Quiet_Breakdown":
+        raw_220 = 0.45 * body_err + (0.45 + 0.55 * intimacy) + 0.70 * dens_drop
+        raw_2600 = 0.35 * pres_intr_err + 0.30 * float(np.clip(pres_margin_err, -4.0, 1.5)) - 0.25 * min(pres_drop, 8.0) - 0.35
+        regime_silk = -0.55
+    elif regime == "Verse_PreChorus":
+        raw_220 = 0.45 * body_err + (0.25 + 0.40 * intimacy) + 0.45 * dens_drop
+        raw_2600 = 0.45 * pres_intr_err + 0.30 * float(np.clip(pres_margin_err, -3.5, 2.0)) - 0.18 * min(pres_drop, 8.0)
+        regime_silk = -0.25
+    else:  # Other_Chorus (e.g., modulated / denser final chorus)
+        body_back_diff = anchor_prof.inst_band_levels_db["body_warmth"] - sec_prof.inst_band_levels_db["body_warmth"]
+        raw_220 = 0.50 * body_err + 0.15 * float(np.clip(body_back_diff, -3.0, 3.0))
+        raw_2600 = 0.50 * pres_intr_err + 0.55 * float(np.clip(pres_margin_err, -2.5, 3.5)) + 0.25 * min(pres_jump, 4.0)
+        regime_silk = 0.0
+
+    g_220 = round(float(np.clip(raw_220, -2.2, 1.8)), 2)
+    raw_520 = -0.55 * mud_excess - 0.22 * max(0.0, g_220)
+    g_520 = round(float(np.clip(raw_520, -2.2, 0.4)), 2)
+    g_2600 = round(float(np.clip(raw_2600, -2.2, 1.8)), 2)
+
+    sib_tgt_cap = min(float(target_profile.vocal_intrinsic_bands_db["sibilance"]), -18.8)
+    sib_excess = max(0.0, sec_prof.vocal_intrinsic_bands_db["sibilance"] - sib_tgt_cap)
+    sib_vs_anchor = max(0.0, sec_prof.vocal_intrinsic_bands_db["sibilance"] - anchor_prof.vocal_intrinsic_bands_db["sibilance"])
+    raw_6500 = regime_silk - 0.45 * sib_excess - 0.35 * sib_vs_anchor - 0.08 * min(sib_drop, 8.0)
+    # Zero HF sizzle boost: top_edge_6500 is strictly <= 0.0 dB!
+    g_6500 = round(float(np.clip(raw_6500, -2.2, 0.0)), 2)
+
+    return {
+        "low_warmth_220": g_220,
+        "boxiness_520": g_520,
+        "core_presence_2600": g_2600,
+        "top_edge_6500": g_6500,
+    }
+
+
+def _filter_section_zero_phase(
+    sig: np.ndarray,
+    sr: int,
+    i0: int,
+    i1: int,
+    gains_db: dict[str, float],
+) -> np.ndarray:
+    """Apply zero-phase RBJ peaking stack to `[i0, i1]` using surrounding context padding."""
+    if i1 <= i0:
+        return np.empty(0, dtype=np.float64)
+    sos_list = [
+        sos
+        for name, freq_hz, q_val in _MULTISECTION_BAND_SPECS
+        if (sos := _rbj_peaking_sos_np(freq_hz, q_val, float(gains_db.get(name, 0.0)), sr)) is not None
+    ]
+    if not sos_list:
+        return sig[i0:i1].astype(np.float64, copy=True)
+
+    pad = int(0.60 * sr)
+    c0 = max(0, i0 - pad)
+    c1 = min(len(sig), i1 + pad)
+    if c1 - c0 < 64:
+        return sig[i0:i1].astype(np.float64, copy=True)
+    sos_stack = np.vstack(sos_list)
+    y_ctx = signal.sosfiltfilt(sos_stack, sig[c0:c1].astype(np.float64))
+    return y_ctx[i0 - c0 : i1 - c0]
+
+
+def apply_multisection_adaptive_sculpting(
+    lead_chained_mono: np.ndarray,
+    inst_stereo: np.ndarray,
+    sr: int,
+    raw_spans: list[tuple[float, float, str]],
+    anchor_idx: int,
+    target_profile: SectionRelativeProfile,
+    verse_intimacy_shift_db: float = 0.4,
+) -> tuple[np.ndarray, list[dict]]:
+    """Adapt lead vocal tone & presence across acoustic regimes with 180ms dip-snapped cosine crossfades."""
+    n = len(lead_chained_mono)
+    out = lead_chained_mono.astype(np.float32, copy=True)
+    if not raw_spans or n < int(sr * 0.5):
+        return out, []
+
+    if inst_stereo.ndim == 1:
+        inst_st = np.stack([inst_stereo, inst_stereo], axis=0)
+    elif inst_stereo.shape[0] <= 2 and inst_stereo.shape[0] < inst_stereo.shape[1]:
+        inst_st = inst_stereo if inst_stereo.shape[0] == 2 else np.repeat(inst_stereo, 2, axis=0)
+    else:
+        inst_st = inst_stereo.T if inst_stereo.shape[1] == 2 else np.repeat(inst_stereo.T, 2, axis=0)
+
+    n_common = min(n, inst_st.shape[1])
+    eff_anchor_idx = min(max(0, anchor_idx), len(raw_spans) - 1)
+    a_s, a_e, _ = raw_spans[eff_anchor_idx]
+    a0 = max(0, min(n_common, int(round(a_s * sr))))
+    a1 = max(a0, min(n_common, int(round(a_e * sr))))
+    if a1 - a0 < max(int(sr * 0.25), 512):
+        return out, []
+    anchor_prof = compute_section_relative_profile(lead_chained_mono[a0:a1], inst_st[:, a0:a1], sr=sr)
+
+    section_plans: list[dict] = []
+    for idx, (st_sec, en_sec, lbl) in enumerate(raw_spans):
+        i0 = max(0, min(n_common, int(round(st_sec * sr))))
+        i1 = max(i0, min(n_common, int(round(en_sec * sr))))
+        regime = _classify_section_regime(idx, lbl, eff_anchor_idx)
+        seg_len = i1 - i0
+        v_slice = lead_chained_mono[i0:i1]
+        is_active = seg_len >= max(int(0.4 * sr), 512) and float(np.max(np.abs(v_slice))) > 1e-4
+
+        if regime in ("Instrumental", "Anchor_Chorus") or not is_active:
+            gains = {name: 0.0 for name, _, _ in _MULTISECTION_BAND_SPECS}
+            metrics: dict[str, float] = {}
+        else:
+            sec_prof = compute_section_relative_profile(v_slice, inst_st[:, i0:i1], sr=sr)
+            gains = _solve_section_4band_delta(
+                regime=regime,
+                sec_prof=sec_prof,
+                anchor_prof=anchor_prof,
+                target_profile=target_profile,
+                verse_intimacy_shift_db=verse_intimacy_shift_db,
+            )
+            metrics = {
+                "inst_mid_density_index": sec_prof.inst_mid_density_index,
+                "body_warmth_intrinsic_db": sec_prof.vocal_intrinsic_bands_db["body_warmth"],
+                "core_presence_margin_db": sec_prof.band_margins_db["core_presence"],
+                "sibilance_intrinsic_db": sec_prof.vocal_intrinsic_bands_db["sibilance"],
+            }
+
+        section_plans.append(
+            {
+                "index": idx,
+                "label": lbl,
+                "regime": regime,
+                "start_sec": round(float(st_sec), 3),
+                "end_sec": round(float(en_sec), 3),
+                "start_sample": i0,
+                "end_sample": i1,
+                "gains_db": gains,
+                "metrics": metrics,
+            }
+        )
+
+    # Snap section boundary crossfade centers to local low-energy vocal dips
+    fade_len = max(16, int(round(0.180 * sr)))
+    half_fade = fade_len // 2
+    bounds = [section_plans[0]["start_sample"]]
+    for k in range(len(section_plans) - 1):
+        raw_b = section_plans[k]["end_sample"]
+        lo_lim = bounds[-1] + half_fade + 32
+        hi_lim = section_plans[k + 1]["end_sample"] - half_fade - 32
+        snapped = _find_local_vocal_dip_sample(
+            lead_chained_mono, raw_b, sr=sr, min_sample=lo_lim, max_sample=hi_lim
+        )
+        bounds.append(snapped)
+    bounds.append(section_plans[-1]["end_sample"])
+
+    out_f64 = lead_chained_mono.astype(np.float64, copy=True)
+    section_audio: list[tuple[int, int, np.ndarray]] = []
+    diagnostics: list[dict] = []
+
+    for k, plan in enumerate(section_plans):
+        s_start = bounds[k]
+        s_end = bounds[k + 1]
+        ext0 = max(0, s_start - (half_fade if k > 0 else 0))
+        ext1 = min(n, s_end + (fade_len - half_fade if k < len(section_plans) - 1 else 0))
+        filtered = _filter_section_zero_phase(lead_chained_mono, sr=sr, i0=ext0, i1=ext1, gains_db=plan["gains_db"])
+        section_audio.append((ext0, ext1, filtered))
+        applied = any(abs(v) >= 0.04 for v in plan["gains_db"].values())
+        diagnostics.append(
+            {
+                "index": plan["index"],
+                "label": plan["label"],
+                "regime": plan["regime"],
+                "start_sec": plan["start_sec"],
+                "end_sec": plan["end_sec"],
+                "transition_sec": round(s_start / float(sr), 3),
+                "applied": applied,
+                "band_gains_db": plan["gains_db"],
+                "metrics": plan["metrics"],
+            }
+        )
+
+    # Assemble core segments then apply 180ms raised-cosine crossfades across snapped boundaries
+    for k, (ext0, ext1, filt) in enumerate(section_audio):
+        core0 = bounds[k]
+        core1 = bounds[k + 1]
+        if core1 > core0 and len(filt) >= core1 - ext0:
+            out_f64[core0:core1] = filt[core0 - ext0 : core1 - ext0]
+
+    for k in range(len(section_audio) - 1):
+        b_pt = bounds[k + 1]
+        xf0 = max(0, b_pt - half_fade)
+        xf1 = min(n, xf0 + fade_len)
+        actual_len = xf1 - xf0
+        if actual_len < 4:
+            continue
+        p_ext0, _, p_filt = section_audio[k]
+        n_ext0, _, n_filt = section_audio[k + 1]
+        if xf0 < p_ext0 or xf1 > p_ext0 + len(p_filt) or xf0 < n_ext0 or xf1 > n_ext0 + len(n_filt):
+            continue
+        w_in = 0.5 * (1.0 - np.cos(np.pi * np.linspace(0.0, 1.0, actual_len, dtype=np.float64)))
+        seg_prev = p_filt[xf0 - p_ext0 : xf1 - p_ext0]
+        seg_next = n_filt[xf0 - n_ext0 : xf1 - n_ext0]
+        out_f64[xf0:xf1] = (1.0 - w_in) * seg_prev + w_in * seg_next
+
+    return out_f64.astype(np.float32), diagnostics
+
+
+def build_fine_distance_sub_events(
+    lead_mono: np.ndarray,
+    combined_gain_env: np.ndarray,
+    raw_spans: list[tuple[float, float, str]],
+    sr: int,
+    min_sub_sec: float = 3.5,
+    delta_trigger_db: float = 0.65,
+) -> list[tuple[float, float, float, str]]:
+    """Subdivide sections into pause-snapped Studio One clip-gain events when gain shifts >= `delta_trigger_db`."""
+    n = len(lead_mono)
+    if not raw_spans or n == 0:
+        return []
+
+    env_lin = np.abs(combined_gain_env.astype(np.float64))
+    if len(env_lin) < n:
+        env_lin = np.pad(env_lin, (0, n - len(env_lin)), mode="edge")
+    else:
+        env_lin = env_lin[:n]
+    env_db = 20.0 * np.log10(np.maximum(env_lin, 1e-6))
+
+    hop = max(int(sr * 0.10), 256)
+    min_sub_samples = max(int(round(min_sub_sec * sr)), hop * 2)
+    events: list[tuple[float, float, float, str]] = []
+
+    def _effective_gain_db(s0: int, s1: int, is_inst: bool) -> float:
+        if is_inst or s1 <= s0:
+            return 0.0
+        v_sq = lead_mono[s0:s1].astype(np.float64) ** 2
+        e_seg = env_db[s0:s1]
+        tot_w = float(np.sum(v_sq))
+        if tot_w > 1e-8 * (s1 - s0):
+            return round(float(np.sum(v_sq * e_seg) / tot_w), 2)
+        return round(float(np.mean(e_seg)), 2)
+
+    for st_sec, en_sec, lbl in raw_spans:
+        i0 = max(0, min(n, int(round(st_sec * sr))))
+        i1 = max(i0, min(n, int(round(en_sec * sr))))
+        if i1 - i0 < int(0.05 * sr):
+            continue
+        is_inst = "instrumental" in lbl.lower()
+        if is_inst or (i1 - i0) < 2 * min_sub_samples:
+            events.append((round(st_sec, 3), round(en_sec, 3), _effective_gain_db(i0, i1, is_inst), lbl))
+            continue
+
+        # Coarse 100ms frame envelope & vocal RMS inside section
+        n_f = max(1, (i1 - i0) // hop)
+        frm_db = np.array(
+            [float(np.mean(env_db[i0 + f * hop : i0 + min(i1 - i0, (f + 1) * hop)])) for f in range(n_f)],
+            dtype=np.float64,
+        )
+        frm_v = np.array(
+            [
+                float(np.sqrt(np.mean(lead_mono[i0 + f * hop : i0 + min(i1 - i0, (f + 1) * hop)] ** 2) + 1e-12))
+                for f in range(n_f)
+            ],
+            dtype=np.float64,
+        )
+        frm_db_smooth = ndimage.uniform_filter1d(frm_db, size=max(3, min(7, n_f)))
+
+        split_samples: list[int] = [i0]
+        cur_start_f = 0
+        min_f = max(2, int(np.ceil(min_sub_samples / hop)))
+
+        t = min_f
+        while t <= n_f - min_f:
+            seg_db_slice = frm_db_smooth[cur_start_f:t]
+            seg_v_slice = frm_v[cur_start_f:t] ** 2
+            w_sum = float(np.sum(seg_v_slice))
+            ref_db = float(np.sum(seg_db_slice * seg_v_slice) / w_sum) if w_sum > 1e-10 else float(np.mean(seg_db_slice))
+
+            look_end = min(n_f, t + max(3, min_f // 3))
+            ahead_db = float(np.mean(frm_db_smooth[t:look_end]))
+            if abs(ahead_db - ref_db) >= delta_trigger_db:
+                target_samp = i0 + t * hop
+                min_samp = split_samples[-1] + min_sub_samples
+                max_samp = i1 - min_sub_samples
+                if min_samp <= max_samp:
+                    snap = _find_local_vocal_dip_sample(
+                        lead_mono,
+                        target_samp,
+                        sr=sr,
+                        min_sample=min_samp,
+                        max_sample=max_samp,
+                        search_window_sec=min(1.0, 0.35 * min_sub_sec),
+                    )
+                    split_samples.append(snap)
+                    cur_start_f = max(cur_start_f + min_f, (snap - i0) // hop)
+                    t = cur_start_f + min_f
+                    continue
+            t += 1
+
+        split_samples.append(i1)
+        n_parts = len(split_samples) - 1
+        for p_idx in range(n_parts):
+            s0, s1 = split_samples[p_idx], split_samples[p_idx + 1]
+            sub_st = st_sec if p_idx == 0 else round(s0 / float(sr), 3)
+            sub_en = en_sec if p_idx == n_parts - 1 else round(s1 / float(sr), 3)
+            sub_lbl = lbl if n_parts == 1 else f"{lbl}_part{p_idx + 1}"
+            events.append((round(sub_st, 3), round(sub_en, 3), _effective_gain_db(s0, s1, False), sub_lbl))
+
+    return events
+
+
+def _fold_bpm_range(bpm_val: float, lo: float = 75.0, hi: float = 195.0) -> float:
+    if not np.isfinite(bpm_val) or bpm_val <= 1.0:
+        return 120.0
+    b = float(bpm_val)
+    while b < lo:
+        b *= 2.0
+    while b > hi:
+        b *= 0.5
+    return b
+
+
+def _iqr_mean_dt(beat_times: np.ndarray) -> float | None:
+    if len(beat_times) < 4:
+        return None
+    dts = np.sort(np.diff(beat_times))
+    lo_i = len(dts) // 4
+    hi_i = max(lo_i + 1, (3 * len(dts)) // 4)
+    val = float(np.mean(dts[lo_i:hi_i]))
+    return val if val > 0.05 else None
+
+
+def estimate_continuous_tempo_map(inst_mono: np.ndarray, sr: int) -> dict:
+    """Estimate global BPM, local tempo stability, and Studio One beat-indexed variable tempo segments."""
+    if len(inst_mono) < sr * 2 or float(np.max(np.abs(inst_mono))) < 1e-5:
+        return {
+            "global_bpm": 120.0,
+            "is_variable_tempo": False,
+            "tempo_segments": [(0.0, 120.0)],
+        }
+
+    hop_length = 512
+    y_f32 = inst_mono.astype(np.float32, copy=False)
+    onset_env = librosa.onset.onset_strength(y=y_f32, sr=sr, hop_length=hop_length)
+    if len(onset_env) < 16 or float(np.max(onset_env)) < 1e-5:
+        return {
+            "global_bpm": 120.0,
+            "is_variable_tempo": False,
+            "tempo_segments": [(0.0, 120.0)],
+        }
+
+    # Global tempo estimate folded into [75, 195] BPM
+    g_est, g_beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, hop_length=hop_length, trim=False)
+    global_bpm = round(_fold_bpm_range(float(np.atleast_1d(g_est)[0])), 1)
+    if (g_dt := _iqr_mean_dt(librosa.frames_to_time(g_beats, sr=sr, hop_length=hop_length))) is not None:
+        g_refined = _fold_bpm_range(60.0 / g_dt)
+        if abs(g_refined - global_bpm) <= 3.0:
+            global_bpm = round(g_refined, 1)
+
+    # Identify active frames (skip silent intros/outros where tempogram defaults to 120 BPM)
+    frame_samples = hop_length
+    n_on = len(onset_env)
+    win_rms = ndimage.uniform_filter1d(np.abs(y_f32), size=max(frame_samples * 2, 1024))
+    sample_idx = np.minimum(np.arange(n_on) * hop_length, len(win_rms) - 1)
+    env_amp = win_rms[sample_idx]
+    active_f = env_amp >= (float(np.percentile(env_amp, 95)) * (10.0 ** (-35.0 / 20.0)))
+    if int(np.sum(active_f)) < max(16, int(3.0 * sr / hop_length)):
+        active_f = np.ones(n_on, dtype=bool)
+
+    # Local sliding-window tempo contour
+    local_raw = librosa.feature.tempo(
+        onset_envelope=onset_env,
+        sr=sr,
+        hop_length=hop_length,
+        aggregate=None,
+        std_bpm=1.5,
+    )
+    local_folded = np.array([_fold_bpm_range(float(v)) for v in local_raw], dtype=np.float64)
+    med_win = max(5, int(round(3.0 * sr / hop_length)) | 1)
+    local_smooth = local_folded.copy()
+    local_smooth[active_f] = ndimage.median_filter(local_folded[active_f], size=med_win, mode="nearest")
+
+    # Fill inactive boundaries cleanly from nearest active tempo
+    active_indices = np.where(active_f)[0]
+    if len(active_indices) > 0:
+        local_smooth = np.interp(np.arange(n_on), active_indices, local_smooth[active_indices])
+
+    # Run onset-strength DP beat tracking across active windows to verify true tempo contour
+    fps = float(sr) / float(hop_length)
+    win_f = max(int(round(8.0 * fps)), 32)
+    step_f = max(int(round(4.0 * fps)), 16)
+    dp_bpms: list[float] = []
+    if n_on >= win_f:
+        for f0 in range(0, n_on - win_f + 1, step_f):
+            f1 = f0 + win_f
+            if float(np.mean(active_f[f0:f1])) < 0.5:
+                continue
+            prior_b = float(np.median(local_smooth[f0:f1]))
+            _, beats_w = librosa.beat.beat_track(
+                onset_envelope=onset_env[f0:f1],
+                sr=sr,
+                hop_length=hop_length,
+                start_bpm=prior_b,
+                tightness=100,
+                trim=False,
+            )
+            if (iqr_dt := _iqr_mean_dt(librosa.frames_to_time(beats_w, sr=sr, hop_length=hop_length))) is not None:
+                dp_bpms.append(_fold_bpm_range(60.0 / iqr_dt))
+
+    active_local = local_smooth[active_f]
+    local_std = float(np.std(active_local))
+    dp_std = float(np.std(dp_bpms)) if len(dp_bpms) >= 2 else 0.0
+    effective_std = max(local_std, dp_std)
+
+    if effective_std < 1.2:
+        if dp_bpms:
+            refined_global = round(float(np.median(dp_bpms)), 1)
+            if abs(refined_global - global_bpm) <= 3.0:
+                global_bpm = refined_global
+        return {
+            "global_bpm": global_bpm,
+            "is_variable_tempo": False,
+            "tempo_segments": [(0.0, global_bpm)],
+        }
+
+    # Segment genuine tempo changes whenever smoothed local tempo shifts >= 2.2 BPM over >= 3.5s
+    min_seg_f = max(int(round(3.5 * fps)), 16)
+    seg_bounds_f: list[int] = [0]
+    ref_b = float(np.median(local_smooth[: min(n_on, min_seg_f)]))
+    for f_i in range(min_seg_f, n_on - min_seg_f):
+        if abs(float(local_smooth[f_i]) - ref_b) >= 2.2 and (f_i - seg_bounds_f[-1]) >= min_seg_f:
+            look_ahead = local_smooth[f_i : min(n_on, f_i + min_seg_f // 2)]
+            if abs(float(np.median(look_ahead)) - ref_b) >= 2.0:
+                seg_bounds_f.append(f_i)
+                ref_b = float(np.median(look_ahead))
+    seg_bounds_f.append(n_on)
+
+    raw_segs: list[tuple[int, int, float]] = []
+    for f0, f1 in zip(seg_bounds_f[:-1], seg_bounds_f[1:]):
+        seg_med = float(np.median(local_smooth[f0:f1]))
+        seg_bpm = seg_med
+        if f1 - f0 >= int(round(3.5 * fps)):
+            _, b_seg = librosa.beat.beat_track(
+                onset_envelope=onset_env[f0:f1],
+                sr=sr,
+                hop_length=hop_length,
+                start_bpm=seg_med,
+                tightness=100,
+                trim=False,
+            )
+            if (iqr_dt := _iqr_mean_dt(librosa.frames_to_time(b_seg, sr=sr, hop_length=hop_length))) is not None:
+                cand_bpm = _fold_bpm_range(60.0 / iqr_dt)
+                if abs(cand_bpm - seg_med) <= 6.0:
+                    seg_bpm = cand_bpm
+        raw_segs.append((f0, f1, round(seg_bpm, 1)))
+
+    # Reject false metric-modulation jumps (1/2, 2/3, 3/4, 4/3, 3/2, 2x syncopation/half-time)
+    # when the underlying global_bpm pulse still maintains strong onset autocorrelation energy!
+    harmonic_ratios = (0.5, 2.0 / 3.0, 0.75, 4.0 / 3.0, 1.5, 2.0)
+    stabilized_segs: list[tuple[int, int, float]] = []
+    for f0, f1, bpm_s in raw_segs:
+        if abs(bpm_s - global_bpm) < 2.2:
+            stabilized_segs.append((f0, f1, global_bpm))
+            continue
+        ratio = bpm_s / max(global_bpm, 1.0)
+        is_metric_harmonic = any(abs(ratio - hr) / hr <= 0.035 for hr in harmonic_ratios)
+        if is_metric_harmonic and (f1 - f0) >= 24:
+            seg_env = onset_env[f0:f1].astype(np.float64)
+            seg_centered = seg_env - float(np.mean(seg_env))
+            ac = librosa.autocorrelate(seg_centered, max_size=min(len(seg_centered), int(fps * 2.0)))
+            lag_g = int(round(60.0 * fps / max(global_bpm, 30.0)))
+            lag_s = int(round(60.0 * fps / max(bpm_s, 30.0)))
+            if 2 <= lag_g < len(ac) - 2 and 2 <= lag_s < len(ac) - 2:
+                ac_g = float(np.max(ac[lag_g - 2 : lag_g + 3]))
+                ac_s = float(np.max(ac[lag_s - 2 : lag_s + 3])) + 1e-9
+                if ac_g >= 0.42 * ac_s:
+                    bpm_s = global_bpm
+        stabilized_segs.append((f0, f1, bpm_s))
+
+    # Merge adjacent segments with near-identical BPM (< 1.8 BPM)
+    merged: list[tuple[int, int, float]] = []
+    for f0, f1, bpm_s in stabilized_segs:
+        if merged and abs(bpm_s - merged[-1][2]) < 1.8:
+            p0, _, p_bpm = merged[-1]
+            dur_p = merged[-1][1] - p0
+            dur_c = f1 - f0
+            w_bpm = round((p_bpm * dur_p + bpm_s * dur_c) / max(dur_p + dur_c, 1), 1)
+            merged[-1] = (p0, f1, w_bpm)
+        else:
+            merged.append((f0, f1, bpm_s))
+
+    # Convert segment frame boundaries to cumulative quarter-note beats for Studio One
+    tempo_segments: list[tuple[float, float]] = []
+    cur_beat = 0.0
+    for idx_s, (f0, f1, bpm_s) in enumerate(merged):
+        tempo_segments.append((round(cur_beat, 4), bpm_s))
+        dur_sec = (f1 - f0) / fps
+        cur_beat += dur_sec * (bpm_s / 60.0)
+
+    is_var = len(tempo_segments) > 1
+    weighted_global = (
+        tempo_segments[0][1]
+        if not is_var
+        else round(
+            sum(bpm_s * (f1 - f0) for f0, f1, bpm_s in merged) / max(sum(f1 - f0 for f0, f1, _ in merged), 1),
+            1,
+        )
+    )
+    return {
+        "global_bpm": weighted_global,
+        "is_variable_tempo": is_var,
+        "tempo_segments": tempo_segments,
+    }
+
+
 # --- Stage A: Automated Narrow-Q Resonance Detection & 10-Band Differentiable Backing-Complementary EQ ---
 
 
@@ -353,41 +973,217 @@ def measure_lead_core_formant_hz(vocal_mono: np.ndarray, sr: int) -> float:
     return round(float(np.clip(2.0**log_c, 1150.0, 2100.0)), 1)
 
 
-def _rbj_peaking_mag_sq(w: torch.Tensor, f0: float, q: float, gain_db: torch.Tensor, sr: int) -> torch.Tensor:
-    A = torch.pow(10.0, gain_db / 40.0)
+def _rbj_peaking_mag_sq(
+    w: torch.Tensor,
+    f0: float,
+    q: float,
+    gain_db: torch.Tensor,
+    sr: int,
+    cos_w: torch.Tensor | None = None,
+    cos_2w: torch.Tensor | None = None,
+) -> torch.Tensor:
+    _ = (cos_w, cos_2w)
+    amp = torch.pow(10.0, gain_db / 40.0)
     w0 = 2.0 * np.pi * f0 / sr
     cos_w0 = np.cos(w0)
+    sin2_h0 = np.sin(0.5 * w0) ** 2
     alpha = np.sin(w0) / (2.0 * q)
-    b0 = 1.0 + alpha * A
+    b0 = 1.0 + alpha * amp
     b1 = -2.0 * cos_w0
-    b2 = 1.0 - alpha * A
-    a0 = 1.0 + alpha / A
-    a1 = -2.0 * cos_w0
-    a2 = 1.0 - alpha / A
-    cos_w = torch.cos(w)
-    cos_2w = torch.cos(2.0 * w)
-    num = b0 * b0 + b1 * b1 + b2 * b2 + 2.0 * (b0 * b1 + b1 * b2) * cos_w + 2.0 * b0 * b2 * cos_2w
-    den = a0 * a0 + a1 * a1 + a2 * a2 + 2.0 * (a0 * a1 + a1 * a2) * cos_w + 2.0 * a0 * a2 * cos_2w
+    b2 = 1.0 - alpha * amp
+    a0 = 1.0 + alpha / amp
+    a1 = b1
+    a2 = 1.0 - alpha / amp
+    sin2 = torch.sin(0.5 * w) ** 2
+    sin4 = sin2 * sin2
+    sum_b = 4.0 * sin2_h0
+    num = sum_b * sum_b - 4.0 * (b0 * b1 + 4.0 * b0 * b2 + b1 * b2) * sin2 + 16.0 * b0 * b2 * sin4
+    den = sum_b * sum_b - 4.0 * (a0 * a1 + 4.0 * a0 * a2 + a1 * a2) * sin2 + 16.0 * a0 * a2 * sin4
     return torch.clamp(num / (den + 1e-12), min=1e-8)
 
 
-def _rbj_highshelf_mag_sq(w: torch.Tensor, f0: float, q: float, gain_db: torch.Tensor, sr: int) -> torch.Tensor:
-    A = torch.pow(10.0, gain_db / 40.0)
+def _rbj_highshelf_mag_sq(
+    w: torch.Tensor,
+    f0: float,
+    q: float,
+    gain_db: torch.Tensor,
+    sr: int,
+    cos_w: torch.Tensor | None = None,
+    cos_2w: torch.Tensor | None = None,
+) -> torch.Tensor:
+    _ = (cos_w, cos_2w)
+    amp = torch.pow(10.0, gain_db / 40.0)
     w0 = 2.0 * np.pi * f0 / sr
     cos_w0 = np.cos(w0)
+    sin2_h0 = np.sin(0.5 * w0) ** 2
     alpha = np.sin(w0) / (2.0 * q)
-    sqA = torch.sqrt(torch.clamp(A, min=1e-4))
-    b0 = A * ((A + 1.0) + (A - 1.0) * cos_w0 + 2.0 * sqA * alpha)
-    b1 = -2.0 * A * ((A - 1.0) + (A + 1.0) * cos_w0)
-    b2 = A * ((A + 1.0) + (A - 1.0) * cos_w0 - 2.0 * sqA * alpha)
-    a0 = (A + 1.0) - (A - 1.0) * cos_w0 + 2.0 * sqA * alpha
-    a1 = 2.0 * ((A - 1.0) - (A + 1.0) * cos_w0)
-    a2 = (A + 1.0) - (A - 1.0) * cos_w0 - 2.0 * sqA * alpha
-    cos_w = torch.cos(w)
-    cos_2w = torch.cos(2.0 * w)
-    num = b0 * b0 + b1 * b1 + b2 * b2 + 2.0 * (b0 * b1 + b1 * b2) * cos_w + 2.0 * b0 * b2 * cos_2w
-    den = a0 * a0 + a1 * a1 + a2 * a2 + 2.0 * (a0 * a1 + a1 * a2) * cos_w + 2.0 * a0 * a2 * cos_2w
+    sq_a = torch.sqrt(torch.clamp(amp, min=1e-4))
+    b0 = amp * ((amp + 1.0) + (amp - 1.0) * cos_w0 + 2.0 * sq_a * alpha)
+    b1 = -2.0 * amp * ((amp - 1.0) + (amp + 1.0) * cos_w0)
+    b2 = amp * ((amp + 1.0) + (amp - 1.0) * cos_w0 - 2.0 * sq_a * alpha)
+    a0 = (amp + 1.0) - (amp - 1.0) * cos_w0 + 2.0 * sq_a * alpha
+    a1 = 2.0 * ((amp - 1.0) - (amp + 1.0) * cos_w0)
+    a2 = (amp + 1.0) - (amp - 1.0) * cos_w0 - 2.0 * sq_a * alpha
+    sin2 = torch.sin(0.5 * w) ** 2
+    sin4 = sin2 * sin2
+    sum_hs = 8.0 * amp * sin2_h0
+    num = sum_hs * sum_hs - 4.0 * (b0 * b1 + 4.0 * b0 * b2 + b1 * b2) * sin2 + 16.0 * b0 * b2 * sin4
+    den = sum_hs * sum_hs - 4.0 * (a0 * a1 + 4.0 * a0 * a2 + a1 * a2) * sin2 + 16.0 * a0 * a2 * sin4
     return torch.clamp(num / (den + 1e-12), min=1e-8)
+
+
+def _solve_precision_10band_eq_on_device(
+    device: torch.device,
+    freqs_np: np.ndarray,
+    mean_v_psd_np: np.ndarray,
+    mean_i_psd_np: np.ndarray | None,
+    sr: int,
+    target_profile: SectionRelativeProfile,
+    inst_high_rolloff_db: float,
+    median_f0_hz: float,
+) -> dict[str, object]:
+    """Execute batched vectorized 260-step differentiable 10-band RBJ EQ optimization on `device`."""
+    dtype = torch.float32
+    freqs = torch.tensor(freqs_np, dtype=dtype, device=device)
+    w = 2.0 * np.pi * freqs / float(sr)
+    sin2 = (torch.sin(0.5 * w) ** 2).unsqueeze(0)
+    sin4 = sin2 * sin2
+    psd_v = torch.tensor(mean_v_psd_np, dtype=dtype, device=device)
+    mean_i_psd_t = (
+        torch.tensor(mean_i_psd_np, dtype=dtype, device=device)
+        if mean_i_psd_np is not None
+        else None
+    )
+
+    vzone_mask = (freqs >= 180.0) & (freqs <= 6000.0)
+    band_names = ("body_warmth", "boxiness_mud", "core_mid", "core_presence", "sibilance", "air_sheen")
+    m_bands = torch.stack(
+        [((freqs >= VOCAL_MIX_BANDS[b][0]) & (freqs < VOCAL_MIX_BANDS[b][1])).to(dtype) for b in band_names],
+        dim=0,
+    )
+
+    # Smooth HF targets capped gently toward Azusagawa / silky commercial range so home-mic hiss is never blasted
+    rolloff_delta = float(np.clip(inst_high_rolloff_db - target_profile.inst_high_rolloff_db, -6.0, 6.0))
+    tgt_intrinsic = dict(target_profile.vocal_intrinsic_bands_db)
+    tgt_intrinsic["sibilance"] = min(float(tgt_intrinsic["sibilance"]), -18.8)
+    tgt_intrinsic["air_sheen"] = min(float(tgt_intrinsic["air_sheen"]) + 0.30 * rolloff_delta, -19.2)
+    tgt_intr_t = torch.tensor([float(tgt_intrinsic[b]) for b in band_names], dtype=dtype, device=device)
+
+    # Level-invariant backing-relative target margins (relative to core vocal-zone margin!)
+    tgt_margins = dict(target_profile.band_margins_db)
+    tgt_core_margin = float(
+        np.mean([tgt_margins["body_warmth"], tgt_margins["core_mid"], tgt_margins["core_presence"]])
+    )
+    tgt_rel_t = torch.tensor([float(tgt_margins[b]) - tgt_core_margin for b in band_names], dtype=dtype, device=device)
+
+    hpf_hz = round(float(np.clip(median_f0_hz * 0.38, 72.0, 112.0)), 1)
+    hpf_mag_sq = 1.0 / (1.0 + torch.pow(hpf_hz / torch.clamp(freqs, min=1.0), 6.0))
+
+    # Precompute vectorized Peaking (0..8) and HighShelf (9) constants
+    peak_idx = [i for i, spec in enumerate(PRECISION_EQ_BAND_SPECS) if spec[3] != "HighShelf"]
+    shelf_idx = [i for i, spec in enumerate(PRECISION_EQ_BAND_SPECS) if spec[3] == "HighShelf"]
+    w0_p = torch.tensor([2.0 * np.pi * PRECISION_EQ_BAND_SPECS[i][1] / sr for i in peak_idx], dtype=dtype, device=device).unsqueeze(1)
+    q_p = torch.tensor([PRECISION_EQ_BAND_SPECS[i][2] for i in peak_idx], dtype=dtype, device=device).unsqueeze(1)
+    cos_w0_p = torch.cos(w0_p)
+    sum_b_p_sq = (4.0 * (torch.sin(0.5 * w0_p) ** 2)) ** 2
+    alpha_p = torch.sin(w0_p) / (2.0 * q_p)
+
+    s_i = shelf_idx[0]
+    w0_s = 2.0 * np.pi * PRECISION_EQ_BAND_SPECS[s_i][1] / sr
+    cos_w0_s = float(np.cos(w0_s))
+    sin2_h0_s = float(np.sin(0.5 * w0_s) ** 2)
+    alpha_s = float(np.sin(w0_s) / (2.0 * PRECISION_EQ_BAND_SPECS[s_i][2]))
+
+    raw_g = torch.zeros(len(PRECISION_EQ_BAND_SPECS), dtype=dtype, device=device, requires_grad=True)
+    opt = torch.optim.Adam([raw_g], lr=0.075)
+
+    intrinsic_w_t = torch.tensor([2.4, 2.6, 2.5, 3.0, 2.0, 1.6], dtype=dtype, device=device)
+    backing_rel_w_t = torch.tensor([0.45, 0.40, 0.55, 1.15, 1.20, 1.35], dtype=dtype, device=device)
+
+    # Per-band smooth (lo, hi) bounds
+    lo_t = torch.tensor([-2.8, -2.8, -3.6, -3.6, -2.8, -2.8, -3.0, -3.2, -3.6, -3.6], dtype=dtype, device=device)
+    hi_t = torch.tensor([+2.6, +2.8, +1.8, +1.6, +2.6, +2.6, +2.8, +2.6, +1.0, +1.8], dtype=dtype, device=device)
+    mid_t = 0.5 * (lo_t + hi_t)
+    half_t = 0.5 * (hi_t - lo_t)
+    denom_t = torch.clamp(half_t, min=0.5)
+
+    i_band_db_t: torch.Tensor | None = None
+    if mean_i_psd_t is not None:
+        i_band_db_t = 10.0 * torch.log10(torch.matmul(m_bands, mean_i_psd_t) + 1e-12)
+
+    for _ in range(260):
+        opt.zero_grad()
+        g = mid_t + half_t * torch.tanh(raw_g / denom_t)
+
+        # Batched 9-band Peaking biquads (cancellation-free sin2/sin4 formulation)
+        amp_p = torch.pow(10.0, g[peak_idx].unsqueeze(1) / 40.0)
+        b0_p = 1.0 + alpha_p * amp_p
+        b1_p = -2.0 * cos_w0_p
+        b2_p = 1.0 - alpha_p * amp_p
+        a0_p = 1.0 + alpha_p / amp_p
+        a2_p = 1.0 - alpha_p / amp_p
+        num_p = sum_b_p_sq - 4.0 * (b0_p * b1_p + 4.0 * b0_p * b2_p + b1_p * b2_p) * sin2 + 16.0 * b0_p * b2_p * sin4
+        den_p = sum_b_p_sq - 4.0 * (a0_p * b1_p + 4.0 * a0_p * a2_p + b1_p * a2_p) * sin2 + 16.0 * a0_p * a2_p * sin4
+        h2_peaks = torch.prod(torch.clamp(num_p / (den_p + 1e-12), min=1e-8), dim=0)
+
+        # HighShelf biquad (index 9)
+        amp_s = torch.pow(10.0, g[s_i] / 40.0)
+        sq_a_s = torch.sqrt(torch.clamp(amp_s, min=1e-4))
+        b0_s = amp_s * ((amp_s + 1.0) + (amp_s - 1.0) * cos_w0_s + 2.0 * sq_a_s * alpha_s)
+        b1_s = -2.0 * amp_s * ((amp_s - 1.0) + (amp_s + 1.0) * cos_w0_s)
+        b2_s = amp_s * ((amp_s + 1.0) + (amp_s - 1.0) * cos_w0_s - 2.0 * sq_a_s * alpha_s)
+        a0_s = (amp_s + 1.0) - (amp_s - 1.0) * cos_w0_s + 2.0 * sq_a_s * alpha_s
+        a1_s = 2.0 * ((amp_s - 1.0) - (amp_s + 1.0) * cos_w0_s)
+        a2_s = (amp_s + 1.0) - (amp_s - 1.0) * cos_w0_s - 2.0 * sq_a_s * alpha_s
+        sum_hs_sq = (8.0 * amp_s * sin2_h0_s) ** 2
+        num_s = sum_hs_sq - 4.0 * (b0_s * b1_s + 4.0 * b0_s * b2_s + b1_s * b2_s) * sin2[0] + 16.0 * b0_s * b2_s * sin4[0]
+        den_s = sum_hs_sq - 4.0 * (a0_s * a1_s + 4.0 * a0_s * a2_s + a1_s * a2_s) * sin2[0] + 16.0 * a0_s * a2_s * sin4[0]
+        h2_shelf = torch.clamp(num_s / (den_s + 1e-12), min=1e-8)
+
+        eq_psd = psd_v * hpf_mag_sq * h2_peaks * h2_shelf
+        z_db = 10.0 * torch.log10(torch.sum(eq_psd[vzone_mask]) + 1e-12)
+        v_band_db_t = 10.0 * torch.log10(torch.matmul(m_bands, eq_psd) + 1e-12)
+
+        # Stop gradient from HF targets (sibilance/air) leaking into z_db and scooping Body/Mud/Mid!
+        z_db_detached = z_db.detach()
+        ref_z_t = torch.stack([z_db, z_db, z_db, z_db, z_db_detached, z_db_detached])
+        loss = torch.sum(intrinsic_w_t * (((v_band_db_t - ref_z_t) - tgt_intr_t) ** 2))
+
+        # Backing-Complementary Pocket Alignment (level-invariant!)
+        if i_band_db_t is not None:
+            margins_t = v_band_db_t - i_band_db_t
+            cur_core_margin = (margins_t[0] + margins_t[2] + margins_t[3]) / 3.0
+            cur_core_margin_det = cur_core_margin.detach()
+            ref_m_t = torch.stack(
+                [cur_core_margin, cur_core_margin, cur_core_margin, cur_core_margin, cur_core_margin_det, cur_core_margin_det]
+            )
+            diff_m_t = (margins_t - ref_m_t) - tgt_rel_t
+            up_extra_t = torch.clamp(diff_m_t, min=0.0)
+            hf_mask_t = torch.tensor([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=dtype, device=device)
+            loss = loss + torch.sum(backing_rel_w_t * (diff_m_t**2 + 1.2 * hf_mask_t * (up_extra_t**2)))
+
+        # Gentle Zero-Mean Core Anchor (bands 0..7) + smoothness keeps EQ natural & phase-clean
+        core_mean = torch.mean(g[:8])
+        loss = loss + 2.2 * (core_mean**2) + 0.16 * torch.sum((g[1:] - g[:-1]) ** 2) + 0.09 * torch.sum(g**2)
+
+        loss.backward()
+        opt.step()
+
+    with torch.no_grad():
+        g_final = (mid_t + half_t * torch.tanh(raw_g / denom_t)).detach().cpu().numpy()
+        gains_dict = {
+            spec[0]: round(float(g_final[idx]), 2) for idx, spec in enumerate(PRECISION_EQ_BAND_SPECS)
+        }
+        return {
+            "hpf_hz": hpf_hz,
+            "device": device.type,
+            "precision_eq_gains_db": gains_dict,
+            "body_gain_db": round(0.5 * (gains_dict["low_chest"] + gains_dict["warm_body"]), 2),
+            "mud_cut_db": round(0.5 * (gains_dict["low_box"] + gains_dict["mud_honk"]), 2),
+            "core_mid_gain_db": round(0.5 * (gains_dict["throat_core"] + gains_dict["upper_core"]), 2),
+            "presence_gain_db": round(0.5 * (gains_dict["vocal_bite"] + gains_dict["clarity_pres"]), 2),
+            "air_shelf_db": gains_dict["air_shelf"],
+        }
 
 
 def solve_precision_10band_eq_gpu(
@@ -397,6 +1193,7 @@ def solve_precision_10band_eq_gpu(
     target_profile: SectionRelativeProfile,
     inst_high_rolloff_db: float,
     median_f0_hz: float = 250.0,
+    use_gpu: bool = True,
 ) -> dict[str, object]:
     """Run 260-step PyTorch differentiable gradient descent over 10 ERB/Octave RBJ biquads + Backing Pocket Sync.
 
@@ -407,7 +1204,6 @@ def solve_precision_10band_eq_gpu(
       3. Zero-Mean Core Anchor (`mean(bands 0..7) ≈ 0`) + adjacent-band smoothness regularizer so the EQ
          cannot cheat by cutting `-4 dB` out of Body/Mud/Mid just to raise relative Air!
     """
-    device = torch.device("cpu")
     freqs_np, _, Z_v = signal.stft(vocal_mono, fs=sr, nperseg=2048, noverlap=1024)
     pow_v = np.abs(Z_v) ** 2
     fp = np.sum(pow_v, axis=0)
@@ -416,7 +1212,7 @@ def solve_precision_10band_eq_gpu(
         act = np.ones_like(fp, dtype=bool)
     mean_v_psd_np = np.mean(pow_v[:, act], axis=1).astype(np.float32)
 
-    mean_i_psd_t: torch.Tensor | None = None
+    mean_i_psd_np: np.ndarray | None = None
     if inst_stereo is not None and inst_stereo.size >= 2048:
         inst_m = (
             0.5 * (inst_stereo[0] + inst_stereo[1])
@@ -430,144 +1226,33 @@ def solve_precision_10band_eq_gpu(
         act_i = act[:n_f]
         if not np.any(act_i):
             act_i = np.ones(n_f, dtype=bool)
-        mean_i_psd_t = torch.tensor(np.mean(pow_i[:, :n_f][:, act_i], axis=1).astype(np.float32), device=device)
+        mean_i_psd_np = np.mean(pow_i[:, :n_f][:, act_i], axis=1).astype(np.float32)
 
-    freqs = torch.tensor(freqs_np, dtype=torch.float32, device=device)
-    w = 2.0 * np.pi * freqs / float(sr)
-    psd_v = torch.tensor(mean_v_psd_np, dtype=torch.float32, device=device)
+    if use_gpu and torch.cuda.is_available():
+        try:
+            return _solve_precision_10band_eq_on_device(
+                device=torch.device("cuda"),
+                freqs_np=freqs_np,
+                mean_v_psd_np=mean_v_psd_np,
+                mean_i_psd_np=mean_i_psd_np,
+                sr=sr,
+                target_profile=target_profile,
+                inst_high_rolloff_db=inst_high_rolloff_db,
+                median_f0_hz=median_f0_hz,
+            )
+        except RuntimeError:
+            pass
 
-    vzone_mask = (freqs >= 180.0) & (freqs <= 6000.0)
-    band_masks = {b: (freqs >= lo) & (freqs < hi) for b, (lo, hi) in VOCAL_MIX_BANDS.items()}
-
-    # Smooth HF targets capped gently toward Azusagawa / silky commercial range so home-mic hiss is never blasted
-    rolloff_delta = float(np.clip(inst_high_rolloff_db - target_profile.inst_high_rolloff_db, -6.0, 6.0))
-    tgt_intrinsic = dict(target_profile.vocal_intrinsic_bands_db)
-    tgt_intrinsic["sibilance"] = min(float(tgt_intrinsic["sibilance"]), -18.8)
-    tgt_intrinsic["air_sheen"] = min(float(tgt_intrinsic["air_sheen"]) + 0.30 * rolloff_delta, -19.2)
-
-    # Level-invariant backing-relative target margins (relative to core vocal-zone margin!)
-    tgt_margins = dict(target_profile.band_margins_db)
-    tgt_core_margin = float(
-        np.mean([tgt_margins["body_warmth"], tgt_margins["core_mid"], tgt_margins["core_presence"]])
+    return _solve_precision_10band_eq_on_device(
+        device=torch.device("cpu"),
+        freqs_np=freqs_np,
+        mean_v_psd_np=mean_v_psd_np,
+        mean_i_psd_np=mean_i_psd_np,
+        sr=sr,
+        target_profile=target_profile,
+        inst_high_rolloff_db=inst_high_rolloff_db,
+        median_f0_hz=median_f0_hz,
     )
-    tgt_rel_margins = {b: float(tgt_margins[b]) - tgt_core_margin for b in VOCAL_MIX_BANDS}
-
-    hpf_hz = round(float(np.clip(median_f0_hz * 0.38, 72.0, 112.0)), 1)
-    hpf_mag_sq = 1.0 / (1.0 + torch.pow(hpf_hz / (freqs + 1e-4), 6.0))
-
-    raw_g = torch.zeros(len(PRECISION_EQ_BAND_SPECS), dtype=torch.float32, device=device, requires_grad=True)
-    opt = torch.optim.Adam([raw_g], lr=0.075)
-
-    intrinsic_weights = {
-        "body_warmth": 2.4,
-        "boxiness_mud": 2.6,
-        "core_mid": 2.5,
-        "core_presence": 3.0,
-        "sibilance": 2.0,
-        "air_sheen": 1.6,
-    }
-    backing_rel_weights = {
-        "body_warmth": 0.45,
-        "boxiness_mud": 0.40,
-        "core_mid": 0.55,
-        "core_presence": 1.15,
-        "sibilance": 1.20,
-        "air_sheen": 1.35,
-    }
-
-    # Per-band smooth (lo, hi) bounds
-    band_bounds: list[tuple[float, float]] = [
-        (-2.8, +2.6),  # 160 Hz low_chest
-        (-2.8, +2.8),  # 260 Hz warm_body
-        (-3.6, +1.8),  # 420 Hz low_box
-        (-3.6, +1.6),  # 680 Hz mud_honk
-        (-2.8, +2.6),  # 1050 Hz throat_core
-        (-2.8, +2.6),  # 1600 Hz upper_core
-        (-3.0, +2.8),  # 2400 Hz vocal_bite
-        (-3.2, +2.6),  # 3600 Hz clarity_pres
-        (-3.6, +1.0),  # 5800 Hz sibilant_sheen (guardrail!)
-        (-3.6, +1.8),  # 10500 Hz air_shelf (hard silk ceiling!)
-    ]
-
-    def _bound_gains(r: torch.Tensor) -> torch.Tensor:
-        out = []
-        for idx, (lo, hi) in enumerate(band_bounds):
-            mid = 0.5 * (lo + hi)
-            half = 0.5 * (hi - lo)
-            out.append(mid + half * torch.tanh(r[idx] / max(half, 0.5)))
-        return torch.stack(out)
-
-    i_zone_db_t: torch.Tensor | None = None
-    i_band_db_map: dict[str, torch.Tensor] = {}
-    if mean_i_psd_t is not None:
-        i_zone_db_t = 10.0 * torch.log10(torch.sum(mean_i_psd_t[vzone_mask]) + 1e-12)
-        for b_name, msk in band_masks.items():
-            i_band_db_map[b_name] = 10.0 * torch.log10(torch.sum(mean_i_psd_t[msk]) + 1e-12)
-
-    for _ in range(260):
-        opt.zero_grad()
-        g = _bound_gains(raw_g)
-        H2 = hpf_mag_sq
-        for idx, (_, freq_hz, q_val, b_type) in enumerate(PRECISION_EQ_BAND_SPECS):
-            if b_type == "HighShelf":
-                H2 = H2 * _rbj_highshelf_mag_sq(w, freq_hz, q_val, g[idx], sr)
-            else:
-                H2 = H2 * _rbj_peaking_mag_sq(w, freq_hz, q_val, g[idx], sr)
-
-        eq_psd = psd_v * H2
-        z_db = 10.0 * torch.log10(torch.sum(eq_psd[vzone_mask]) + 1e-12)
-
-        loss = torch.tensor(0.0, device=device)
-        v_band_dbs: dict[str, torch.Tensor] = {}
-        z_db_detached = z_db.detach()
-        for b_name, wt in intrinsic_weights.items():
-            vb_db = 10.0 * torch.log10(torch.sum(eq_psd[band_masks[b_name]]) + 1e-12)
-            v_band_dbs[b_name] = vb_db
-            # Stop gradient from HF targets (sibilance/air) leaking into z_db and scooping Body/Mud/Mid!
-            ref_z = z_db_detached if b_name in ("sibilance", "air_sheen") else z_db
-            loss = loss + wt * (((vb_db - ref_z) - float(tgt_intrinsic[b_name])) ** 2)
-
-        # Backing-Complementary Pocket Alignment (level-invariant!)
-        if i_zone_db_t is not None:
-            cur_core_margin = (
-                (v_band_dbs["body_warmth"] - i_band_db_map["body_warmth"])
-                + (v_band_dbs["core_mid"] - i_band_db_map["core_mid"])
-                + (v_band_dbs["core_presence"] - i_band_db_map["core_presence"])
-            ) / 3.0
-            cur_core_margin_det = cur_core_margin.detach()
-            for b_name, wt_rel in backing_rel_weights.items():
-                ref_m = cur_core_margin_det if b_name in ("sibilance", "air_sheen") else cur_core_margin
-                rel_m = (v_band_dbs[b_name] - i_band_db_map[b_name]) - ref_m
-                diff_m = rel_m - tgt_rel_margins[b_name]
-                if b_name in ("core_presence", "sibilance", "air_sheen"):
-                    up_extra = torch.clamp(diff_m, min=0.0)
-                    loss = loss + wt_rel * (diff_m**2 + 1.2 * (up_extra**2))
-                else:
-                    loss = loss + wt_rel * (diff_m**2)
-
-        # Gentle Zero-Mean Core Anchor (bands 0..7) + smoothness keeps EQ natural & phase-clean
-        core_mean = torch.mean(g[:8])
-        loss = loss + 2.2 * (core_mean**2)
-        loss = loss + 0.16 * torch.sum((g[1:] - g[:-1]) ** 2)
-        loss = loss + 0.09 * torch.sum(g**2)
-
-        loss.backward()
-        opt.step()
-
-    with torch.no_grad():
-        g_final = _bound_gains(raw_g).cpu().numpy()
-        gains_dict = {
-            spec[0]: round(float(g_final[idx]), 2) for idx, spec in enumerate(PRECISION_EQ_BAND_SPECS)
-        }
-        return {
-            "hpf_hz": hpf_hz,
-            "precision_eq_gains_db": gains_dict,
-            "body_gain_db": round(0.5 * (gains_dict["low_chest"] + gains_dict["warm_body"]), 2),
-            "mud_cut_db": round(0.5 * (gains_dict["low_box"] + gains_dict["mud_honk"]), 2),
-            "core_mid_gain_db": round(0.5 * (gains_dict["throat_core"] + gains_dict["upper_core"]), 2),
-            "presence_gain_db": round(0.5 * (gains_dict["vocal_bite"] + gains_dict["clarity_pres"]), 2),
-            "air_shelf_db": gains_dict["air_shelf"],
-        }
 
 
 def solve_differentiable_intrinsic_eq_gpu(
@@ -577,6 +1262,7 @@ def solve_differentiable_intrinsic_eq_gpu(
     inst_high_rolloff_db: float,
     inst_stereo: np.ndarray | None = None,
     median_f0_hz: float = 250.0,
+    use_gpu: bool = True,
 ) -> dict[str, float]:
     """Backwards-compatible entry point delegating to v6 10-band differentiable vocal EQ."""
     res = solve_precision_10band_eq_gpu(
@@ -586,6 +1272,7 @@ def solve_differentiable_intrinsic_eq_gpu(
         target_profile=target_profile,
         inst_high_rolloff_db=inst_high_rolloff_db,
         median_f0_hz=median_f0_hz,
+        use_gpu=use_gpu,
     )
     return {
         "hpf_hz": float(res["hpf_hz"]),
@@ -1386,6 +2073,7 @@ def optimize_real_vst3_chain(
     seed: int = 42,
     forced_archetype: str | None = None,
     median_f0_hz: float = 250.0,
+    use_gpu: bool = True,
 ) -> tuple[RealVST3CharacterRig, VocalChainParams, SectionRelativeProfile, float]:
     """v6 Hybrid Ultra-Precision Optimizer: 10-Band Diff EQ + Notches + Dynamic/Spectral PQ -> Fast VCA + LA-2A -> Pre-Unmasked 6D CMA-ES."""
     init_prof = compute_section_relative_profile(anchor_vocal_mono, anchor_inst_stereo, sr=sr)
@@ -1405,6 +2093,7 @@ def optimize_real_vst3_chain(
         target_profile=target_profile,
         inst_high_rolloff_db=init_prof.inst_high_rolloff_db,
         median_f0_hz=median_f0_hz,
+        use_gpu=use_gpu,
     )
     base_gains: dict[str, float] = dict(eq_init["precision_eq_gains_db"])  # type: ignore[arg-type]
     notches = detect_vocal_surgical_notches(anchor_vocal_mono, sr=sr, max_notches=2)
@@ -1472,6 +2161,8 @@ def optimize_real_vst3_chain(
     base_er_db = (-16.8 if archetype == "intimate_ballad_sparse" else -18.2) + inst_width_norm * 2.8
 
     # --- Stage D: 6D Real-VST3 Perceptual Refinement against ALREADY-UNMASKED Backing ---
+    # Adaptive fader center handles high-dynamic-range or quiet unmastered off-vocals without hitting bounds!
+    fader_center_db = float(np.clip(target_profile.k_lufs_vi_ratio_db - init_prof.k_lufs_vi_ratio_db, -18.0, 12.0))
     # z in [0, 1]^6: [body_tilt, pres_trim, hf_trim, space_trim, soothe_depth_norm, fader_db]
     bounds = np.array([[0.0, 1.0]] * 6, dtype=np.float64)
     prior = np.array([0.50, 0.52, 0.46, 0.55, 0.45, 0.50], dtype=np.float64)
@@ -1507,7 +2198,7 @@ def optimize_real_vst3_chain(
             comp2_measured_gr_db=c2_gr,
             parallel_sat_amount=sat_amount,
             parallel_sat_wet_pct=sat_wet_pct,
-            vocal_fader_db=round(float(-8.0 + zc[5] * 16.0), 2),
+            vocal_fader_db=round(float(fader_center_db - 8.5 + zc[5] * 17.0), 2),
             early_room_send_db=round(float(base_er_db + space_off * 0.65), 2),
             slap_delay_send_db=round(float(-18.5 + space_off * 0.85), 2),
             tempo_delay_send_db=round(float(-20.2 + space_off * 0.85), 2),

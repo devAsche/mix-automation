@@ -422,6 +422,7 @@ def synthesize_acoustic_knn_target(
     k: int = 9,
     taste_profile: SectionRelativeProfile | None = None,
     taste_weight: float = 0.0,
+    offvocal_calibration: dict | None = None,
 ) -> tuple[SectionRelativeProfile, list[dict], float]:
     """Synthesize a continuous song-specific target profile via distance-weighted acoustic k-NN across all pro covers.
 
@@ -559,6 +560,53 @@ def synthesize_acoustic_knn_target(
             active_frame_ratio=knn_prof.active_frame_ratio,
         )
 
+    # Gentle bounded official off-vocal separation-bias calibration (<= 0.35 dB, never boosts HF hiss)
+    if offvocal_calibration:
+        tilt_bias = float(offvocal_calibration.get("median_sep_minus_offvocal_tilt_db", 0.0) or 0.0)
+        crest_bias = float(offvocal_calibration.get("median_sep_minus_offvocal_crest_db", 0.0) or 0.0)
+        tilt_corr = float(np.clip(tilt_bias * 0.5, -0.35, 0.35))
+        crest_corr = float(np.clip(crest_bias * 0.5, -0.35, 0.35))
+        lufs_nudge = float(np.clip(-0.5 * crest_corr, -0.25, 0.25))
+
+        adj_margins = dict(knn_prof.band_margins_db)
+        adj_margins["body_warmth"] = round(
+            adj_margins["body_warmth"] + float(np.clip(-0.35 * tilt_corr, -0.35, 0.35)), 3
+        )
+        adj_margins["boxiness_mud"] = round(
+            adj_margins["boxiness_mud"] + float(np.clip(-0.25 * tilt_corr, -0.35, 0.35)), 3
+        )
+        adj_margins["core_presence"] = round(
+            adj_margins["core_presence"] + float(np.clip(0.50 * tilt_corr, -0.35, 0.35)), 3
+        )
+        hf_m_delta = float(np.clip(-0.50 * tilt_corr, -0.35, 0.0))
+        adj_margins["sibilance"] = round(adj_margins["sibilance"] + hf_m_delta, 3)
+        adj_margins["air_sheen"] = round(adj_margins["air_sheen"] + hf_m_delta, 3)
+
+        knn_prof = SectionRelativeProfile(
+            vocal_rms_db=knn_prof.vocal_rms_db,
+            inst_rms_db=knn_prof.inst_rms_db,
+            broadband_vi_ratio_db=round(knn_prof.broadband_vi_ratio_db + lufs_nudge, 3),
+            k_lufs_vi_ratio_db=round(knn_prof.k_lufs_vi_ratio_db + lufs_nudge, 3),
+            mid_k_lufs_vi_ratio_db=round(knn_prof.mid_k_lufs_vi_ratio_db + lufs_nudge, 3),
+            partial_loudness_margin_db=round(knn_prof.partial_loudness_margin_db + lufs_nudge, 3),
+            vocal_crest_db=knn_prof.vocal_crest_db,
+            inst_crest_db=round(knn_prof.inst_crest_db - crest_corr, 3),
+            crest_difference_db=round(knn_prof.crest_difference_db + crest_corr, 3),
+            position_stability_std_db=knn_prof.position_stability_std_db,
+            harsh_resonance_index_db=knn_prof.harsh_resonance_index_db,
+            syllabic_clarity_index=knn_prof.syllabic_clarity_index,
+            wet_tail_ratio_db=knn_prof.wet_tail_ratio_db,
+            vocal_side_mid_db=knn_prof.vocal_side_mid_db,
+            inst_side_mid_db=knn_prof.inst_side_mid_db,
+            inst_mid_density_index=knn_prof.inst_mid_density_index,
+            inst_high_rolloff_db=round(knn_prof.inst_high_rolloff_db - tilt_corr, 2),
+            backing_archetype=knn_prof.backing_archetype,
+            vocal_intrinsic_bands_db=knn_prof.vocal_intrinsic_bands_db,
+            band_margins_db=adj_margins,
+            inst_band_levels_db=knn_prof.inst_band_levels_db,
+            active_frame_ratio=knn_prof.active_frame_ratio,
+        )
+
     neighbors_summary = [
         {
             "slug": r["slug"],
@@ -571,3 +619,408 @@ def synthesize_acoustic_knn_target(
         for r, w, d in zip(nn_records[:6], weights[:6], nn_dists[:6])
     ]
     return knn_prof, neighbors_summary, learned_verse_shift
+
+
+_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".m4a", ".webm", ".ogg"}
+
+
+def _estimate_bandwidth_and_integrity(audio_st: np.ndarray, audio_path: Path, sr: int) -> dict:
+    """Inspect high-frequency brickwall cutoff, clipping, and stereo width of an audio candidate."""
+    native_sr = sr
+    try:
+        native_sr = int(sf.info(str(audio_path)).samplerate)
+    except Exception:
+        pass
+
+    mono = np.mean(audio_st, axis=0, dtype=np.float64)
+    clip_ratio = float(np.mean(np.abs(audio_st) >= 0.999)) if audio_st.size > 0 else 0.0
+
+    if audio_st.shape[0] >= 2:
+        mid = 0.5 * (audio_st[0].astype(np.float64) + audio_st[1].astype(np.float64))
+        side = 0.5 * (audio_st[0].astype(np.float64) - audio_st[1].astype(np.float64))
+        side_mid_db = float(10.0 * np.log10((np.mean(side**2) + 1e-12) / (np.mean(mid**2) + 1e-12)))
+    else:
+        side_mid_db = -80.0
+    is_mono_collapsed = side_mid_db < -42.0
+
+    # Compute Welch PSD across contiguous 1.0s active frames (never skip samples, avoiding click aliasing)
+    nperseg = min(8192, max(256, len(mono)))
+    if len(mono) >= sr * 2:
+        step = sr
+        n_blk = len(mono) // step
+        blocks = mono[: n_blk * step].reshape(n_blk, step)
+        blk_rms = np.sqrt(np.mean(blocks**2, axis=1) + 1e-18)
+        act_blks = blocks[blk_rms >= float(np.percentile(blk_rms, 95)) * 0.15]
+        if len(act_blks) == 0:
+            act_blks = blocks
+        f, psds = signal.welch(act_blks, fs=sr, nperseg=min(8192, step), axis=1)
+        psd = np.median(psds, axis=0)
+    else:
+        f, psd = signal.welch(mono, fs=sr, nperseg=nperseg)
+
+    def _band_db(lo: float, hi: float) -> float:
+        m = (f >= lo) & (f < hi)
+        if not np.any(m):
+            return -120.0
+        return float(10.0 * np.log10(np.mean(psd[m]) + 1e-18))
+
+    ref_6_12 = _band_db(6000.0, 12000.0)
+    midhi_12_155 = _band_db(12000.0, 15500.0)
+    hi_155_195 = _band_db(15500.0, 19500.0)
+
+    est_cutoff_hz = 20000.0
+    for f_edge in range(8000, 19750, 250):
+        b_db = _band_db(float(f_edge), float(f_edge + 250))
+        if b_db < ref_6_12 - 30.0:
+            est_cutoff_hz = float(f_edge)
+            break
+
+    if native_sr < 32000:
+        est_cutoff_hz = min(est_cutoff_hz, float(native_sr) * 0.5)
+
+    brickwall_cutoff = (native_sr < 32000) or (
+        est_cutoff_hz < 15500.0 and ((hi_155_195 - ref_6_12 < -34.0) or (hi_155_195 - midhi_12_155 < -20.0))
+    )
+    severe_clipping = clip_ratio > 0.005
+
+    reasons: list[str] = []
+    if brickwall_cutoff:
+        reasons.append(f"brickwall_cutoff_below_15.5khz ({est_cutoff_hz:.0f} Hz)")
+    if severe_clipping:
+        reasons.append(f"severe_clipping ({clip_ratio * 100:.2f}% samples >= 0.999)")
+    if is_mono_collapsed:
+        reasons.append(f"mono_collapsed_stereo (side/mid={side_mid_db:.1f} dB)")
+
+    return {
+        "native_sr": native_sr,
+        "estimated_cutoff_hz": round(est_cutoff_hz, 0),
+        "hf_155_195_vs_6_12_db": round(hi_155_195 - ref_6_12, 2),
+        "hf_155_195_vs_12_155_db": round(hi_155_195 - midhi_12_155, 2),
+        "clip_ratio": round(clip_ratio, 6),
+        "side_mid_db": round(side_mid_db, 2),
+        "bandwidth_ok": not brickwall_cutoff,
+        "clipping_ok": not severe_clipping,
+        "stereo_ok": not is_mono_collapsed,
+        "rejection_reasons": reasons,
+    }
+
+
+def _align_and_check_key_shift(
+    cover_mono: np.ndarray,
+    off_mono: np.ndarray,
+    sr: int,
+    max_offset_sec: float = 12.0,
+) -> dict:
+    """Measure envelope cross-correlation alignment and 12-semitone CQT chromagram key shift."""
+    hop = max(int(sr * 0.01), 128)
+    scan_len = min(len(cover_mono), len(off_mono), sr * 90)
+    n_f = scan_len // hop
+    if n_f < 50:
+        return {
+            "alignment_offset_sec": 0.0,
+            "alignment_corr": 0.0,
+            "key_shift_semitones": 0,
+            "key_shifted": False,
+            "chroma_corr_best": 0.0,
+            "chroma_corr_zero": 0.0,
+            "aligned_ok": False,
+            "paired_calibration_eligible": False,
+        }
+
+    c_env = np.log1p(25.0 * np.sqrt(np.mean(cover_mono[: n_f * hop].reshape(n_f, hop) ** 2, axis=1) + 1e-12))
+    o_env = np.log1p(25.0 * np.sqrt(np.mean(off_mono[: n_f * hop].reshape(n_f, hop) ** 2, axis=1) + 1e-12))
+    c_d = np.maximum(np.diff(c_env, prepend=c_env[0]), 0.0)
+    o_d = np.maximum(np.diff(o_env, prepend=o_env[0]), 0.0)
+
+    ce_z = (c_env - np.mean(c_env)) / (np.std(c_env) + 1e-9)
+    oe_z = (o_env - np.mean(o_env)) / (np.std(o_env) + 1e-9)
+    cd_z = (c_d - np.mean(c_d)) / (np.std(c_d) + 1e-9)
+    od_z = (o_d - np.mean(o_d)) / (np.std(o_d) + 1e-9)
+
+    corr_e = signal.correlate(ce_z, oe_z, mode="full")
+    corr_d = signal.correlate(cd_z, od_z, mode="full")
+    lags = signal.correlation_lags(n_f, n_f, mode="full")
+    overlap = n_f - np.abs(lags)
+    max_lag_f = min(int(max_offset_sec / (hop / sr)), int(n_f * 0.4))
+    valid = (np.abs(lags) <= max_lag_f) & (overlap >= max(30, int(n_f * 0.55)))
+    if np.any(valid):
+        v_lags = lags[valid]
+        score = (0.60 * corr_e[valid] + 0.40 * corr_d[valid]) / overlap[valid] - 0.0002 * np.abs(v_lags)
+        best_lag_f = int(v_lags[int(np.argmax(score))])
+    else:
+        best_lag_f = 0
+    shift_samples = best_lag_f * hop
+    offset_sec = round(float(best_lag_f * (hop / sr)), 3)
+
+    if shift_samples >= 0:
+        c_al = cover_mono[shift_samples:]
+        o_al = off_mono[: max(0, len(cover_mono) - shift_samples)]
+    else:
+        c_al = cover_mono[: max(0, len(off_mono) + shift_samples)]
+        o_al = off_mono[-shift_samples:]
+    ov_len = min(len(c_al), len(o_al), sr * 75)
+    c_al = c_al[:ov_len]
+    o_al = o_al[:ov_len]
+
+    # Envelope Pearson correlation on aligned audio (downsampled to 25 ms RMS)
+    e_hop = max(int(sr * 0.025), 256)
+    e_nf = ov_len // e_hop
+    if e_nf >= 12:
+        ce = np.log1p(25.0 * np.sqrt(np.mean(c_al[: e_nf * e_hop].reshape(e_nf, e_hop) ** 2, axis=1) + 1e-12))
+        oe = np.log1p(25.0 * np.sqrt(np.mean(o_al[: e_nf * e_hop].reshape(e_nf, e_hop) ** 2, axis=1) + 1e-12))
+        ce_z = ce - np.mean(ce)
+        oe_z = oe - np.mean(oe)
+        align_corr = float(np.dot(ce_z, oe_z) / (np.linalg.norm(ce_z) * np.linalg.norm(oe_z) + 1e-12))
+    else:
+        align_corr = 0.0
+
+    # 12-semitone CQT chromagram rotation check
+    cqt_hop = 2048
+    if ov_len >= sr * 2:
+        c_chr = librosa.feature.chroma_cqt(y=c_al.astype(np.float32), sr=sr, hop_length=cqt_hop)
+        o_chr = librosa.feature.chroma_cqt(y=o_al.astype(np.float32), sr=sr, hop_length=cqt_hop)
+    else:
+        n_fft = min(4096, max(512, 1 << int(np.floor(np.log2(max(ov_len, 512))))))
+        c_chr = librosa.feature.chroma_stft(y=c_al.astype(np.float32), sr=sr, n_fft=n_fft, hop_length=max(256, n_fft // 4))
+        o_chr = librosa.feature.chroma_stft(y=o_al.astype(np.float32), sr=sr, n_fft=n_fft, hop_length=max(256, n_fft // 4))
+
+    t_frames = min(c_chr.shape[1], o_chr.shape[1])
+    c_chr = c_chr[:, :t_frames]
+    o_chr = o_chr[:, :t_frames]
+    c_z = c_chr - np.mean(c_chr, axis=0, keepdims=True)
+    c_norm = float(np.linalg.norm(c_z)) + 1e-12
+
+    rot_corrs: list[float] = []
+    for k in range(12):
+        o_rot = np.roll(o_chr, k, axis=0)
+        o_z = o_rot - np.mean(o_rot, axis=0, keepdims=True)
+        r_k = float(np.sum(c_z * o_z) / (c_norm * (float(np.linalg.norm(o_z)) + 1e-12)))
+        rot_corrs.append(r_k)
+
+    best_k = int(np.argmax(rot_corrs))
+    key_shift_st = best_k if best_k <= 6 else best_k - 12
+    best_chr_corr = float(rot_corrs[best_k])
+    zero_chr_corr = float(rot_corrs[0])
+
+    # Guard against tiny 1-bin ambiguity when key_shift=0 is essentially tied with neighbor
+    if key_shift_st != 0 and (best_chr_corr - zero_chr_corr) < 0.04:
+        key_shift_st = 0
+        best_chr_corr = zero_chr_corr
+
+    key_shifted = key_shift_st != 0
+    aligned_ok = (align_corr >= 0.30) and (best_chr_corr >= 0.40)
+    paired_eligible = aligned_ok and (not key_shifted)
+
+    return {
+        "alignment_offset_sec": offset_sec,
+        "alignment_corr": round(align_corr, 3),
+        "key_shift_semitones": int(key_shift_st),
+        "key_shifted": key_shifted,
+        "chroma_corr_best": round(best_chr_corr, 3),
+        "chroma_corr_zero": round(zero_chr_corr, 3),
+        "aligned_ok": aligned_ok,
+        "paired_calibration_eligible": paired_eligible,
+    }
+
+
+def _infer_preliminary_archetype(backing_st: np.ndarray, sr: int) -> tuple[str, dict[str, float]]:
+    """Infer preliminary `backing_archetype` and full backing descriptors for candidate stratification."""
+    full_desc = compute_backing_full_descriptors(backing_st, sr=sr)
+    i_mono = np.mean(backing_st, axis=0, dtype=np.float64)
+    freqs, psd = signal.welch(i_mono, fs=sr, nperseg=min(4096, max(256, len(i_mono))))
+
+    inst_bands: dict[str, float] = {}
+    for b_name, (f_lo, f_hi) in VOCAL_MIX_BANDS.items():
+        m = (freqs >= f_lo) & (freqs < f_hi)
+        inst_bands[b_name] = round(float(10.0 * np.log10(np.sum(psd[m]) + 1e-10)), 3)
+
+    arch = classify_backing_archetype(
+        inst_crest_db=full_desc["full_inst_crest_db"],
+        inst_band_levels_db=inst_bands,
+        full_inst_mid_density_index=full_desc["full_inst_mid_density_index"],
+        backing_dynamic_range_db=full_desc["backing_dynamic_range_db"],
+        full_inst_crest_db=full_desc["full_inst_crest_db"],
+        chorus_inst_mid_density_index=full_desc["full_inst_mid_density_index"],
+    )
+    return arch, full_desc
+
+
+def _extract_cover_id(cover_path: Path) -> str:
+    stem = cover_path.stem
+    if stem.lower().startswith("cover_"):
+        return stem[6:]
+    return stem
+
+
+def validate_reference_song_candidate(
+    song_dir: Path,
+    existing_cover_ids: set[str] | None = None,
+    target_sr: int = 44100,
+) -> dict:
+    """Enforce all 4 quality gates on a candidate reference song folder (`cover_*.*` + `offvocal/`)."""
+    song_dir = Path(song_dir)
+    cover_files = sorted(
+        p for p in song_dir.glob("cover_*.*") if p.is_file() and p.suffix.lower() in _AUDIO_EXTS
+    )
+    if not cover_files:
+        return {
+            "song_dir": str(song_dir),
+            "group": song_dir.parent.name,
+            "slug": song_dir.name,
+            "cover_id": None,
+            "passed": False,
+            "is_duplicate": False,
+            "has_offvocal": False,
+            "paired_calibration_eligible": False,
+            "key_shifted": False,
+            "key_shift_semitones": 0,
+            "backing_archetype": "unknown",
+            "is_underrepresented_archetype": False,
+            "rejection_reasons": ["missing_cover_audio"],
+        }
+
+    cover_path = cover_files[0]
+    cover_id = _extract_cover_id(cover_path)
+    orig_files = sorted(
+        p for p in song_dir.glob("original_*.*") if p.is_file() and p.suffix.lower() in _AUDIO_EXTS
+    )
+    off_file = _find_primary_official_offvocal(song_dir)
+
+    cover_st, sr = load_audio(cover_path, target_sr=target_sr, mono=False)
+    cover_mono = np.mean(cover_st, axis=0, dtype=np.float32)
+
+    integrity = _estimate_bandwidth_and_integrity(cover_st, cover_path, sr=sr)
+    reasons = list(integrity["rejection_reasons"])
+
+    is_duplicate = bool(existing_cover_ids and cover_id in existing_cover_ids)
+    if is_duplicate:
+        reasons.append(f"duplicate_cover_id ({cover_id})")
+
+    off_info: dict = {
+        "alignment_offset_sec": 0.0,
+        "alignment_corr": 0.0,
+        "key_shift_semitones": 0,
+        "key_shifted": False,
+        "chroma_corr_best": 0.0,
+        "chroma_corr_zero": 0.0,
+        "aligned_ok": False,
+        "paired_calibration_eligible": False,
+    }
+    arch_audio = cover_st
+    if off_file is not None:
+        try:
+            off_st, _ = load_audio(off_file, target_sr=sr, mono=False)
+            off_mono = np.mean(off_st, axis=0, dtype=np.float32)
+            off_info = _align_and_check_key_shift(cover_mono, off_mono, sr=sr)
+            if off_info["alignment_corr"] >= 0.25:
+                arch_audio = off_st
+            if not off_info["aligned_ok"]:
+                reasons.append(
+                    f"offvocal_alignment_mismatch (align_r={off_info['alignment_corr']:.2f}, "
+                    f"chroma_r={off_info['chroma_corr_best']:.2f})"
+                )
+        except Exception as exc:
+            reasons.append(f"offvocal_load_failed ({exc})")
+
+    backing_arch, full_desc = _infer_preliminary_archetype(arch_audio, sr=sr)
+    is_underrep = backing_arch == "intimate_ballad_sparse"
+    passed = len(reasons) == 0
+
+    return {
+        "song_dir": str(song_dir),
+        "group": song_dir.parent.name,
+        "slug": song_dir.name,
+        "cover_file": cover_path.name,
+        "cover_id": cover_id,
+        "has_original": bool(orig_files),
+        "has_offvocal": off_file is not None,
+        "offvocal_file": off_file.name if off_file is not None else None,
+        "passed": passed,
+        "is_duplicate": is_duplicate,
+        "integrity": integrity,
+        "offvocal_alignment": off_info,
+        "key_shifted": off_info["key_shifted"],
+        "key_shift_semitones": off_info["key_shift_semitones"],
+        "paired_calibration_eligible": off_info["paired_calibration_eligible"],
+        "backing_archetype": backing_arch,
+        "backing_full_descriptors": full_desc,
+        "is_underrepresented_archetype": is_underrep,
+        "rejection_reasons": reasons,
+    }
+
+
+def scan_youtube_references_inbox(
+    inbox_root: Path,
+    existing_index_json: Path | None = None,
+    target_sr: int = 44100,
+) -> dict:
+    """Scan `youtube_references/` inbox and run all 4 quality gates across all candidate folders."""
+    inbox_root = Path(inbox_root)
+    idx_path = existing_index_json or (inbox_root / "_info" / "existing_44_songs.json")
+
+    known_cover_ids: set[str] = set()
+    if idx_path.exists():
+        try:
+            idx_data = json.loads(idx_path.read_text(encoding="utf-8"))
+            for cid in idx_data.get("existing_cover_video_ids", []):
+                if cid:
+                    known_cover_ids.add(str(cid).strip())
+            for s in idx_data.get("songs", []):
+                if s.get("cover"):
+                    known_cover_ids.add(str(s["cover"]).strip())
+        except Exception:
+            pass
+
+    manifest_by_dir: dict[str, dict] = {}
+    info_dir = inbox_root / "_info"
+    if info_dir.exists():
+        for mp in sorted(info_dir.glob("manifest*.json")):
+            try:
+                for entry in json.loads(mp.read_text(encoding="utf-8")):
+                    d_norm = str(entry.get("dir", "")).replace("/", "\\").lower()
+                    if d_norm:
+                        manifest_by_dir[d_norm] = entry
+            except Exception:
+                continue
+
+    candidate_dirs: list[Path] = []
+    if inbox_root.exists():
+        seen_dirs: set[Path] = set()
+        for cf in sorted(inbox_root.rglob("cover_*.*")):
+            if "_info" in cf.parts or cf.suffix.lower() not in _AUDIO_EXTS:
+                continue
+            parent = cf.parent.resolve()
+            if parent not in seen_dirs:
+                seen_dirs.add(parent)
+                candidate_dirs.append(cf.parent)
+
+    results: list[dict] = []
+    seen_inbox_ids = set(known_cover_ids)
+    archetype_counts: dict[str, int] = {}
+    underrep_ballads: list[str] = []
+
+    for cdir in candidate_dirs:
+        rel_str = str(cdir.relative_to(inbox_root)).replace("/", "\\").lower()
+        res = validate_reference_song_candidate(cdir, existing_cover_ids=seen_inbox_ids, target_sr=target_sr)
+        if res["cover_id"]:
+            seen_inbox_ids.add(str(res["cover_id"]))
+        if rel_str in manifest_by_dir:
+            res["manifest_entry"] = manifest_by_dir[rel_str]
+        arch = res["backing_archetype"]
+        archetype_counts[arch] = archetype_counts.get(arch, 0) + 1
+        if res["passed"] and res["is_underrepresented_archetype"]:
+            underrep_ballads.append(str(cdir))
+        results.append(res)
+
+    return {
+        "inbox_root": str(inbox_root),
+        "known_existing_cover_ids": len(known_cover_ids),
+        "total_candidates": len(results),
+        "passed_count": sum(1 for r in results if r["passed"]),
+        "rejected_count": sum(1 for r in results if not r["passed"]),
+        "key_shifted_count": sum(1 for r in results if r["key_shifted"]),
+        "paired_calibration_eligible_count": sum(1 for r in results if r["paired_calibration_eligible"]),
+        "archetype_counts": archetype_counts,
+        "underrepresented_ballad_candidates": underrep_ballads,
+        "candidates": results,
+    }
