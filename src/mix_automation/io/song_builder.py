@@ -1,17 +1,16 @@
-"""v4 Studio One 5.5 True 1:1 Dynamic VST3 `.song` Session Builder & Steinberg `.vstpreset` Synthesizer.
+"""v5 Studio One 5.5 True 1:1 Native Steinberg `.vstpreset` Synthesizer & Exact Console Parity Builder.
 
-Upgrades over v3:
-  1. True 1:1 Commercial VST3 Chain Injection into `Devices/audiomixer.xml` & `Presets/Channels/`:
-     Reads Studio One 5's exact verified VST3 `classID`s (with live `Plugins-ja.settings` lookup +
-     workstation-verified fallback table) and synthesizes genuine Steinberg `.vstpreset` binaries
-     (`VST3` header + `Comp` chunk + `Cont` + `Info` MetaInfo XML + `List` footer).
-  2. `mainvocal` receives the exact archetype-matched VST3 chain rendered in Python (`Persistent Q` ->
-     `VCA Compressor` -> `MV2 Mono` or `UADx LA-2A` -> optional `UADx Pultec EQP-1A` / `TDR VOS SlickEQ`).
-  3. Adds real `Saturation Knob` (Parallel Harmonic FX Channel) & `PhoenixVerb` (8m Early Room FX
-     Channel) wired to `main` bus Sends (`Send04` / `Send05`), plus `VCA Compressor` (bus glue) &
-     `Wave Breaker` (true-peak limiter) directly on the `メイン` Master Output Bus!
-  4. Registers all newly created FX & extra audio channels inside `Devices/mixerconsole.xml` so every
-     strip appears cleanly in Studio One 5's Mix Console immediately on open.
+Fixes the critical JUCE/Pedalboard -> Studio One `.vstpreset` root cause discovered in v4 forensics:
+  1. `spotify/pedalboard` returns a JUCE `<VST3PluginState><IComponent>...</IComponent><IEditController>...</IEditController></VST3PluginState>`
+     wrapper from `plugin.raw_state` (using JUCE's `MemoryBlock::toBase64Encoding()`). Previously,
+     embedding that JUCE XML directly inside Steinberg's `Comp` chunk caused Studio One 5 to reject
+     every `.vstpreset` and reset plugins to factory defaults!
+  2. `extract_steinberg_comp_and_cont()` decodes `<IComponent>` and `<IEditController>` into exact
+     byte-for-byte native Steinberg `Comp` and `Cont` streams verified against Studio One 5.5!
+  3. Matches every preset folder path to the exact Studio One channel label (`メイン`, `Saturation Parallel`,
+     `Phoenix EarlyRoom`), strips legacy template `C1`/`L1`/`Doubler2` inserts off `harmvocal`/`harmvocal2`
+     (replacing them with clean pocket `Persistent Q` + `VCA Compressor` + shared `R2`/`PhoenixVerb` sends),
+     and expands `mainvocal` & `メイン` insert racks in `Devices/mixerconsole.xml`.
 """
 
 from __future__ import annotations
@@ -37,6 +36,9 @@ import soundfile as sf
 from mix_automation.config.plugin_registry import VST3_ROOT, get_plugin_map
 from mix_automation.dsp.pitch_timing import ReviewMarker
 from mix_automation.dsp.vst3_optimizer import SongSection, VocalChainParams
+
+_JUCE_B64_ALPHABET = ".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+"
+_JUCE_B64_LUT = {ch: idx for idx, ch in enumerate(_JUCE_B64_ALPHABET)}
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,6 @@ class S1PluginClassSpec:
         return self.class_id.strip("{}").replace("-", "").upper()
 
 
-# Workstation-verified Studio One 5.5 VST3 ClassDescriptions (extracted directly from Plugins-ja.settings)
 DEFAULT_S1_PLUGIN_SPECS: dict[str, S1PluginClassSpec] = {
     "persistent_q": S1PluginClassSpec("Persistent Q", "{ABCDEF01-9182-FAEB-4B61-706550713031}", "VST3", False),
     "vca_compressor": S1PluginClassSpec("VCA Compressor", "{24DCAB96-A33C-41E5-B2C9-7A9953B51CCD}", "VST3/Dynamics", True),
@@ -81,6 +82,40 @@ DEFAULT_S1_PLUGIN_SPECS: dict[str, S1PluginClassSpec] = {
     "h_delay": S1PluginClassSpec("H-Delay Stereo", "{56535448-4244-5368-2D64-656C61792073}", "VST3/Delay", True),
     "doubler2": S1PluginClassSpec("Doubler2 Stereo", "{56535457-4432-5364-6F75-626C65723220}", "VST3/Modulation", True),
 }
+
+
+def decode_juce_base64(encoded: str) -> bytes:
+    """Decode JUCE's `MemoryBlock::toBase64Encoding()` format (`'{num_bytes}.{64-char-stream}'`)."""
+    s = encoded.strip()
+    if "." not in s:
+        return b""
+    n_str, payload = s.split(".", 1)
+    n_bytes = int(n_str)
+    out = bytearray()
+    pos = 0
+    plen = len(payload)
+    while len(out) < n_bytes and pos < plen:
+        chunk = payload[pos : pos + 4]
+        pos += 4
+        val = 0
+        for idx, ch in enumerate(chunk):
+            val |= _JUCE_B64_LUT[ch] << (6 * idx)
+        for b in range(3):
+            if len(out) < n_bytes:
+                out.append((val >> (8 * b)) & 0xFF)
+    return bytes(out)
+
+
+def extract_steinberg_comp_and_cont(raw_state: bytes) -> tuple[bytes, bytes]:
+    """Unwrap Pedalboard/JUCE `<VST3PluginState>` XML into native Steinberg `(Comp, Cont)` byte streams."""
+    if b"<VST3PluginState>" not in raw_state:
+        return raw_state, b""
+
+    m_comp = re.search(rb"<IComponent>([^<]*)</IComponent>", raw_state)
+    m_cont = re.search(rb"<IEditController>([^<]*)</IEditController>", raw_state)
+    comp = decode_juce_base64(m_comp.group(1).decode("ascii")) if (m_comp and m_comp.group(1).strip()) else raw_state
+    cont = decode_juce_base64(m_cont.group(1).decode("ascii")) if (m_cont and m_cont.group(1).strip()) else b""
+    return comp, cont
 
 
 def load_s1_plugin_specs() -> dict[str, S1PluginClassSpec]:
@@ -111,11 +146,21 @@ def load_s1_plugin_specs() -> dict[str, S1PluginClassSpec]:
     return specs
 
 
-def create_vstpreset_bytes(class_id_guid: str, comp_state: bytes) -> bytes:
-    """Synthesize a complete, Studio One 5-native Steinberg `.vstpreset` binary from a VST3 `Comp` chunk."""
+def create_vstpreset_bytes(
+    class_id_guid: str,
+    comp_state: bytes,
+    cont_state: bytes = b"",
+) -> bytes:
+    """Synthesize a genuine Studio One 5-native Steinberg `.vstpreset` binary (`Comp` + `Cont` + `Info`)."""
     hex32 = class_id_guid.strip("{}").replace("-", "").upper()
     if len(hex32) != 32:
         raise ValueError(f"Expected 32-hex VST3 class ID, got {class_id_guid!r}")
+
+    # Auto-unwrap JUCE `<VST3PluginState>` wrapper whenever passed directly from Pedalboard!
+    if b"<VST3PluginState>" in comp_state:
+        comp_state, extracted_cont = extract_steinberg_comp_and_cont(comp_state)
+        if not cont_state:
+            cont_state = extracted_cont
 
     info_xml = (
         '\ufeff<?xml version="1.0" encoding="UTF-8"?>\r\n'
@@ -126,7 +171,7 @@ def create_vstpreset_bytes(class_id_guid: str, comp_state: bytes) -> bytes:
 
     chunks = [
         (b"Comp", comp_state),
-        (b"Cont", b""),
+        (b"Cont", cont_state),
         (b"Info", info_xml),
     ]
     data_blobs = bytearray()
@@ -144,9 +189,15 @@ def create_vstpreset_bytes(class_id_guid: str, comp_state: bytes) -> bytes:
 
 
 def patch_vstpreset_component_state(orig_vstpreset: bytes, new_comp_state: bytes) -> bytes:
-    """Replace the `Comp` chunk inside an existing Steinberg `.vstpreset` while keeping `Cont` & `Info`."""
+    """Replace the `Comp` (and `Cont` if JUCE-wrapped) chunk inside an existing Steinberg `.vstpreset`."""
     if len(orig_vstpreset) < 48 or orig_vstpreset[:4] != b"VST3":
         raise ValueError("Original bytes are not a valid Steinberg .vstpreset file.")
+
+    new_cont_state: bytes | None = None
+    if b"<VST3PluginState>" in new_comp_state:
+        new_comp_state, extracted_cont = extract_steinberg_comp_and_cont(new_comp_state)
+        if extracted_cont:
+            new_cont_state = extracted_cont
 
     magic, version, class_id_bytes, list_offset = struct.unpack("<4si32sq", orig_vstpreset[:48])
     if orig_vstpreset[list_offset : list_offset + 4] != b"List":
@@ -163,6 +214,8 @@ def patch_vstpreset_component_state(orig_vstpreset: bytes, new_comp_state: bytes
         if cid == b"Comp":
             chunks.append((b"Comp", new_comp_state))
             comp_replaced = True
+        elif cid == b"Cont" and new_cont_state is not None:
+            chunks.append((b"Cont", new_cont_state))
         else:
             chunks.append((cid, orig_vstpreset[c_off : c_off + c_size]))
 
@@ -251,11 +304,33 @@ def _render_fx_slot_xml(
     )
 
 
-def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[str, bytes]:
-    """Load every real commercial VST3 plugin in isolated subprocesses and dump verified `.vstpreset` binaries.
+def _replace_channel_inserts(mixer_xml: str, channel_label: str, slots_xml: list[str], preset_name: str) -> str:
+    """Replace the `<Attributes x:id="Inserts">...</Attributes>` block for an exact channel label."""
+    if not slots_xml:
+        return mixer_xml
+    anchor = f'label="{channel_label}"'
+    c_start = mixer_xml.find(anchor)
+    if c_start == -1:
+        return mixer_xml
+    ins_s = mixer_xml.find('\n\t\t\t\t<Attributes x:id="Inserts">', c_start)
+    ins_e = mixer_xml.find("\n\t\t\t\t</Attributes>\n", ins_s)
+    if ins_s == -1 or ins_e == -1:
+        return mixer_xml
 
-    Keys are exact archive paths (`Presets/Channels/.../*.vstpreset`). Values are complete Steinberg
-    `.vstpreset` binary payloads ready to embed directly into Studio One 5 `.song` archives!
+    new_block = (
+        '\t\t\t\t<Attributes x:id="Inserts">\n'
+        + "\n".join(slots_xml)
+        + f'\n\t\t\t\t\t<Attributes x:id="Presets" pname="{_safe_xml_attr(preset_name)}" dirty="0"/>\n'
+        + "\t\t\t\t</Attributes>"
+    )
+    return mixer_xml[: ins_s + 1] + new_block + mixer_xml[ins_e + len("\n\t\t\t\t</Attributes>") :]
+
+
+def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[str, bytes]:
+    """Load every real commercial VST3 plugin in isolated subprocesses and synthesize native Steinberg `.vstpreset`s.
+
+    Unwraps Pedalboard's JUCE `<VST3PluginState>` XML into genuine Steinberg `Comp` + `Cont` chunks
+    matching Studio One 5's exact channel labels (`メイン`, `Saturation Parallel`, `Phoenix EarlyRoom`, etc.).
     """
     pmap = get_plugin_map()
     s1_specs = load_s1_plugin_specs()
@@ -305,17 +380,18 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=16,
+                timeout=18,
             )
             for line in proc.stdout.splitlines():
                 if line.startswith("STATE_B64:"):
-                    raw_comp = base64.b64decode(line[len("STATE_B64:") :])
-                    return create_vstpreset_bytes(s1_specs[spec_key].class_id, raw_comp)
+                    juce_blob = base64.b64decode(line[len("STATE_B64:") :])
+                    comp_bytes, cont_bytes = extract_steinberg_comp_and_cont(juce_blob)
+                    return create_vstpreset_bytes(s1_specs[spec_key].class_id, comp_bytes, cont_bytes)
         except Exception:
             return None
         return None
 
-    # --- 1. Main Vocal 1:1 Commercial VST3 Chain ---
+    # --- 1. Main Vocal True 1:1 Commercial VST3 Chain ---
     pq_main = _dump_preset(
         "persistent_q",
         str(pmap["persistent_q"].loadable_path),
@@ -381,7 +457,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
                 str(pmap["slick_eq"].loadable_path),
                 None,
                 "slick",
-                {"out_stage": "Silky", "drive_db": 4.5},
+                {"out_stage": "Silky", "drive_db": 4.0},
             )
             if slick:
                 presets["Presets/Channels/mainvocal/4 - TDR VOS SlickEQ.vstpreset"] = slick
@@ -396,39 +472,48 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             if pultec:
                 presets["Presets/Channels/mainvocal/4 - UADx Pultec EQP-1A EQ.vstpreset"] = pultec
 
-    # --- 2. Harmony Channels (`harmvocal` / `harmvocal2` pocket EQ & glue) ---
+    # --- 2. Clean Harmony Channels (`harmvocal` / `harmvocal2`: Persistent Q pocket EQ + VCA smooth glue ONLY!) ---
     pq_harm = _dump_preset(
         "persistent_q",
         str(pmap["persistent_q"].loadable_path),
         None,
         "pq",
         {
-            "hpf_hz": 210.0,
-            "body_db": 0.0,
-            "mud_db": -2.2,
-            "presence_db": -3.2,
-            "air_db": float(max(0.0, params.air_shelf_db * 0.5)),
-            "mud_hz": 520.0,
-            "presence_hz": 2700.0,
-            "air_hz": 9800.0,
+            "hpf_hz": 220.0,
+            "body_db": -0.5,
+            "mud_db": -2.4,
+            "presence_db": -4.2,
+            "air_db": -2.5,
+            "mud_hz": 500.0,
+            "presence_hz": 2600.0,
+            "air_hz": 8000.0,
         },
     )
     if pq_harm:
-        presets["Presets/Channels/harmvocal/2 - Persistent Q.vstpreset"] = pq_harm
-        presets["Presets/Channels/harmvocal2/2 - Persistent Q.vstpreset"] = pq_harm
+        presets["Presets/Channels/harmvocal/1 - Persistent Q.vstpreset"] = pq_harm
+        presets["Presets/Channels/harmvocal2/1 - Persistent Q.vstpreset"] = pq_harm
 
-    mv2_harm = _dump_preset(
-        "mv2_mono",
-        waves_shell,
-        "MV2 Mono",
-        "mv2",
-        {"low_level": 7.5, "high_level": -5.4, "output_gain": 0.0},
+    vca_harm = _dump_preset(
+        "vca_compressor",
+        str(pmap["vca_compressor"].loadable_path),
+        None,
+        "vca",
+        {
+            "threshold_db": -25.0,
+            "ratio": 4.0,
+            "attack_norm": 1.20,
+            "release_norm": 0.65,
+            "sc_hpf_hz": 160.0,
+            "output_db": 2.2,
+            "dry_wet": 100.0,
+            "output_drive": 0.5,
+        },
     )
-    if mv2_harm:
-        presets["Presets/Channels/harmvocal/1 - MV2 Mono.vstpreset"] = mv2_harm
-        presets["Presets/Channels/harmvocal2/1 - MV2 Mono.vstpreset"] = mv2_harm
+    if vca_harm:
+        presets["Presets/Channels/harmvocal/2 - VCA Compressor.vstpreset"] = vca_harm
+        presets["Presets/Channels/harmvocal2/2 - VCA Compressor.vstpreset"] = vca_harm
 
-    # --- 3. FX Channels: H-Delay, Doubler2, R2 Plate, PhoenixVerb Early Room, Parallel Saturation Knob ---
+    # --- 3. FX Channels matching exact Studio One channel labels! ---
     hd_pre = _dump_preset(
         "h_delay",
         waves_shell,
@@ -437,7 +522,6 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         {
             "mix": 100.0,
             "bpm": float(np.clip(bpm, 40.0, 240.0)),
-            "pingpong": True,
             "feedback": 20.0,
             "hipass": 450.0,
             "lopass": 4000.0,
@@ -471,7 +555,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             {"size_m": 8.0, "rvb_time": 0.42, "predelay_ms": 12.0},
         )
         if ph_pre:
-            presets["Presets/Channels/PhoenixVerb EarlyRoom/1 - PhoenixVerb.vstpreset"] = ph_pre
+            presets["Presets/Channels/Phoenix EarlyRoom/1 - PhoenixVerb.vstpreset"] = ph_pre
 
     if pmap["saturation_knob"].exists:
         sat_pre = _dump_preset(
@@ -482,9 +566,9 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             {"amount": float(params.parallel_sat_amount), "sat_type": "KEEP LOW"},
         )
         if sat_pre:
-            presets["Presets/Channels/Saturation Knob Parallel/1 - Saturation Knob.vstpreset"] = sat_pre
+            presets["Presets/Channels/Saturation Parallel/1 - Saturation Knob.vstpreset"] = sat_pre
 
-    # --- 4. Master Bus 1:1 Glue & True-Peak Limiting (`VCA Compressor` + `Wave Breaker`) ---
+    # --- 4. Master Output (`メイン`) 1:1 Bus Glue & True-Peak Limiter ---
     vca_master = _dump_preset(
         "vca_compressor",
         str(pmap["vca_compressor"].loadable_path),
@@ -502,7 +586,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         },
     )
     if vca_master:
-        presets["Presets/Channels/Main/1 - VCA Compressor.vstpreset"] = vca_master
+        presets["Presets/Channels/メイン/1 - VCA Compressor.vstpreset"] = vca_master
 
     if pmap["wave_breaker"].exists:
         wb_master = _dump_preset(
@@ -513,7 +597,7 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
             {"threshold_db": -0.8},
         )
         if wb_master:
-            presets["Presets/Channels/Main/2 - Wave Breaker.vstpreset"] = wb_master
+            presets["Presets/Channels/メイン/2 - Wave Breaker.vstpreset"] = wb_master
 
     return presets
 
@@ -532,8 +616,9 @@ def build_studio_one_song(
     patched_presets: dict[str, bytes] | None = None,
     chain_params: VocalChainParams | None = None,
     review_markers: list[ReviewMarker] | None = None,
+    harmony_fader_db: float = -11.2,
 ) -> Path:
-    """Build a complete Studio One 5 `.song` file with true 1:1 commercial VST3 chains, FX buses & markers."""
+    """Build a complete Studio One 5 `.song` file with native Steinberg `.vstpreset`s & exact console parity."""
     output_song_dir.mkdir(parents=True, exist_ok=True)
     output_song_path = output_song_dir / f"{song_name}.song"
     patched_presets = patched_presets or {}
@@ -758,9 +843,8 @@ def build_studio_one_song(
 
     mixer_xml_out = mixer_xml_str
 
-    # --- Inject True 1:1 Commercial VST3 Chain into `mainvocal`, `メイン`, and FX Channels! ---
     if chain_params is not None:
-        # 1. Replace `mainvocal` Inserts block with the exact archetype-matched real VST3 plugins
+        # 1. `mainvocal` Inserts: Exact archetype-matched commercial VST3 chain
         main_fx_slots: list[str] = []
         slot_specs: list[tuple[str, str]] = [
             ("persistent_q", "Presets/Channels/mainvocal/1 - Persistent Q.vstpreset"),
@@ -778,64 +862,45 @@ def build_studio_one_song(
         for s_idx, (s_key, p_rel) in enumerate(slot_specs, start=1):
             if p_rel in patched_presets:
                 main_fx_slots.append(_render_fx_slot_xml(s_idx, s1_specs[s_key], p_rel, stereo_channel=False))
+        mixer_xml_out = _replace_channel_inserts(mixer_xml_out, "mainvocal", main_fx_slots, "AutoMIX v5 Main")
 
-        if main_fx_slots:
-            new_main_inserts = (
-                '\t\t\t\t<Attributes x:id="Inserts">\n'
-                + "\n".join(main_fx_slots)
-                + '\n\t\t\t\t\t<Attributes x:id="Presets" pname="AutoMIX v4" dirty="0"/>\n'
-                + "\t\t\t\t</Attributes>"
-            )
-            m_start = mixer_xml_out.find('label="mainvocal"')
-            if m_start != -1:
-                ins_s = mixer_xml_out.find('\n\t\t\t\t<Attributes x:id="Inserts">', m_start)
-                ins_e = mixer_xml_out.find("\n\t\t\t\t</Attributes>\n", ins_s)
-                if ins_s != -1 and ins_e != -1:
-                    mixer_xml_out = (
-                        mixer_xml_out[: ins_s + 1]
-                        + new_main_inserts
-                        + mixer_xml_out[ins_e + len("\n\t\t\t\t</Attributes>") :]
-                    )
+        # 2. `harmvocal` & `harmvocal2` Inserts: STRIP legacy C1/L1/Doubler2 and inject clean pocket EQ + VCA!
+        for h_label in ("harmvocal", "harmvocal2"):
+            h_slots: list[str] = []
+            p_pq = f"Presets/Channels/{h_label}/1 - Persistent Q.vstpreset"
+            p_vca = f"Presets/Channels/{h_label}/2 - VCA Compressor.vstpreset"
+            if p_pq in patched_presets:
+                h_slots.append(_render_fx_slot_xml(1, s1_specs["persistent_q"], p_pq, stereo_channel=False))
+            if p_vca in patched_presets:
+                h_slots.append(_render_fx_slot_xml(2, s1_specs["vca_compressor"], p_vca, stereo_channel=False))
+            mixer_xml_out = _replace_channel_inserts(mixer_xml_out, h_label, h_slots, "AutoMIX v5 Harmony")
 
-        # 2. Inject Master Bus Glue (`VCA Compressor` + `Wave Breaker`) directly into `メイン` AudioOutputChannel!
+        # 3. `メイン` Master Output Inserts (`VCA Compressor` bus glue + `Wave Breaker` ceiling)
         master_slots: list[str] = []
-        if "Presets/Channels/Main/1 - VCA Compressor.vstpreset" in patched_presets:
+        if "Presets/Channels/メイン/1 - VCA Compressor.vstpreset" in patched_presets:
             master_slots.append(
-                _render_fx_slot_xml(1, s1_specs["vca_compressor"], "Presets/Channels/Main/1 - VCA Compressor.vstpreset", True)
+                _render_fx_slot_xml(1, s1_specs["vca_compressor"], "Presets/Channels/メイン/1 - VCA Compressor.vstpreset", True)
             )
-        if "Presets/Channels/Main/2 - Wave Breaker.vstpreset" in patched_presets:
+        if "Presets/Channels/メイン/2 - Wave Breaker.vstpreset" in patched_presets:
             master_slots.append(
-                _render_fx_slot_xml(2, s1_specs["wave_breaker"], "Presets/Channels/Main/2 - Wave Breaker.vstpreset", True)
+                _render_fx_slot_xml(2, s1_specs["wave_breaker"], "Presets/Channels/メイン/2 - Wave Breaker.vstpreset", True)
             )
-        if master_slots:
-            master_ins_target = (
-                '\t\t\t\t<Attributes x:id="Inserts">\n'
-                '\t\t\t\t\t<Attributes x:id="Presets" pname="デフォルト" dirty="0"/>\n'
-                '\t\t\t\t</Attributes>\n'
-                '\t\t\t\t<Attributes x:id="PostFaderInserts">'
-            )
-            master_ins_repl = (
-                '\t\t\t\t<Attributes x:id="Inserts">\n'
-                + "\n".join(master_slots)
-                + '\n\t\t\t\t\t<Attributes x:id="Presets" pname="Master Glue" dirty="0"/>\n'
-                '\t\t\t\t</Attributes>\n'
-                '\t\t\t\t<Attributes x:id="PostFaderInserts">'
-            )
-            mixer_xml_out = mixer_xml_out.replace(master_ins_target, master_ins_repl, 1)
+        mixer_xml_out = _replace_channel_inserts(mixer_xml_out, "メイン", master_slots, "Master Glue")
 
-        # 3. Add Dedicated FX Channels: Parallel Saturation Knob (Channel04) & PhoenixVerb Early Room (Channel05)!
+        # 4. Dedicated FX Channels (`Saturation Parallel` & `Phoenix EarlyRoom`) matching exact channel labels!
         extra_fx_channels: list[str] = []
         extra_sends_for_main: list[str] = []
         fx_ch_num = 4
         send_num = 4
+        ph_uid: str | None = None
 
-        if "Presets/Channels/Saturation Knob Parallel/1 - Saturation Knob.vstpreset" in patched_presets:
+        if "Presets/Channels/Saturation Parallel/1 - Saturation Knob.vstpreset" in patched_presets:
             sat_uid = _new_uid()
             new_console_uids.append(sat_uid)
             sat_slot = _render_fx_slot_xml(
                 1,
                 s1_specs["saturation_knob"],
-                "Presets/Channels/Saturation Knob Parallel/1 - Saturation Knob.vstpreset",
+                "Presets/Channels/Saturation Parallel/1 - Saturation Knob.vstpreset",
                 True,
             )
             extra_fx_channels.append(
@@ -852,7 +917,9 @@ def build_studio_one_song(
                 f'\t\t\t\t<Attributes x:id="InputFX" gain="0" invertPhaseL="0" invertPhaseR="0"/>\n'
                 f"\t\t\t</AudioEffectChannel>"
             )
-            sat_send_lin = round(float(np.clip(chain_params.parallel_sat_wet_pct / 100.0, 0.04, 0.35)), 6)
+            # Additive send calibration so Studio One parallel saturation matches Python's crossfaded blend cleanly
+            w = float(np.clip(chain_params.parallel_sat_wet_pct / 100.0, 0.04, 0.30))
+            sat_send_lin = round(float(np.clip((w / max(1.0 - w, 0.5)) * 0.55, 0.03, 0.18)), 6)
             extra_sends_for_main.append(
                 f'\t\t\t\t\t<Attributes name="Send{send_num:02d}" bypass="0" prefader="0" level="{sat_send_lin}" pan="0.5">\n'
                 f'\t\t\t\t\t\t<Connection x:id="destination" objectID="{sat_uid}/Input" friendlyName="Saturation Parallel"/>\n'
@@ -861,13 +928,13 @@ def build_studio_one_song(
             fx_ch_num += 1
             send_num += 1
 
-        if "Presets/Channels/PhoenixVerb EarlyRoom/1 - PhoenixVerb.vstpreset" in patched_presets:
+        if "Presets/Channels/Phoenix EarlyRoom/1 - PhoenixVerb.vstpreset" in patched_presets:
             ph_uid = _new_uid()
             new_console_uids.append(ph_uid)
             ph_slot = _render_fx_slot_xml(
                 1,
                 s1_specs["phoenix_verb"],
-                "Presets/Channels/PhoenixVerb EarlyRoom/1 - PhoenixVerb.vstpreset",
+                "Presets/Channels/Phoenix EarlyRoom/1 - PhoenixVerb.vstpreset",
                 True,
             )
             extra_fx_channels.append(
@@ -910,20 +977,50 @@ def build_studio_one_song(
                 1,
             )
 
-        # 4. Calibrate Faders, Wide Harmony Pans & Existing Send Levels
+        # 5. Wire subtle shared room/plate sends onto `harm` & `harm2` buses so harmonies blend behind the lead!
+        harm_sends_list = [
+            '\t\t\t\t\t<Attributes name="Send01" bypass="0" prefader="0" level="0.16" pan="0.5">\n'
+            '\t\t\t\t\t\t<Connection x:id="destination" objectID="{9E67D54D-94FA-4A21-8BFA-151F51BBA20D}/Input" friendlyName="R2"/>\n'
+            "\t\t\t\t\t</Attributes>"
+        ]
+        if ph_uid:
+            harm_sends_list.append(
+                f'\t\t\t\t\t<Attributes name="Send02" bypass="0" prefader="0" level="0.14" pan="0.5">\n'
+                f'\t\t\t\t\t\t<Connection x:id="destination" objectID="{ph_uid}/Input" friendlyName="Phoenix EarlyRoom"/>\n'
+                f"\t\t\t\t\t</Attributes>"
+            )
+        harm_sends_block = (
+            '\t\t\t\t<Attributes x:id="Sends">\n'
+            + "\n".join(harm_sends_list)
+            + '\n\t\t\t\t\t<Attributes x:id="Presets" pname="デフォルト" dirty="0"/>\n'
+            + "\t\t\t\t</Attributes>"
+        )
+        for h_bus_lbl in ("harm", "harm2"):
+            hb_s = mixer_xml_out.find(f'label="{h_bus_lbl}"')
+            if hb_s != -1:
+                empty_sends = (
+                    '\t\t\t\t<Attributes x:id="Sends">\n'
+                    '\t\t\t\t\t<Attributes x:id="Presets" pname="デフォルト" dirty="0"/>\n'
+                    "\t\t\t\t</Attributes>"
+                )
+                es_pos = mixer_xml_out.find(empty_sends, hb_s)
+                if es_pos != -1 and (es_pos - hb_s) < 900:
+                    mixer_xml_out = mixer_xml_out[:es_pos] + harm_sends_block + mixer_xml_out[es_pos + len(empty_sends) :]
+
+        # 6. Calibrate Faders, Balanced Harmony Pans & Existing Main Send Levels
         main_lin = _db_to_s1_fader_gain(chain_params.vocal_fader_db)
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel01" label="mainvocal"',
             f'<AudioTrackChannel gain="{main_lin}" pan="0.5" name="Channel01" label="mainvocal"',
         )
-        h_lin = _db_to_s1_fader_gain(-7.8)
+        h_lin = _db_to_s1_fader_gain(harmony_fader_db)
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel02" label="harmvocal"',
-            f'<AudioTrackChannel gain="{h_lin}" pan="0.18" name="Channel02" label="harmvocal"',
+            f'<AudioTrackChannel gain="{h_lin}" pan="0.22" name="Channel02" label="harmvocal"',
         )
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel03" label="harmvocal2"',
-            f'<AudioTrackChannel gain="{h_lin}" pan="0.82" name="Channel03" label="harmvocal2"',
+            f'<AudioTrackChannel gain="{h_lin}" pan="0.78" name="Channel03" label="harmvocal2"',
         )
         doub_lv = _db_to_s1_fader_gain(chain_params.doubler_send_db)
         dly_lv = _db_to_s1_fader_gain(chain_params.tempo_delay_send_db)
@@ -949,19 +1046,38 @@ def build_studio_one_song(
             1,
         )
 
-    # Register all newly added channels in `Devices/mixerconsole.xml` ScreenBank so they appear immediately!
-    if console_xml_str and new_console_uids:
-        uid_lines = "\n".join(f'\t\t\t\t<UID uid="{u}"/>' for u in new_console_uids)
-        sb_anchor = '<ChannelShowHidePreset x:id="ScreenBank" name="" version="1">\n\t\t\t<List x:id="visible">'
-        if sb_anchor in console_xml_str:
-            console_xml_str = console_xml_str.replace(sb_anchor, sb_anchor + "\n" + uid_lines, 1)
+    # Expand `mainvocal` & `メイン` insert racks and register new channels inside `Devices/mixerconsole.xml`!
+    if console_xml_str:
+        for expand_uid in (
+            "636828DD73584765B2A2106A2780EE51",  # メイン Master Output
+            "B65FF637689748AE850F1DB2294F9113",  # mainvocal
+            "9088293D13894C9EBC6DE6E19FCE0915",  # main bus
+        ):
+            sec_tag = f'<Section path="{expand_uid}">'
+            pos_s = console_xml_str.find(sec_tag)
+            if pos_s != -1:
+                pos_exp = console_xml_str.find('expanded="0"', pos_s)
+                if pos_exp != -1 and (pos_exp - pos_s) < 120:
+                    console_xml_str = console_xml_str[:pos_exp] + 'expanded="1"' + console_xml_str[pos_exp + 12 :]
+
+        if new_console_uids:
+            uid_lines = "\n".join(f'\t\t\t\t<UID uid="{u}"/>' for u in new_console_uids)
+            sb_anchor = '<ChannelShowHidePreset x:id="ScreenBank" name="" version="1">\n\t\t\t<List x:id="visible">'
+            if sb_anchor in console_xml_str:
+                console_xml_str = console_xml_str.replace(sb_anchor, sb_anchor + "\n" + uid_lines, 1)
+
         template_files["Devices/mixerconsole.xml"] = console_xml_str.replace("\n", "\r\n").encode("utf-8")
+
+    # Prune obsolete legacy template presets on mainvocal/harmvocal/harmvocal2 so zero stale presets linger!
+    if chain_params is not None:
+        for obsolete in list(template_files.keys()):
+            if obsolete.startswith(("Presets/Channels/mainvocal/", "Presets/Channels/harmvocal/", "Presets/Channels/harmvocal2/")):
+                del template_files[obsolete]
 
     template_files["Song/mediapool.xml"] = pool_xml_out.replace("\n", "\r\n").encode("utf-8")
     template_files["Song/song.xml"] = song_xml_out.replace("\n", "\r\n").encode("utf-8")
     template_files["Devices/audiomixer.xml"] = mixer_xml_out.replace("\n", "\r\n").encode("utf-8")
 
-    # Embed all verified Steinberg `.vstpreset` files (both newly injected 1:1 slots & updated template slots!)
     for preset_rel_path, preset_bytes in patched_presets.items():
         if len(preset_bytes) >= 48 and preset_bytes[:4] == b"VST3":
             template_files[preset_rel_path] = preset_bytes

@@ -24,7 +24,9 @@ from mix_automation.dsp.vst3_optimizer import (
     SongSection,
     VocalChainParams,
     apply_dynamic_instrumental_unmasking,
+    compute_continuous_distance_envelopes,
     detect_song_sections,
+    process_dedicated_harmony_bus,
     solve_differentiable_intrinsic_eq_gpu,
 )
 from mix_automation.io.audio_loader import consolidate_vocal_stem_folder
@@ -32,10 +34,12 @@ from mix_automation.io.song_builder import (
     DEFAULT_S1_PLUGIN_SPECS,
     build_studio_one_song,
     create_vstpreset_bytes,
+    extract_steinberg_comp_and_cont,
     patch_vstpreset_component_state,
     write_pcm24_wav,
 )
 from mix_automation.io.studio_one import write_vstpreset
+from mix_automation.pipeline import discover_song_assets
 
 
 def test_relative_profile_and_anchor_propagation() -> None:
@@ -382,16 +386,28 @@ def test_studio_one_v4_true_1to1_vst3_injection(tmp_path: Path) -> None:
         "Presets/Channels/mainvocal/4 - TDR VOS SlickEQ.vstpreset": create_vstpreset_bytes(
             DEFAULT_S1_PLUGIN_SPECS["slick_eq"].class_id, b"SLICK_STATE"
         ),
-        "Presets/Channels/Saturation Knob Parallel/1 - Saturation Knob.vstpreset": create_vstpreset_bytes(
+        "Presets/Channels/harmvocal/1 - Persistent Q.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["persistent_q"].class_id, b"HPQ_STATE"
+        ),
+        "Presets/Channels/harmvocal/2 - VCA Compressor.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["vca_compressor"].class_id, b"HVCA_STATE"
+        ),
+        "Presets/Channels/harmvocal2/1 - Persistent Q.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["persistent_q"].class_id, b"HPQ_STATE"
+        ),
+        "Presets/Channels/harmvocal2/2 - VCA Compressor.vstpreset": create_vstpreset_bytes(
+            DEFAULT_S1_PLUGIN_SPECS["vca_compressor"].class_id, b"HVCA_STATE"
+        ),
+        "Presets/Channels/Saturation Parallel/1 - Saturation Knob.vstpreset": create_vstpreset_bytes(
             DEFAULT_S1_PLUGIN_SPECS["saturation_knob"].class_id, b"SAT_STATE"
         ),
-        "Presets/Channels/PhoenixVerb EarlyRoom/1 - PhoenixVerb.vstpreset": create_vstpreset_bytes(
+        "Presets/Channels/Phoenix EarlyRoom/1 - PhoenixVerb.vstpreset": create_vstpreset_bytes(
             DEFAULT_S1_PLUGIN_SPECS["phoenix_verb"].class_id, b"PHX_STATE"
         ),
-        "Presets/Channels/Main/1 - VCA Compressor.vstpreset": create_vstpreset_bytes(
+        "Presets/Channels/メイン/1 - VCA Compressor.vstpreset": create_vstpreset_bytes(
             DEFAULT_S1_PLUGIN_SPECS["vca_compressor"].class_id, b"MVCA_STATE"
         ),
-        "Presets/Channels/Main/2 - Wave Breaker.vstpreset": create_vstpreset_bytes(
+        "Presets/Channels/メイン/2 - Wave Breaker.vstpreset": create_vstpreset_bytes(
             DEFAULT_S1_PLUGIN_SPECS["wave_breaker"].class_id, b"WB_STATE"
         ),
     }
@@ -448,5 +464,69 @@ def test_studio_one_v4_true_1to1_vst3_injection(tmp_path: Path) -> None:
     assert "Saturation Parallel" in mixer_xml
     assert "Phoenix EarlyRoom" in mixer_xml
     assert "Wave Breaker" in mixer_xml
+    assert "L1 limiter Mono" not in mixer_xml  # Legacy template L1 cleanly stripped off harmonies!
     for p_rel in dummy_presets:
         assert p_rel in names
+
+
+def test_juce_to_steinberg_vstpreset_unwrapping() -> None:
+    pq_path = Path(r"C:\Program Files\Common Files\VST3\Persistent Q.vst3")
+    if not pq_path.exists():
+        return
+    from pedalboard import load_plugin
+
+    p = load_plugin(str(pq_path))
+    p.band_2_gain = -4.25
+    raw_juce = p.raw_state
+    assert b"<VST3PluginState>" in raw_juce
+
+    comp, _ = extract_steinberg_comp_and_cont(raw_juce)
+    assert b"<VST3PluginState>" not in comp
+    assert b"PersistantQState" in comp
+
+    preset_bytes = create_vstpreset_bytes(DEFAULT_S1_PLUGIN_SPECS["persistent_q"].class_id, raw_juce)
+    magic, _, _, loff = struct.unpack("<4si32sq", preset_bytes[:48])
+    assert magic == b"VST3"
+    assert preset_bytes[loff : loff + 4] == b"List"
+    assert b"<VST3PluginState>" not in preset_bytes
+
+
+def test_continuous_distance_envelopes_catch_subbass_quiet_drop() -> None:
+    sr = 22050
+    t_seg = np.linspace(0.0, 8.0, sr * 8, endpoint=False)
+    # First 8s = Loud chorus (sub + dense 2.2kHz guitars); Second 8s = Quiet breakdown (sub STAYS LOUD, guitars DROP -8dB!)
+    chorus = 0.25 * np.sin(2 * np.pi * 80 * t_seg) + 0.22 * np.sin(2 * np.pi * 2200 * t_seg)
+    breakdown = 0.30 * np.sin(2 * np.pi * 80 * t_seg) + 0.05 * np.sin(2 * np.pi * 2200 * t_seg)
+    inst_m = np.concatenate([chorus, breakdown]).astype(np.float32)
+    inst_st = np.stack([inst_m, inst_m], axis=0)
+
+    envs = compute_continuous_distance_envelopes(inst_st, sr=sr, anchor_span=(0, sr * 8), verse_intimacy_shift_db=0.3)
+    # During breakdown (second half): gain & sat should pull down, room cohesion & soften should rise!
+    assert float(np.mean(envs["gain_env"][sr * 10 : sr * 14])) < float(np.mean(envs["gain_env"][sr * 2 : sr * 6])) - 0.05
+    assert float(np.mean(envs["sat_env"][sr * 10 : sr * 14])) < 0.70
+    assert float(np.mean(envs["space_env"][sr * 10 : sr * 14])) > 1.12
+    assert float(np.mean(envs["soften_env"][sr * 10 : sr * 14])) > 0.50
+
+
+def test_true_stereo_harmony_leveling_and_flat_folder_discovery(tmp_path: Path) -> None:
+    sr = 22050
+    t = np.linspace(0.0, 2.0, sr * 2, endpoint=False)
+    lead = (0.20 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    # Wide hard-panned opposite-phase-like stereo harmony (tiny Mid, large Side -> used to fool Mid-only leveling!)
+    harm_st = np.stack([0.20 * np.sin(2 * np.pi * 554 * t), -0.18 * np.sin(2 * np.pi * 554 * t)], axis=0).astype(
+        np.float32
+    )
+    out_h = process_dedicated_harmony_bus(harm_st, lead, sr=sr, target_rel_db=-11.2, side_boost_db=1.2)
+    # Total stereo RMS of harmonies must stay clearly BELOW lead (~ -11 dB), NEVER booming near 0 dB!
+    lead_rms = float(np.sqrt(np.mean(lead**2)))
+    harm_stereo_rms = float(np.sqrt(0.5 * (np.mean(out_h[0] ** 2) + np.mean(out_h[1] ** 2))))
+    rel_db = 20.0 * np.log10((harm_stereo_rms + 1e-12) / (lead_rms + 1e-12))
+    assert -16.0 <= rel_db <= -8.5
+
+    # Verify flat-folder discovery (Fall in Love layout without stems/ subfolder!)
+    write_pcm24_wav(tmp_path / "20261125 - inst.wav", np.stack([lead, lead], axis=0), sr)
+    write_pcm24_wav(tmp_path / "20261125 - main1.wav", lead, sr)
+    write_pcm24_wav(tmp_path / "20261125 - harm1.wav", harm_st, sr)
+    assets = discover_song_assets(tmp_path)
+    assert assets["inst"] is not None and assets["inst"].name == "20261125 - inst.wav"
+    assert len(assets["stems"]) == 2

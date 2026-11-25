@@ -37,12 +37,13 @@ from pedalboard import (
     Pedalboard,
     load_plugin,
 )
-from scipy import signal
+from scipy import ndimage, signal
 
 from mix_automation.analysis.relative_profile import (
     VOCAL_MIX_BANDS,
     SectionRelativeProfile,
     SectionTransferAdjustment,
+    _apply_k_weighting_mono,
     classify_backing_archetype,
     compute_section_relative_profile,
 )
@@ -109,26 +110,41 @@ def detect_song_sections(
     vocal_mono: np.ndarray,
     inst_mono: np.ndarray,
     sr: int,
-    min_section_sec: float = 12.0,
+    min_section_sec: float = 7.5,
 ) -> tuple[list[tuple[float, float, str]], int]:
-    """Segment song into structural sections using 1.5-10kHz arrangement density quantiles."""
+    """Segment song using BOTH upward & downward vocal-competition (300Hz-8.5kHz) arrangement step-changes."""
     duration = min(len(vocal_mono), len(inst_mono)) / sr
-    if duration <= min_section_sec * 1.5:
+    if duration <= min_section_sec * 1.6:
         return [(0.0, duration, "01_Chorus")], 0
 
     hop = 1024
-    mel = np.abs(signal.stft(inst_mono, fs=sr, nperseg=2048, noverlap=1024)[2])
+    freqs, _, Z = signal.stft(inst_mono, fs=sr, nperseg=2048, noverlap=1024)
+    mel = np.abs(Z)
     log_mel = np.log1p(100.0 * mel)
     flux = np.sqrt(np.sum(np.diff(log_mel, axis=1, prepend=log_mel[:, :1]) ** 2, axis=0))
     frame_times = np.arange(len(flux)) * (hop / sr)
 
-    win = max(5, int(2.0 * sr / hop))
-    flux_smooth = np.convolve(flux, np.hanning(win) / np.sum(np.hanning(win)), mode="same")
+    # Also track signed step-changes (both drops & lifts!) in the 400Hz-8.5kHz vocal competition band!
+    comp_m = (freqs >= 400.0) & (freqs <= 8500.0)
+    comp_db = 10.0 * np.log10(np.sum((mel[comp_m] ** 2), axis=0) + 1e-12)
+    win_step = max(8, int(2.5 * sr / hop))
+    comp_smooth = ndimage.uniform_filter1d(comp_db, size=win_step)
+    # Local novelty = |forward 3s mean - backward 3s mean| -> catches quiet drops like 2:14 even when sub-bass stays loud!
+    shift = max(6, int(2.2 * sr / hop))
+    novelty_drop = np.zeros_like(comp_smooth)
+    if len(comp_smooth) > 2 * shift:
+        novelty_drop[shift:-shift] = np.abs(comp_smooth[2 * shift :] - comp_smooth[: -2 * shift])
+    novelty_drop_norm = novelty_drop / (float(np.percentile(novelty_drop, 95)) + 1e-6)
+    flux_norm = flux / (float(np.percentile(flux, 95)) + 1e-6)
+    combined_novelty = 0.50 * flux_norm + 0.50 * novelty_drop_norm
+
+    win = max(5, int(1.6 * sr / hop))
+    nov_smooth = np.convolve(combined_novelty, np.hanning(win) / np.sum(np.hanning(win)), mode="same")
     min_dist_frames = int(min_section_sec * sr / hop)
     peaks, _ = signal.find_peaks(
-        flux_smooth,
+        nov_smooth,
         distance=min_dist_frames,
-        prominence=np.percentile(flux_smooth, 55) * 0.25,
+        prominence=float(np.percentile(nov_smooth, 55)) * 0.28,
     )
 
     boundaries = (
@@ -136,9 +152,9 @@ def detect_song_sections(
         + [float(frame_times[p]) for p in peaks if min_section_sec <= frame_times[p] <= duration - min_section_sec]
         + [duration]
     )
-    raw_spans = [(round(a, 2), round(b, 2)) for a, b in zip(boundaries[:-1], boundaries[1:]) if b - a >= 6.0]
+    raw_spans = [(round(a, 2), round(b, 2)) for a, b in zip(boundaries[:-1], boundaries[1:]) if b - a >= 5.5]
 
-    sos_hi = signal.butter(3, [1500.0, min(10000.0, sr * 0.45)], btype="bandpass", fs=sr, output="sos")
+    sos_hi = signal.butter(3, [1200.0, min(9000.0, sr * 0.45)], btype="bandpass", fs=sr, output="sos")
     inst_midhi = signal.sosfilt(sos_hi, inst_mono)
 
     chorus_scores: list[float] = []
@@ -148,7 +164,7 @@ def detect_song_sections(
         i_db = float(20.0 * np.log10(np.sqrt(np.mean(inst_mono[s0:s1] ** 2) + 1e-12)))
         ih_db = float(20.0 * np.log10(np.sqrt(np.mean(inst_midhi[s0:s1] ** 2) + 1e-12)))
         v_db = float(20.0 * np.log10(np.sqrt(np.mean(vocal_mono[s0:s1] ** 2) + 1e-12)))
-        chorus_scores.append(0.35 * i_db + 0.65 * ih_db)
+        chorus_scores.append(0.25 * i_db + 0.75 * ih_db)
         vocal_activities.append(v_db)
 
     max_v_db = max(vocal_activities)
@@ -159,7 +175,7 @@ def detect_song_sections(
     best_idx = max(active_song_indices, key=lambda idx: chorus_scores[idx] + 0.15 * vocal_activities[idx])
     active_scores = np.array([chorus_scores[i] for i in active_song_indices])
     q_chorus = float(np.percentile(active_scores, 68)) if len(active_scores) >= 3 else chorus_scores[best_idx] - 1.0
-    q_quiet = float(np.percentile(active_scores, 28)) if len(active_scores) >= 4 else float(np.min(active_scores)) - 0.5
+    q_quiet = float(np.percentile(active_scores, 30)) if len(active_scores) >= 4 else float(np.min(active_scores)) - 0.5
 
     labeled: list[tuple[float, float, str]] = []
     for idx, ((a, b), c_sc, v_db) in enumerate(zip(raw_spans, chorus_scores, vocal_activities)):
@@ -174,6 +190,82 @@ def detect_song_sections(
         labeled.append((a, b, f"{idx + 1:02d}_{role}"))
 
     return labeled, best_idx
+
+
+def compute_continuous_distance_envelopes(
+    inst_stereo: np.ndarray,
+    sr: int,
+    anchor_span: tuple[int, int],
+    verse_intimacy_shift_db: float = 0.4,
+) -> dict[str, np.ndarray]:
+    """Track backing 300Hz-7.5kHz competition loudness continuously (0.5s hop) to keep vocal distance natural everywhere.
+
+    Prevents the vocal from suddenly detaching/jumping forward during sub-bass-heavy quiet drops
+    (e.g. when guitars & hi-hats vanish for 4-15 seconds while sub-bass stays loud!).
+    """
+    n = inst_stereo.shape[1]
+    inst_mid = 0.5 * (inst_stereo[0].astype(np.float64) + inst_stereo[1].astype(np.float64))
+    sos_comp = signal.butter(3, [350.0, min(7500.0, sr * 0.45)], btype="bandpass", fs=sr, output="sos")
+    comp_sig = signal.sosfilt(sos_comp, inst_mid)
+
+    hop = max(int(sr * 0.25), 512)
+    n_f = max(1, int(np.ceil(n / hop)))
+    padded = np.pad(comp_sig, (0, n_f * hop - n))
+    frm_db = 20.0 * np.log10(np.sqrt(np.mean(padded.reshape(n_f, hop) ** 2, axis=1) + 1e-12))
+    # Smooth with ~1.25s musical lookahead window (sigma = 2.5 frames at 0.25s/frame)
+    frm_smooth_db = ndimage.gaussian_filter1d(frm_db, sigma=2.5)
+
+    a0 = max(0, anchor_span[0] // hop)
+    a1 = min(n_f, max(a0 + 2, anchor_span[1] // hop))
+    anchor_ref_db = float(np.percentile(frm_smooth_db[a0:a1], 65))
+
+    # Signed deviation of backing Mid-High masking floor relative to Anchor Chorus (negative = quieter/thinner!)
+    delta_db = np.clip(frm_smooth_db - anchor_ref_db, -12.0, 3.0)
+    drop_mag = np.maximum(-delta_db - 1.2, 0.0)  # Active whenever guitars/mid-hi drop > 1.2 dB below chorus!
+
+    # 1. Smooth gain ride: tracks ~36% of Mid-High drop (retaining pro intimacy without popping out!)
+    intimacy_cushion = float(np.clip(verse_intimacy_shift_db, 0.0, 1.0)) * 0.35
+    gain_db_f = np.clip(-drop_mag * 0.36 + np.minimum(drop_mag * 0.12, intimacy_cushion), -2.8, 0.8)
+    gain_lin_f = np.power(10.0, gain_db_f / 20.0)
+
+    # 2. Parallel saturation ride: turn silky (down to 0.45x) when backing thins out!
+    sat_scale_f = np.clip(1.0 - drop_mag * 0.095, 0.42, 1.0)
+
+    # 3. Room / Plate distance cohesion: gently bloom room glue (up to 1.32x = +2.4 dB) on quiet drops
+    space_scale_f = np.clip(1.0 + drop_mag * 0.055, 0.94, 1.32)
+
+    # 4. Upper-mid presence edge softening (0.0 .. 1.0 -> up to -1.6 dB smooth tilt at 2.2-7kHz)
+    soften_amt_f = np.clip(drop_mag / 6.0, 0.0, 1.0)
+
+    sample_x = np.arange(n, dtype=np.float64)
+    frame_x = np.arange(n_f, dtype=np.float64) * hop + hop * 0.5
+
+    return {
+        "gain_env": np.interp(sample_x, frame_x, gain_lin_f).astype(np.float32),
+        "sat_env": np.interp(sample_x, frame_x, sat_scale_f).astype(np.float32),
+        "space_env": np.interp(sample_x, frame_x, space_scale_f).astype(np.float32),
+        "soften_env": np.interp(sample_x, frame_x, soften_amt_f).astype(np.float32),
+    }
+
+
+def apply_dynamic_distance_tone_soften(
+    lead_mono: np.ndarray,
+    sr: int,
+    soften_env: np.ndarray,
+    max_cut_db: float = 1.6,
+) -> np.ndarray:
+    """Gently soften upper-mid edge (2.2-7kHz) during quiet backing breakdowns so vocal distance stays cohesive."""
+    if float(np.max(soften_env)) < 0.05:
+        return lead_mono
+    n = min(len(lead_mono), len(soften_env))
+    sos = signal.butter(2, [2200.0, min(7200.0, sr * 0.45)], btype="bandpass", fs=sr, output="sos")
+    hi_band = signal.sosfiltfilt(sos, lead_mono[:n].astype(np.float64))
+    max_atten = 1.0 - (10.0 ** (-max_cut_db / 20.0))
+    out = lead_mono.copy()
+    out[:n] = (lead_mono[:n].astype(np.float64) - hi_band * (soften_env[:n].astype(np.float64) * max_atten)).astype(
+        np.float32
+    )
+    return out
 
 
 # --- Stage A: Fast GPU Differentiable 6-Band RBJ Biquad EQ Warm-Start ---
@@ -612,51 +704,78 @@ def process_dedicated_harmony_bus(
     harm_stereo: np.ndarray,
     lead_final_dry: np.ndarray,
     sr: int,
-    target_rel_db: float = -7.8,
-    side_boost_db: float = 2.6,
+    target_rel_db: float = -11.2,
+    side_boost_db: float = 1.4,
     plate_plugin=None,
+    room_plugin=None,
 ) -> np.ndarray:
-    """Process stereo harmony/choir bus with lead-pocket EQ, tight bus comp, M/S width & subtle space."""
+    """Process stereo harmony/choir bus using TRUE stereo K-weighted leveling, de-essing & shared room glue.
+
+    Fixes v4's Mid-only M/S gain bug (which made wide panned harmonies +5 dB louder than intended!)
+    and tames harmony sibilants (`5kHz+`) so harmony consonants never fight the lead vocal.
+    """
     n = min(harm_stereo.shape[1], len(lead_final_dry))
     h = harm_stereo[:, :n].astype(np.float32)
     nz = np.abs(h) > 1e-4
     if np.sum(nz) < 1000:
         return np.zeros((2, len(lead_final_dry)), dtype=np.float32)
 
-    # 1. Lead-pocket EQ & smooth bus glue compression (works cleanly because audio_loader already leveled to -19dB!)
+    # 1. Deep Lead-Pocket EQ, smoother 7.8kHz top-end & tight bus glue
     h_board = Pedalboard(
         [
-            HighpassFilter(cutoff_frequency_hz=210.0),
-            PeakFilter(cutoff_frequency_hz=520.0, gain_db=-2.2, q=1.2),
-            PeakFilter(cutoff_frequency_hz=2700.0, gain_db=-3.2, q=1.0),
-            LowpassFilter(cutoff_frequency_hz=10200.0),
-            Compressor(threshold_db=-23.0, ratio=4.2, attack_ms=8.0, release_ms=95.0),
+            HighpassFilter(cutoff_frequency_hz=220.0),
+            PeakFilter(cutoff_frequency_hz=500.0, gain_db=-2.4, q=1.2),
+            PeakFilter(cutoff_frequency_hz=2600.0, gain_db=-4.2, q=1.0),
+            LowpassFilter(cutoff_frequency_hz=7800.0),
+            Compressor(threshold_db=-24.0, ratio=4.5, attack_ms=6.0, release_ms=90.0),
         ]
     )
     proc = h_board(h, sr)
 
-    # 2. M/S Stereo Width Expansion so harmonies hug the lead wide on Left & Right!
+    # 2. Dynamic Harmony Sibilance Softening (4.8kHz+): prevents harmony "s/t/k" consonants poking out!
+    sos_sib = signal.butter(3, 4800.0, btype="highpass", fs=sr, output="sos")
+    win = max(int(sr * 0.025), 256)
+    for ch in range(2):
+        sib_b = signal.sosfiltfilt(sos_sib, proc[ch].astype(np.float64))
+        pad_s = np.pad(sib_b**2, (win // 2, win - win // 2 - 1), mode="edge")
+        cs = np.cumsum(np.insert(pad_s, 0, 0.0))
+        sib_env = np.sqrt(np.maximum((cs[win:] - cs[:-win]) / win, 1e-12))[:n]
+        sib_ref = float(np.percentile(sib_env[sib_env > 1e-5], 88)) if np.any(sib_env > 1e-5) else 1.0
+        excess = np.clip((sib_env / (sib_ref + 1e-9) - 0.55) / 0.85, 0.0, 1.0)
+        # Soften harsh sibilant bursts on harmonies by up to -5.5 dB
+        proc[ch] = (proc[ch].astype(np.float64) - sib_b * (excess * 0.48)).astype(np.float32)
+
+    # 3. Controlled M/S Stereo Width so harmonies frame the lead cleanly without overpowering the stereo field
     mid = 0.5 * (proc[0] + proc[1])
     side = 0.5 * (proc[0] - proc[1]) * float(10.0 ** (side_boost_db / 20.0))
     wide = np.stack([mid + side, mid - side], axis=0).astype(np.float32)
 
-    # 3. Subtle dedicated Plate halo (-15 dB wet) so harmonies blend softly behind the lead
+    # 4. Shared Early-Room + Plate Cohesion so harmonies sit softly BEHIND the lead in the exact same room!
+    if room_plugin is not None:
+        try:
+            er = room_plugin(Pedalboard([HighpassFilter(320.0), LowpassFilter(5400.0)])(wide, sr), sr, reset=True)
+            wide = (wide + er * 0.14).astype(np.float32)
+        except Exception:
+            pass
     if plate_plugin is not None:
         try:
-            wet = plate_plugin(Pedalboard([HighpassFilter(420.0), LowpassFilter(5600.0)])(wide, sr), sr, reset=True)
-            wide = (wide + wet * 0.16).astype(np.float32)
+            wet = plate_plugin(Pedalboard([HighpassFilter(420.0), LowpassFilter(5200.0)])(wide, sr), sr, reset=True)
+            wide = (wide + wet * 0.18).astype(np.float32)
         except Exception:
             pass
 
-    # 4. Match active K-weighted/RMS harmony bus level accurately to `lead_final_dry` (`target_rel_db`)!
-    l_act = lead_final_dry[np.abs(lead_final_dry) > 1e-3]
-    h_m = 0.5 * (wide[0] + wide[1])
-    h_act = h_m[np.abs(h_m) > 1e-4]
-    if l_act.size > 512 and h_act.size > 512:
-        l_rms = float(np.sqrt(np.mean(l_act**2) + 1e-12))
-        h_rms = float(np.sqrt(np.mean(h_act**2) + 1e-12))
-        target_rms = l_rms * float(10.0 ** (target_rel_db / 20.0))
-        gain = float(np.clip(target_rms / h_rms, 0.08, 12.0))
+    # 5. TRUE STEREO K-WEIGHTED ACTIVE LEVEL MATCH against `lead_final_dry` (never Mid-only RMS!)
+    lk = _apply_k_weighting_mono(lead_final_dry[:n].astype(np.float64), sr)
+    hk_l = _apply_k_weighting_mono(wide[0].astype(np.float64), sr)
+    hk_r = _apply_k_weighting_mono(wide[1].astype(np.float64), sr)
+
+    l_mask = np.abs(lead_final_dry[:n]) > 1e-3
+    h_mask = (np.abs(wide[0]) + np.abs(wide[1])) > 2e-4
+    if np.sum(l_mask) > 512 and np.sum(h_mask) > 512:
+        l_k_rms = float(np.sqrt(np.mean(lk[l_mask] ** 2) + 1e-12))
+        h_k_rms = float(np.sqrt(0.5 * (np.mean(hk_l[h_mask] ** 2) + np.mean(hk_r[h_mask] ** 2)) + 1e-12))
+        target_rms = l_k_rms * float(10.0 ** (target_rel_db / 20.0))
+        gain = float(np.clip(target_rms / h_k_rms, 0.04, 12.0))
         wide *= gain
 
     out = np.zeros((2, len(lead_final_dry)), dtype=np.float32)
@@ -675,7 +794,7 @@ def apply_2mix_bus_glue_and_safe_master(
     meter = pyln.Meter(sr)
     orig_inst_lufs = meter.integrated_loudness(inst_stereo.T.astype(np.float64))
     effective_target_lufs = (
-        float(np.clip(orig_inst_lufs + 2.6, -12.5, target_lufs)) if np.isfinite(orig_inst_lufs) else target_lufs
+        float(np.clip(orig_inst_lufs + 2.6, -12.0, target_lufs)) if np.isfinite(orig_inst_lufs) else target_lufs
     )
 
     raw_2mix = (inst_stereo + vocal_bus_stereo).astype(np.float32)
@@ -685,7 +804,6 @@ def apply_2mix_bus_glue_and_safe_master(
     if pre_peak > safe_ceiling:
         raw_2mix *= safe_ceiling / pre_peak
 
-    # Verified Softube VCA Bus Glue (slow attack 2.3, gentle ratio 1.6:1, SC HPF 110Hz so kick/sub don't pump!)
     glued = raw_2mix
     if pmap["vca_compressor"].exists:
         try:
@@ -707,7 +825,7 @@ def apply_2mix_bus_glue_and_safe_master(
             glued = raw_2mix
 
     cur_lufs = meter.integrated_loudness(glued.T.astype(np.float64))
-    gain_db = float(np.clip(effective_target_lufs - cur_lufs, -6.0, 10.0)) if np.isfinite(cur_lufs) else 0.0
+    gain_db = float(np.clip(effective_target_lufs - cur_lufs, -6.0, 14.0)) if np.isfinite(cur_lufs) else 0.0
     bus_scaled = (glued * (10.0 ** (gain_db / 20.0))).astype(np.float32)
 
     if pmap["wave_breaker"].exists:

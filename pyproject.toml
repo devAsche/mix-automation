@@ -1,6 +1,6 @@
 [project]
 name = "mix-automation"
-version = "0.4.0"
+version = "0.5.0"
 description = "Reference-grade automated vocal mixing engine tailored for Studio One 5 & commercial VST3 chains"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

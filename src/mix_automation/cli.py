@@ -101,33 +101,43 @@ def build_references(
 
 @app.command("mix")
 def mix_song(
-    song_folder: Path = typer.Argument(..., exists=True, help="Raw song folder containing stems/ and off-vocal"),
+    song_folder: Path = typer.Argument(..., exists=True, help="Raw song folder containing stems/ (or flat WAVs) and off-vocal"),
     style: str = typer.Option(
         "auto",
         "--style",
         "-s",
         help="Target style: auto (44-song acoustic k-NN) | consensus | azusagawa | toy | saburou | aokiyo | aoru | hoshirubesho | nanadakiima | sou",
     ),
-    taste: str | None = typer.Option(
-        None,
+    taste: str = typer.Option(
+        "azusagawa",
         "--taste",
-        help="Optional preferred MIXer aesthetic to blend onto acoustic k-NN (e.g. azusagawa, sou, aoru, toy)",
+        help="Preferred MIXer aesthetic blended onto acoustic k-NN (pass 'none' for pure 44-song k-NN)",
     ),
     taste_weight: float = typer.Option(
-        0.35,
+        0.25,
         "--taste-weight",
-        help="Blend ratio (0.0-0.85) for --taste when specified",
+        help="Blend ratio (0.0-0.85) for --taste when enabled",
     ),
     auto_pitch: bool = typer.Option(
         False,
         "--auto-pitch",
-        help="Force Praat TD-PSOLA micro-pitch tuning even if stem appears Melodyne-edited",
+        help="Force smooth Praat PitchTier micro-tuning even if stem appears Melodyne-edited",
+    ),
+    auto_align: bool = typer.Option(
+        False,
+        "--auto-align",
+        help="Opt-in safe phrase timing slip alignment on untuned raw vocals (OFF by default to protect groove)",
+    ),
+    enable_nectar_mix: bool = typer.Option(
+        False,
+        "--enable-nectar-mix",
+        help="Force mixing synthetic Nectar 3 harmonies into 2mix even when user recorded real harmonies",
     ),
     template_song: Path = typer.Option(DEFAULT_TEMPLATE_SONG, "--template", "-t", help="Base Studio One 5 .song"),
     profiles_json: Path = typer.Option(DEFAULT_PROFILES_JSON, "--profiles", "-p", help="Target profiles JSON"),
     output_root: Path = typer.Option(PROJECT_ROOT / "data" / "outputs", "--out-dir", "-o", help="Output directory"),
 ) -> None:
-    """Run full v4 automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
+    """Run full v5 automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
     from mix_automation.pipeline import run_full_automix_for_song
 
     report = run_full_automix_for_song(
@@ -137,12 +147,14 @@ def mix_song(
         output_root=output_root,
         style=style,
         force_auto_pitch=auto_pitch,
+        enable_auto_align=auto_align,
         taste_style=taste,
-        taste_weight=taste_weight if taste else 0.0,
+        taste_weight=taste_weight,
+        enable_nectar_in_mix=enable_nectar_mix,
     )
-    console.print("\n[bold green]v4 Auto-MIX Complete![/bold green]")
+    console.print("\n[bold green]v5 Auto-MIX Complete![/bold green]")
     console.print(f"  Archetype & Target   : [magenta]{report['optimized_chain_params']['archetype_chain']} -> {report['resolved_target_profile']}[/magenta]")
-    console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan] ({len(report.get('studio_one_injected_presets', []))} VST3 presets)")
+    console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan] ({len(report.get('studio_one_injected_presets', []))} native VST3 presets)")
     console.print(f"  Mastered 2mix WAV    : [cyan]{report['master_wav']}[/cyan]")
     console.print(f"  Processed Vocal Bus  : [cyan]{report['vocal_bus_wav']}[/cyan]\n")
 

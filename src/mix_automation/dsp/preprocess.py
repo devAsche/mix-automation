@@ -45,6 +45,7 @@ class PreprocessConfig:
     breath_target_db: float = -20.0
     breath_sensitivity: float = 48.0
     force_auto_pitch: bool = False
+    enable_auto_align: bool = False
     enable_gain_rider: bool = True
     rider_max_boost_db: float = 4.0
     rider_max_cut_db: float = -4.0
@@ -367,6 +368,7 @@ def preprocess_vocal_pipeline(
         scale_mask=scale_mask,
         ref_vocal_mono=ref_vocal_mono,
         force_pitch=cfg.force_auto_pitch,
+        enable_auto_align=cfg.enable_auto_align,
     )
 
     if cfg.enable_gain_rider:

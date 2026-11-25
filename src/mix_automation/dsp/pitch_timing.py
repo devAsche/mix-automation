@@ -1,17 +1,14 @@
-"""Reference-Guided Slip Timing Alignment, TD-PSOLA Micro-Pitch Tuning & DAW Review Markers.
+"""v5 Non-Destructive Pitch & Timing Intelligence: Melodyne Protection, Smooth Praat PitchTier & Safe Markers.
 
-Replaces v1's phase-vocoder pitch shift (`librosa.effects.pitch_shift`) completely:
-  1. Auto-detects if the vocal stem is already precision-tuned (e.g., Melodyne-edited, median
-     pitch deviation <= 18.5 cents). When already tuned and `force_pitch=False`, skips redundant
-     pitch re-synthesis so zero artifacts are ever introduced!
-  2. For untuned vocals, uses Praat's time-domain glottal epoch algorithm (`psola.vocode` via
-     `praat-parselmouth`), preserving vocal formants, onsets (scoops), and vibrato intact while
-     gently centering sustained vowels guided by the reference original vocal's melody!
-  3. Performs zero-stretch Phrase Slip Timing Alignment: shifts whole phrases inside surrounding
-     silent gaps when a phrase onset lags/leads the reference vocal by 30-95ms (zero rubbery
-     time-stretch degradation!).
-  4. Emits Studio One 5 `<MarkerEvent>` cues for any large pitch/timing outliers (>= 45 cents or
-     >= 75 ms) so the singer/engineer can jump straight to the exact bar in Melodyne if desired.
+Fixes v4 timing/pitch glitches structurally:
+  1. Never alters timing on Melodyne-edited or human-grooved tracks unless `enable_auto_align=True`
+     is explicitly requested! Previously, slipping `mainvocal` alone by +-85ms against a Vocaloid
+     original caused rushed/crammed phrasing and desynced the lead from recorded harmonies.
+  2. Emits high-confidence Studio One 5 `<MarkerEvent>` cues for genuine timing/pitch outliers so
+     the user retains 100% creative groove control.
+  3. For untuned vocals (or `--auto-pitch`), performs continuous Praat (`praat-parselmouth`)
+     PitchTier overlap-add resynthesis — preserving unvoiced consonants, scoops, and vibrato intact
+     while gently centering sustained steady pitch drift (never hard-splicing audio chunks!).
 """
 
 from __future__ import annotations
@@ -20,7 +17,6 @@ from dataclasses import asdict, dataclass
 
 import librosa
 import numpy as np
-import psola
 from scipy import ndimage
 
 
@@ -30,7 +26,7 @@ class ReviewMarker:
 
     time_sec: float
     name: str
-    category: str  # "pitch" | "timing"
+    category: str  # "pitch" | "timing" | "fx"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -38,7 +34,7 @@ class ReviewMarker:
 
 @dataclass(frozen=True)
 class PitchTimingReport:
-    """Summary of automatic slip-timing & TD-PSOLA pitch processing."""
+    """Summary of automatic pitch/timing inspection and conditional processing."""
 
     median_f0_hz: float
     initial_median_cents_off: float
@@ -74,10 +70,11 @@ def align_phrase_onsets_zero_stretch(
     vocal_mono: np.ndarray,
     sr: int,
     ref_vocal_mono: np.ndarray | None,
-    max_slip_ms: float = 85.0,
-    min_trigger_ms: float = 30.0,
+    apply_audio_shift: bool = False,
+    max_slip_ms: float = 36.0,
+    min_trigger_ms: float = 22.0,
 ) -> tuple[np.ndarray, int, list[ReviewMarker]]:
-    """Slip isolated vocal phrases inside surrounding silence to lock vowel onsets to reference vocal."""
+    """Inspect phrase onsets vs reference vocal; emit review markers and ONLY slip audio when explicitly enabled."""
     markers: list[ReviewMarker] = []
     if ref_vocal_mono is None or len(ref_vocal_mono) < sr * 5:
         return vocal_mono, 0, markers
@@ -85,6 +82,8 @@ def align_phrase_onsets_zero_stretch(
     n = min(len(vocal_mono), len(ref_vocal_mono))
     hop = int(sr * 0.01)  # 10ms envelope resolution
     n_f = n // hop
+    if n_f < 50:
+        return vocal_mono, 0, markers
 
     v_env = np.sqrt(np.mean(vocal_mono[: n_f * hop].reshape(n_f, hop) ** 2, axis=1) + 1e-12)
     r_env = np.sqrt(np.mean(ref_vocal_mono[: n_f * hop].reshape(n_f, hop) ** 2, axis=1) + 1e-12)
@@ -92,15 +91,18 @@ def align_phrase_onsets_zero_stretch(
     v_act = v_env > (np.percentile(v_env, 96) * 0.04)
     r_act = r_env > (np.percentile(r_env, 96) * 0.05)
 
-    # Dilate slightly (80ms) to group syllables into phrases surrounded by genuine silent breath gaps
-    phrase_mask = ndimage.binary_closing(v_act, structure=np.ones(8))
+    # Dilate slightly (100ms) to group syllables into whole phrases
+    phrase_mask = ndimage.binary_closing(v_act, structure=np.ones(10))
     labels, n_phrases = ndimage.label(phrase_mask)
 
-    out = np.zeros_like(vocal_mono)
-    out[n:] = vocal_mono[n:]
+    out = np.zeros_like(vocal_mono) if apply_audio_shift else vocal_mono.copy()
+    if apply_audio_shift:
+        out[n:] = vocal_mono[n:]
+
     slipped_count = 0
     max_lag_frames = int(max_slip_ms / 10.0)
     min_lag_frames = int(min_trigger_ms / 10.0)
+    marker_scan_frames = 10  # Scan +-100ms for diagnostic review markers
 
     for p_i in range(1, n_phrases + 1):
         idxs = np.where(labels == p_i)[0]
@@ -108,34 +110,34 @@ def align_phrase_onsets_zero_stretch(
         s0 = f0_idx * hop
         s1 = min(n, (f1_idx + 1) * hop)
 
-        # Require >= 120ms silence margin before and after phrase to slip without colliding!
         left_gap = f0_idx - (np.where(phrase_mask[:f0_idx])[0][-1] if np.any(phrase_mask[:f0_idx]) else 0)
         right_hits = np.where(phrase_mask[f1_idx + 1 :])[0]
         right_gap = int(right_hits[0]) if len(right_hits) > 0 else 50
 
-        if (f1_idx - f0_idx) < 25 or left_gap < 12 or right_gap < 12 or not np.any(r_act[f0_idx:f1_idx]):
-            out[s0:s1] += vocal_mono[s0:s1]
+        if (f1_idx - f0_idx) < 35 or not np.any(r_act[f0_idx:f1_idx]):
+            if apply_audio_shift:
+                out[s0:s1] += vocal_mono[s0:s1]
             continue
 
-        # Cross-correlate onset derivative of user phrase vs reference vocal window to measure timing offset
         v_diff = np.maximum(np.diff(v_env[f0_idx:f1_idx], prepend=0.0), 0.0)
         r_diff = np.maximum(np.diff(r_env[f0_idx:f1_idx], prepend=0.0), 0.0)
+        v_norm = float(np.linalg.norm(v_diff)) + 1e-9
+        r_norm = float(np.linalg.norm(r_diff)) + 1e-9
+
         best_shift_f = 0
         best_corr = -1.0
-        for lag in range(-max_lag_frames, max_lag_frames + 1):
+        for lag in range(-marker_scan_frames, marker_scan_frames + 1):
             if lag < 0:
-                c = float(np.dot(v_diff[-lag:], r_diff[: len(v_diff) + lag]))
+                c = float(np.dot(v_diff[-lag:], r_diff[: len(v_diff) + lag])) / (v_norm * r_norm)
             elif lag > 0:
-                c = float(np.dot(v_diff[:-lag], r_diff[lag:]))
+                c = float(np.dot(v_diff[:-lag], r_diff[lag:])) / (v_norm * r_norm)
             else:
-                c = float(np.dot(v_diff, r_diff))
+                c = float(np.dot(v_diff, r_diff)) / (v_norm * r_norm)
             if c > best_corr:
                 best_corr = c
                 best_shift_f = lag
 
-        # Positive lag means reference occurs LATER than user; negative means user is LATE -> shift earlier
-        safe_shift_f = int(np.clip(best_shift_f, -(left_gap - 4), right_gap - 4))
-        if abs(best_shift_f) >= 8:  # >= 80ms discrepancy -> add review marker
+        if best_corr >= 0.55 and abs(best_shift_f) >= 9:  # >= 90ms genuine discrepancy -> review marker only
             markers.append(
                 ReviewMarker(
                     time_sec=round(f0_idx * 0.01, 2),
@@ -144,14 +146,27 @@ def align_phrase_onsets_zero_stretch(
                 )
             )
 
-        if abs(safe_shift_f) >= min_lag_frames:
+        # ONLY shift audio if explicitly requested AND generous 280ms silence margins exist AND high correlation!
+        if (
+            apply_audio_shift
+            and best_corr >= 0.62
+            and left_gap >= 28
+            and right_gap >= 28
+            and min_lag_frames <= abs(best_shift_f) <= max_lag_frames
+        ):
+            safe_shift_f = int(np.clip(best_shift_f, -max_lag_frames, max_lag_frames))
             shift_samples = safe_shift_f * hop
             dst0 = max(0, s0 + shift_samples)
             dst1 = min(n, s1 + shift_samples)
             copy_len = min(s1 - s0, dst1 - dst0)
-            out[dst0 : dst0 + copy_len] += vocal_mono[s0 : s0 + copy_len]
+            seg = vocal_mono[s0 : s0 + copy_len].copy()
+            fade = min(int(0.025 * sr), copy_len // 4)
+            if fade > 4:
+                seg[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                seg[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+            out[dst0 : dst0 + copy_len] += seg
             slipped_count += 1
-        else:
+        elif apply_audio_shift:
             out[s0:s1] += vocal_mono[s0:s1]
 
     return out.astype(np.float32), slipped_count, markers
@@ -163,20 +178,24 @@ def apply_td_psola_nuance_pitch_correction(
     f0: np.ndarray,
     valid_mask: np.ndarray,
     scale_mask: np.ndarray,
-    strength: float = 0.55,
+    strength: float = 0.50,
 ) -> tuple[np.ndarray, int, list[ReviewMarker]]:
-    """Correct sustained pitch drift via time-domain PSOLA (zero STFT phase-vocoder smearing!)."""
+    """Smooth continuous Praat PitchTier correction preserving scoops, vibrato & consonants."""
+    import parselmouth
+    from parselmouth.praat import call
+
     hop = 512
     midi = librosa.hz_to_midi(np.where(np.isnan(f0), 220.0, f0))
     labels, n_reg = ndimage.label(valid_mask)
 
-    out = vocal_mono.copy()
+    min_frames = int(0.18 * sr / hop)
+    onset_protect = int(0.075 * sr / hop)
+    release_protect = int(0.055 * sr / hop)
+
+    # Build smooth frame-level shift multiplier curve (1.0 everywhere except sustained slightly-off vowels!)
+    shift_ratio_frames = np.ones(len(f0), dtype=np.float64)
     nudged = 0
     markers: list[ReviewMarker] = []
-
-    min_frames = int(0.16 * sr / hop)
-    onset_protect = int(0.07 * sr / hop)
-    release_protect = int(0.05 * sr / hop)
 
     for r_i in range(1, n_reg + 1):
         idxs = np.where(labels == r_i)[0]
@@ -184,18 +203,18 @@ def apply_td_psola_nuance_pitch_correction(
             continue
 
         core = idxs[onset_protect : len(idxs) - release_protect]
-        if len(core) < 4:
+        if len(core) < 5:
             continue
 
         seg_midi = midi[core]
-        if np.std(seg_midi) > 0.38:
+        if np.std(seg_midi) > 0.34:
             continue  # Intentional wide vibrato or melodic slide -> preserve 100% untouched!
 
         med_m = float(np.median(seg_midi))
         nearest = round(med_m)
         cents_off = (med_m - nearest) * 100.0
 
-        if abs(cents_off) >= 44.0:
+        if abs(cents_off) >= 42.0:
             markers.append(
                 ReviewMarker(
                     time_sec=round(float(idxs[0] * hop / sr), 2),
@@ -205,58 +224,47 @@ def apply_td_psola_nuance_pitch_correction(
             )
             continue
 
-        if not scale_mask[nearest % 12] or abs(cents_off) < 15.0:
+        if not scale_mask[nearest % 12] or abs(cents_off) < 14.0:
             continue
 
-        # Build localized target F0 contour for just this phrase window (preserving micro-vibrato!)
-        pad_f = 6
-        w0 = max(0, idxs[0] - pad_f)
-        w1 = min(len(f0), idxs[-1] + pad_f)
-        s0 = w0 * hop
-        s1 = min(len(vocal_mono), w1 * hop)
-        chunk = vocal_mono[s0:s1]
-        if len(chunk) < 4096:
-            continue
+        shift_st = float(np.clip(-(med_m - nearest) * strength, -0.35, 0.35))
+        ramp = np.ones(len(core), dtype=np.float64)
+        edge = min(4, len(core) // 3)
+        if edge > 1:
+            ramp[:edge] = np.linspace(0.0, 1.0, edge)
+            ramp[-edge:] = np.linspace(1.0, 0.0, edge)
+        shift_ratio_frames[core] = 2.0 ** ((shift_st * ramp) / 12.0)
+        nudged += 1
 
-        shift_st = -(med_m - nearest) * strength
-        # Use psola.vocode with frame_period matching Praat's default 10ms step
-        psola_hop = int(sr / 100)
-        n_p_frames = len(chunk) // psola_hop
-        if n_p_frames < 8:
-            continue
+    if nudged == 0:
+        return vocal_mono.astype(np.float32), 0, markers
 
-        chunk_times = np.arange(n_p_frames) * 0.01 + (s0 / sr)
-        orig_times = np.arange(w0, w1) * (hop / sr)
-        interp_f0 = np.interp(chunk_times, orig_times, np.where(np.isnan(f0[w0:w1]), np.nan, f0[w0:w1]))
+    try:
+        snd = parselmouth.Sound(vocal_mono.astype(np.float64), sampling_frequency=float(sr))
+        manip = call(snd, "To Manipulation", 0.01, 75.0, 750.0)
+        pitch_tier = call(manip, "Extract pitch tier")
+        n_pts = int(call(pitch_tier, "Get number of points"))
+        for idx_p in range(1, n_pts + 1):
+            t_p = float(call(pitch_tier, "Get time from index", idx_p))
+            f_p = float(call(pitch_tier, "Get value at index", idx_p))
+            f_idx = int(np.clip(round(t_p * sr / hop), 0, len(shift_ratio_frames) - 1))
+            r = float(shift_ratio_frames[f_idx])
+            if abs(r - 1.0) > 1e-4:
+                call(pitch_tier, "Remove point", idx_p)
+                call(pitch_tier, "Add point", t_p, f_p * r)
+        call([manip, pitch_tier], "Replace pitch tier")
+        resynth = call(manip, "Get resynthesis (overlap-add)")
+        y = np.asarray(resynth.values[0], dtype=np.float32)
+        if len(y) >= len(vocal_mono):
+            y = y[: len(vocal_mono)]
+        else:
+            y = np.pad(y, (0, len(vocal_mono) - len(y)))
+        if np.all(np.isfinite(y)):
+            return y, nudged, markers
+    except Exception:
+        pass
 
-        ramp = np.ones(n_p_frames, dtype=np.float32)
-        edge = min(5, n_p_frames // 3)
-        ramp[:edge] = np.linspace(0.0, 1.0, edge)
-        ramp[-edge:] = np.linspace(1.0, 0.0, edge)
-
-        ratio = 2.0 ** ((shift_st * ramp) / 12.0)
-        target_f0 = np.where(np.isnan(interp_f0), np.nan, interp_f0 * ratio)
-
-        try:
-            vocoded = psola.vocode(
-                chunk.astype(np.float64),
-                sample_rate=sr,
-                target_pitch=target_f0,
-                fmin=70.0,
-                fmax=850.0,
-            ).astype(np.float32)
-            if len(vocoded) == len(chunk) and np.all(np.isfinite(vocoded)):
-                xf = min(512, len(chunk) // 6)
-                fi = np.linspace(0.0, 1.0, xf, dtype=np.float32)
-                fo = 1.0 - fi
-                vocoded[:xf] = chunk[:xf] * fo + vocoded[:xf] * fi
-                vocoded[-xf:] = vocoded[-xf:] * fo + chunk[-xf:] * fi
-                out[s0:s1] = vocoded
-                nudged += 1
-        except Exception:
-            continue
-
-    return out.astype(np.float32), nudged, markers
+    return vocal_mono.astype(np.float32), 0, markers
 
 
 def run_smart_pitch_and_timing_stage(
@@ -265,22 +273,25 @@ def run_smart_pitch_and_timing_stage(
     scale_mask: np.ndarray,
     ref_vocal_mono: np.ndarray | None = None,
     force_pitch: bool = False,
+    enable_auto_align: bool = False,
 ) -> tuple[np.ndarray, PitchTimingReport]:
-    """Execute zero-stretch phrase slip alignment + conditional TD-PSOLA pitch centering + review markers."""
-    # 1. Zero-stretch phrase slip alignment (if reference original vocal is provided)
-    aligned_vocal, slipped_cnt, timing_markers = align_phrase_onsets_zero_stretch(
-        vocal_mono, sr=sr, ref_vocal_mono=ref_vocal_mono
-    )
+    """Inspect vocal precision; preserve Melodyne/human groove by default and emit Studio One markers."""
+    # 1. Inspect vocal register & existing Melodyne tuning precision FIRST!
+    f0, valid_mask, med_f0, med_cents = analyze_vocal_f0_and_precision(vocal_mono, sr=sr)
+    already_tuned = (med_cents <= 20.0) and not force_pitch
 
-    # 2. Inspect vocal register & existing Melodyne tuning precision
-    f0, valid_mask, med_f0, med_cents = analyze_vocal_f0_and_precision(aligned_vocal, sr=sr)
-    already_tuned = (med_cents <= 18.8) and not force_pitch
+    # 2. Timing: NEVER slip Melodyne-edited takes; only shift audio when explicitly enabled on untuned vocals!
+    aligned_vocal, slipped_cnt, timing_markers = align_phrase_onsets_zero_stretch(
+        vocal_mono,
+        sr=sr,
+        ref_vocal_mono=ref_vocal_mono,
+        apply_audio_shift=(enable_auto_align and not already_tuned),
+    )
 
     pitch_markers: list[ReviewMarker] = []
     nudged_cnt = 0
 
     if already_tuned:
-        # Still scan for any rare >= 45 cent outlier notes to place helpful Studio One markers without touching audio!
         midi = librosa.hz_to_midi(np.where(np.isnan(f0), 220.0, f0))
         labels, n_reg = ndimage.label(valid_mask)
         min_f = int(0.18 * sr / 512)
@@ -300,6 +311,8 @@ def run_smart_pitch_and_timing_stage(
                         )
         final_vocal = aligned_vocal
     else:
+        if slipped_cnt > 0:
+            f0, valid_mask, med_f0, med_cents = analyze_vocal_f0_and_precision(aligned_vocal, sr=sr)
         final_vocal, nudged_cnt, pitch_markers = apply_td_psola_nuance_pitch_correction(
             aligned_vocal, sr=sr, f0=f0, valid_mask=valid_mask, scale_mask=scale_mask
         )
