@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+</head>
+<body class="bg-transparent text-[var(--foreground)] antialiased p-0 m-0">
+  <div class="py-1.5 space-y-2.5">
+    <div class="flex items-center justify-between pb-1.5 border-b border-[var(--card-border)]">
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-semibold tracking-wide">4段階ロードマップ到達度（現在 v6.0）</span>
+      </div>
+      <div class="flex items-center gap-3 text-xs text-[var(--muted-foreground)]">
+        <span class="flex items-center gap-1"><span class="inline-block w-2 h-2 rounded-full bg-[var(--success)]"></span>実装・検証済</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-2 h-2 rounded-full bg-[var(--warning)]"></span>課題・未到達</span>
+      </div>
+    </div>
+
+    <div class="space-y-2" id="stage-list">
+      <!-- Stage 1 -->
+      <div class="p-2.5 rounded-lg bg-[var(--card)] border border-[var(--card-border)] grid grid-cols-12 gap-2.5 items-center">
+        <div class="col-span-3 space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-[var(--primary)]">① 混ざり＆S1再現</span>
+            <span class="text-xs font-mono font-bold text-[var(--success)]">88%</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
+            <div class="h-full rounded-full bg-[var(--success)]" style="width:88%"></div>
+          </div>
+          <div class="text-xs text-[var(--muted-foreground)] leading-tight">複数曲汎用・基準伝播</div>
+        </div>
+        <div class="col-span-5 text-xs leading-snug border-l border-[var(--card-border)] pl-2.5">
+          <span class="font-semibold text-[var(--success)]">済：</span>44曲k-NN＋梓川25%基準／16バンドPQ＋VCA＋LA-2A＋後段Soothe2／真正Steinberg `.vstpreset` 1対1注入／`propagate-anchor` 全パート伝播
+        </div>
+        <div class="col-span-4 text-xs leading-snug border-l border-[var(--card-border)] pl-2.5 text-[var(--muted-foreground)]">
+          <span class="font-semibold text-[var(--warning)]">残：</span>連続距離カーブのS1オートメーション化・実機DAW再生の最終聴感突合
+        </div>
+      </div>
+
+      <!-- Stage 2 -->
+      <div class="p-2.5 rounded-lg bg-[var(--card)] border border-[var(--card-border)] grid grid-cols-12 gap-2.5 items-center">
+        <div class="col-span-3 space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-[var(--primary)]">② ワンボタン一貫</span>
+            <span class="text-xs font-mono font-bold text-[var(--chart-1)]">78%</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
+            <div class="h-full rounded-full bg-[var(--chart-1)]" style="width:78%"></div>
+          </div>
+          <div class="text-xs text-[var(--muted-foreground)] leading-tight">下処理〜質感・距離安定</div>
+        </div>
+        <div class="col-span-5 text-xs leading-snug border-l border-[var(--card-border)] pl-2.5">
+          <span class="font-semibold text-[var(--success)]">済：</span>RX10音楽向け洗浄＆アタック保護ディエス／中域限定倍音＆Bark子音緩和／連続距離トラッカー／ハモリ・コーラス分離処理まで1コマンド完結
+        </div>
+        <div class="col-span-4 text-xs leading-snug border-l border-[var(--card-border)] pl-2.5 text-[var(--muted-foreground)]">
+          <span class="font-semibold text-[var(--warning)]">残：</span>無補正生声の自動ピッチ・タイミング実用化／日英音素(歌詞)単位の微細芯制御
+        </div>
+      </div>
+
+      <!-- Stage 3 -->
+      <div class="p-2.5 rounded-lg bg-[var(--card)] border border-[var(--card-border)] grid grid-cols-12 gap-2.5 items-center">
+        <div class="col-span-3 space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-[var(--primary)]">③ 本家特殊演出</span>
+            <span class="text-xs font-mono font-bold text-[var(--warning)]">42%</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
+            <div class="h-full rounded-full bg-[var(--warning)]" style="width:42%"></div>
+          </div>
+          <div class="text-xs text-[var(--muted-foreground)] leading-tight">秒/歌詞単位の本家再現</div>
+        </div>
+        <div class="col-span-5 text-xs leading-snug border-l border-[var(--card-border)] pl-2.5">
+          <span class="font-semibold text-[var(--success)]">済：</span>本家分離声との照合による根拠付きリバーブ投げ・ラジオボイス自動検出／新導入 `VocalSynth 2` での自動適用＆S1マーカー配置
+        </div>
+        <div class="col-span-4 text-xs leading-snug border-l border-[var(--card-border)] pl-2.5 text-[var(--muted-foreground)]">
+          <span class="font-semibold text-[var(--warning)]">残：</span>ケロケロ(オートチューン)・語尾スポットディレイ・過度な歪みの自動検出／歌詞連動指定
+        </div>
+      </div>
+
+      <!-- Stage 4 -->
+      <div class="p-2.5 rounded-lg bg-[var(--card)] border border-[var(--card-border)] grid grid-cols-12 gap-2.5 items-center">
+        <div class="col-span-3 space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-[var(--primary)]">④ ディレクター伴走</span>
+            <span class="text-xs font-mono font-bold text-[var(--chart-3)]">52%</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
+            <div class="h-full rounded-full bg-[var(--chart-3)]" style="width:52%"></div>
+          </div>
+          <div class="text-xs text-[var(--muted-foreground)] leading-tight">ハモリ/コーラス提案</div>
+        </div>
+        <div class="col-span-5 text-xs leading-snug border-l border-[var(--card-border)] pl-2.5">
+          <span class="font-semibold text-[var(--success)]">済：</span>`Nectar 3`＋局所CQTコード衝突回避による上下3度ガイド生成（録音ハモリ優先で自動ミュート）／セクション別配置提案レポート
+        </div>
+        <div class="col-span-4 text-xs leading-snug border-l border-[var(--card-border)] pl-2.5 text-[var(--muted-foreground)]">
+          <span class="font-semibold text-[var(--warning)]">残：</span>対旋律・フェイク・テンション和音の創造的提案／聴きながらの対話型アレンジ反映
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

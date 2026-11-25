@@ -1,8 +1,21 @@
 # MIX Automation v6 (`mix-automation`)
 
-歌ってみた制作における**「どの楽曲・声域・編成でも破綻せずオケの内側へ溶け込む上級者クオリティ」**と**「Studio One 5.5 での真正 Steinberg `.vstpreset` 1対1再現・緻密な音作り支援」**を両立する自動ボーカルMIXエンジン（v6）です。
+歌ってみた制作における**「どの楽曲・声域・編成でも破綻せずオケの内側へ溶け込む上級者クオリティ」**と**「Studio One 5.5 での真正 Steinberg `.vstpreset` 1対1再現・緻密な音作り支援」**を両立する自動ボーカルMIXエンジン（v6.0）です。
 
-## v6 主要アーキテクチャ
+## プロジェクトドキュメント & Antigravity 構成
+
+本リポジトリは Antigravity のプロジェクト **MIX_automation** から直接継続開発できるよう、設計・運用知見をすべて構造化して管理しています。
+
+- [GEMINI.md](./GEMINI.md) — Antigravity プロジェクト憲法・設計不変条件・コードベース索引（プロジェクト内で自動読み込み）
+- [docs/ROADMAP.md](./docs/ROADMAP.md) — ユーザーの 4 段階ロードマップ原文・現在地（`v6.0`）・未解決課題・次期 R&D 方針
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — v6.0 信号フロー・数理最適化・OSS アセット一覧
+- [docs/CHANGELOG_AND_DECISIONS.md](./docs/CHANGELOG_AND_DECISIONS.md) — v1→v6 の開発変遷・試聴フィードバック対応記録・再発防止アンチパターン
+- [docs/VST3_AND_STUDIO_ONE_HANDBOOK.md](./docs/VST3_AND_STUDIO_ONE_HANDBOOK.md) — 実機検証済み 27 VST3 仕様・地雷・Studio One 5.5 ClassID と `.vstpreset` 復号仕様
+- [docs/BENCHMARKS_AND_REFERENCES.md](./docs/BENCHMARKS_AND_REFERENCES.md) — 44 曲リファレンス DB 統計と 3 曲ベンチマーク実測結果
+- [docs/reports/stage4_roadmap.html](./docs/reports/stage4_roadmap.html) / [docs/reports/daw_3songs_console.html](./docs/reports/daw_3songs_console.html) — インタラクティブ進捗＆DAW 風コンソール比較レポート
+- `.agents/skills/` — Antigravity 運用スキル（`automix-workflow`, `vst3-and-studio-one`, `reference-db-pipeline`）
+
+## v6.0 主要アーキテクチャ
 
 1. **16バンド超高精細 `Persistent Q`（10帯域微分彫刻EQ＋自動狭Qノッチ＋3帯域Dynamic/Spectral EQ）**
    従来の6バンド静的EQを刷新し、歌唱F0連動のHPF（Band 1）、44曲固有声質プロファイルと対象曲のオケ補完マージン（`band_margins_db`）を同時最適化する10帯域ERB/オクターブ微分EQ（Bands 2–11、`z_db.detach()` による中低域スクープ防止機構付き）、声・部屋の定常共鳴を自動検出して除去する狭Qノッチ2本（Bands 12–13、`Q=6.5–7.2`）、さらに実時間3帯域 Dynamic / Spectral EQ（Band 14: 290Hz動的近接こもり制御、Band 15: 1.2ms超高速動的3.25kHzアタック抑制、Band 16: 7.8kHzスペクトル高域ジリジリ緩和）を単一の `Persistent Q` 内に統合し、Studio One 5 へ1対1ネイティブ書き出しします。

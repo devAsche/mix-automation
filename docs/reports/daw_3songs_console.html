@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+</head>
+<body class="bg-transparent text-[var(--foreground)] antialiased p-0 m-0">
+  <div class="py-1.5 space-y-2">
+    <!-- Top Song Switcher & Metadata Bar -->
+    <div class="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-[var(--card-border)]">
+      <div class="flex items-center gap-1.5" id="song-tabs">
+        <button data-song="love" class="tab-btn px-2.5 py-1 rounded-md text-xs font-semibold border transition-colors cursor-pointer">ラブ&amp;デストロイ</button>
+        <button data-song="six" class="tab-btn px-2.5 py-1 rounded-md text-xs font-semibold border transition-colors cursor-pointer">シックスフィートアンダー</button>
+        <button data-song="fall" class="tab-btn px-2.5 py-1 rounded-md text-xs font-semibold border transition-colors cursor-pointer">Fall in Love</button>
+      </div>
+      <div id="meta-pill" class="text-xs font-mono text-[var(--muted-foreground)]"></div>
+    </div>
+
+    <!-- DAW Console Channel Strips (5 Columns) -->
+    <div class="grid grid-cols-5 gap-1.5">
+      <!-- CH 1: Main Vocal -->
+      <div class="p-2 rounded-lg bg-[var(--card)] border border-[var(--card-border)] flex flex-col justify-between gap-1.5">
+        <div>
+          <div class="flex items-center justify-between pb-1 mb-1 border-b border-[var(--card-border)]">
+            <span class="text-xs font-bold text-[var(--chart-1)]">Main Vocal</span>
+            <span id="ch1-pan" class="text-xs font-mono text-[var(--muted-foreground)]">C</span>
+          </div>
+          <div id="ch1-inserts" class="space-y-1 text-xs leading-tight"></div>
+        </div>
+        <div class="pt-1 border-t border-[var(--card-border)] flex items-center justify-between text-xs font-mono">
+          <span class="text-[var(--muted-foreground)]">Fader</span>
+          <span id="ch1-fader" class="font-bold text-[var(--foreground)]"></span>
+        </div>
+      </div>
+
+      <!-- CH 2: Sends / Parallel FX -->
+      <div class="p-2 rounded-lg bg-[var(--card)] border border-[var(--card-border)] flex flex-col justify-between gap-1.5">
+        <div>
+          <div class="flex items-center justify-between pb-1 mb-1 border-b border-[var(--card-border)]">
+            <span class="text-xs font-bold text-[var(--chart-2)]">FX Sends</span>
+            <span class="text-xs font-mono text-[var(--muted-foreground)]">ST</span>
+          </div>
+          <div id="ch2-sends" class="space-y-1 text-xs leading-tight"></div>
+        </div>
+        <div id="ch2-footer" class="pt-1 border-t border-[var(--card-border)] text-xs text-[var(--muted-foreground)] leading-tight"></div>
+      </div>
+
+      <!-- CH 3: Main Harmony -->
+      <div class="p-2 rounded-lg bg-[var(--card)] border border-[var(--card-border)] flex flex-col justify-between gap-1.5">
+        <div>
+          <div class="flex items-center justify-between pb-1 mb-1 border-b border-[var(--card-border)]">
+            <span class="text-xs font-bold text-[var(--chart-3)]">Main Harm</span>
+            <span id="ch3-pan" class="text-xs font-mono text-[var(--muted-foreground)]">L/R</span>
+          </div>
+          <div id="ch3-inserts" class="space-y-1 text-xs leading-tight"></div>
+        </div>
+        <div class="pt-1 border-t border-[var(--card-border)] flex items-center justify-between text-xs font-mono">
+          <span class="text-[var(--muted-foreground)]">K-LUFS</span>
+          <span class="font-bold text-[var(--foreground)]">-8.6 dB</span>
+        </div>
+      </div>
+
+      <!-- CH 4: Choir / Aux / Nectar -->
+      <div class="p-2 rounded-lg bg-[var(--card)] border border-[var(--card-border)] flex flex-col justify-between gap-1.5">
+        <div>
+          <div class="flex items-center justify-between pb-1 mb-1 border-b border-[var(--card-border)]">
+            <span class="text-xs font-bold text-[var(--chart-4)]">Choir / Aux</span>
+            <span class="text-xs font-mono text-[var(--muted-foreground)]">Wide</span>
+          </div>
+          <div id="ch4-inserts" class="space-y-1 text-xs leading-tight"></div>
+        </div>
+        <div id="ch4-footer" class="pt-1 border-t border-[var(--card-border)] text-xs font-mono text-[var(--muted-foreground)]"></div>
+      </div>
+
+      <!-- CH 5: Off-Vocal & Master -->
+      <div class="p-2 rounded-lg bg-[var(--card)] border border-[var(--card-border)] flex flex-col justify-between gap-1.5">
+        <div>
+          <div class="flex items-center justify-between pb-1 mb-1 border-b border-[var(--card-border)]">
+            <span class="text-xs font-bold text-[var(--chart-5)]">Inst → メイン</span>
+            <span class="text-xs font-mono text-[var(--muted-foreground)]">2mix</span>
+          </div>
+          <div id="ch5-inserts" class="space-y-1 text-xs leading-tight"></div>
+        </div>
+        <div id="ch5-footer" class="pt-1 border-t border-[var(--card-border)] flex items-center justify-between text-xs font-mono">
+          <span class="text-[var(--muted-foreground)]">Master</span>
+          <span class="font-bold text-[var(--success)]">-9.0 LUFS</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Strip: 16-Band Persistent Q Curve & Key Measured Telemetry -->
+    <div class="p-2 rounded-lg bg-[var(--card)] border border-[var(--card-border)] grid grid-cols-12 gap-2.5 items-center">
+      <div class="col-span-7">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs font-semibold">Persistent Q 10帯域彫刻EQ ＋ 自動狭Qノッチ（赤点）</span>
+          <span id="eq-meta" class="text-xs font-mono text-[var(--muted-foreground)]"></span>
+        </div>
+        <canvas id="eq-canvas" class="w-full" height="72"></canvas>
+      </div>
+      <div class="col-span-5 border-l border-[var(--card-border)] pl-2.5 space-y-1 text-xs" id="telemetry-box"></div>
+    </div>
+  </div>
+
+  <script>
+    const SONGS = {
+      love: {
+        meta: "E Minor | 139.7 BPM | groovy_mid_pop | 4区分 | S1真正preset 15本",
+        fader: "+0.64 dB",
+        ch1: [
+          "RX10 洗浄 + De-ess >5.8k (-2.7dB)",
+          "Persistent Q 16-Band (HPF 94Hz)",
+          "VCA Fast (atk 0.58 / GR 2.5dB)",
+          "LA-2A Unity (GR 2.7dB)",
+          "Pultec EQP-1A (低域芯のみ)",
+          "Soothe2 4-Band (3.53dB) + Bark緩和"
+        ],
+        sends: [
+          "Mid-Sat 240-4kHz: 11.3% (Amt 1.8)",
+          "Phoenix Early 8m: -14.6 dB",
+          "Slap 76/90ms: -17.4 dB",
+          "Ducked 1/8 Dly: -19.1 dB",
+          "R2 Clean Plate: -17.9 dB"
+        ],
+        sendsFoot: "距離トラッカー連動 / 特殊FX: 0件",
+        ch3: [
+          "素材: harm ×4 (L/R配置)",
+          "芯抜きEQ: 1166Hz -4.4dB",
+          "語頭潰し: 0.8ms / 340ms (6.5:1)",
+          "歯擦音緩和 >4.6kHz",
+          "短PD 5ms Room/Plate + 拡散Dly"
+        ],
+        ch4: [
+          "Super Octave ×2 (-14.5 dB)",
+          "Choir: なし",
+          "Nectar 3: MUTE (ガイド配置)",
+          "コード衝突回避: 40/137音"
+        ],
+        ch4Foot: "録音ハモリ優先",
+        ch5: [
+          "Inst Mid Unmask: -1.16 dB",
+          "  (Side無傷 / 300-5.8kHz)",
+          "Master VCA Glue (1.6:1)",
+          "Wave Breaker (-0.8 dBTP)"
+        ],
+        hpf: 94.2,
+        eq: [-1.24, 0.44, 1.70, 1.06, 1.26, 1.28, 1.78, 2.01, 1.00, 1.80],
+        notches: [[880, -2.8], [388, -2.3]],
+        telemetry: [
+          ["K-LUFS V/I", "+2.00 dB", "目標 +2.00"],
+          ["空間余韻 WetTail", "-24.13 dB", "目標 -24.08"],
+          ["2-6k アタック尖度", "13.54 dB", "プロ中央 13.50"],
+          ["歯擦音比 / 静寂HF", "-19.8 dB", "フロア -54.1"]
+        ]
+      },
+      six: {
+        meta: "G Minor | 126.0 BPM | dense_rock_edm | 14区分 | 重複11件自動除外",
+        fader: "+8.25 dB",
+        ch1: [
+          "RX10 洗浄 + De-ess >5.8k (-1.5dB)",
+          "Persistent Q 16-Band (HPF 101Hz)",
+          "VCA Fast (atk 0.52 / GR 2.8dB)",
+          "LA-2A Unity (GR 3.7dB / MV2撤廃)",
+          "Soothe2 4-Band (3.19dB) + Bark緩和",
+          "★ VocalSynth2 Radio (137.4-138.6s)"
+        ],
+        sends: [
+          "Mid-Sat 240-4kHz: 14.4% (Amt 2.3)",
+          "Phoenix Early 8m: -14.3 dB",
+          "Slap 76/90ms: -17.1 dB",
+          "Ducked 1/8 Dly: -18.8 dB",
+          "R2 Clean Plate: -17.5 dB"
+        ],
+        sendsFoot: "2:15静寂帯(133.8-157.2s)連続追従",
+        ch3: [
+          "素材: +3×3, -3×1 (分離済)",
+          "芯抜きEQ: 1249Hz -4.4dB",
+          "語頭潰し: 0.8ms / 340ms (6.5:1)",
+          "歯擦音緩和 >4.6kHz",
+          "短PD 5ms Room/Plate + 拡散Dly"
+        ],
+        ch4: [
+          "Choir ×8 独立バス (-11.2 dB)",
+          "  (S1: choir_wide_bus配置)",
+          "SubOc ×1 / SuperOc ×1",
+          "Nectar 3: MUTE (165衝突回避)"
+        ],
+        ch4Foot: "ハモリ×コーラス分離",
+        ch5: [
+          "Inst Mid Unmask: -1.40 dB",
+          "  (Side無傷 / 300-5.8kHz)",
+          "Master VCA Glue (1.6:1)",
+          "Wave Breaker (-0.8 dBTP)"
+        ],
+        hpf: 101.0,
+        eq: [-1.85, -0.24, 1.70, 0.39, 1.67, 1.82, 0.98, 1.32, 1.00, 1.80],
+        notches: [[1051, -3.2], [525, -3.2]],
+        telemetry: [
+          ["K-LUFS V/I", "+1.23 dB", "目標 +1.07"],
+          ["ステレオ Side/Mid", "-9.14 dB", "目標 -9.11"],
+          ["2-6k アタック尖度", "13.51 dB", "プロ中央 13.50"],
+          ["静寂部高域フロア", "-57.88 dB", "v5比 -4.8dB静粛"]
+        ]
+      },
+      fall: {
+        meta: "G Minor | 123.0 BPM | groovy_mid_pop | 12区分 | フラット配置自動検出",
+        fader: "-4.09 dB",
+        ch1: [
+          "RX10 洗浄 + De-ess >5.8k (-0.4dB)",
+          "Persistent Q 16-Band (HPF 99Hz)",
+          "VCA Fast (atk 0.58 / GR 2.5dB)",
+          "LA-2A Unity (GR 2.5dB)",
+          "Pultec EQP-1A (低域芯のみ)",
+          "Soothe2 4-Band (3.78dB) + Bark緩和"
+        ],
+        sends: [
+          "Mid-Sat 240-4kHz: 10.8% (Amt 1.7)",
+          "Phoenix Early 8m: -16.8 dB",
+          "Slap 76/90ms: -20.1 dB",
+          "Ducked 1/8 Dly: -21.8 dB",
+          "R2 Clean Plate: -21.1 dB"
+        ],
+        sendsFoot: "暗めオケ補完＋双方向Wet-Tail補完",
+        ch3: [
+          "素材: harm ×1 (11ms対称Haas)",
+          "芯抜きEQ: 1150Hz -4.4dB",
+          "語頭潰し: 0.8ms / 340ms (6.5:1)",
+          "歯擦音緩和 >4.6kHz",
+          "短PD 5ms Room/Plate + 拡散Dly"
+        ],
+        ch4: [
+          "Choir / Aux: なし",
+          "Nectar 3: MUTE (ガイド配置)",
+          "コード衝突回避: 73/191音",
+          "S1真正preset 15本注入"
+        ],
+        ch4Foot: "単体ハモリ左右対称化",
+        ch5: [
+          "Inst Mid Unmask: -1.11 dB",
+          "  (Side無傷 / 300-5.8kHz)",
+          "Master VCA Glue (1.6:1)",
+          "Wave Breaker (-0.8 dBTP)"
+        ],
+        hpf: 99.3,
+        eq: [-2.88, -0.30, 1.74, 0.85, -0.42, 0.50, 2.97, 3.00, 1.00, 1.80],
+        notches: [[464, -3.2], [1857, -3.2]],
+        telemetry: [
+          ["中央 Mid K-LUFS", "+2.63 dB", "目標 +2.41"],
+          ["固有プレゼンス", "-11.21 dB", "目標 -11.26"],
+          ["高域比 (6-16k/Mid)", "-20.28 dB", "v5比 -6.8dB緩和"],
+          ["静寂部高域フロア", "-61.01 dB", "超低ノイズ"]
+        ]
+      }
+    };
+
+    const FREQS = [160, 260, 420, 680, 1050, 1600, 2400, 3600, 5800, 10500];
+    let currentKey = "six";
+
+    function pillHtml(text, accent) {
+      const cls = text.startsWith("★")
+        ? "px-1.5 py-0.5 rounded bg-[var(--primary)] text-[var(--primary-foreground)] font-semibold"
+        : "px-1.5 py-0.5 rounded bg-[var(--secondary)] text-[var(--secondary-foreground)]";
+      return `<div class="${cls} truncate" title="${text}">${text}</div>`;
+    }
+
+    function drawEq() {
+      const canvas = document.getElementById("eq-canvas");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(260, rect.width);
+      const h = 72;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(dpr, dpr);
+
+      const cs = getComputedStyle(document.documentElement);
+      const colGrid = cs.getPropertyValue("--border").trim() || "#666";
+      const colLine = cs.getPropertyValue("--chart-1").trim() || "#3b82f6";
+      const colNotch = cs.getPropertyValue("--error").trim() || "#ef4444";
+      const colText = cs.getPropertyValue("--muted-foreground").trim() || "#888";
+
+      ctx.clearRect(0, 0, w, h);
+      const padL = 24, padR = 8, padT = 8, padB = 16;
+      const plotW = w - padL - padR;
+      const plotH = h - padT - padB;
+      const logMin = Math.log10(80), logMax = Math.log10(16000);
+      const xOf = f => padL + ((Math.log10(f) - logMin) / (logMax - logMin)) * plotW;
+      const yOf = db => padT + ((4.0 - db) / 8.0) * plotH;
+
+      // Grid & 0dB line
+      ctx.strokeStyle = colGrid;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(padL, yOf(0));
+      ctx.lineTo(w - padR, yOf(0));
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Frequency labels
+      ctx.fillStyle = colText;
+      ctx.font = "10px monospace";
+      [100, 300, 1000, 3000, 10000].forEach(f => {
+        const x = xOf(f);
+        ctx.fillText(f >= 1000 ? (f/1000)+"k" : String(f), x - 8, h - 3);
+      });
+      ctx.fillText("+4", 2, padT + 6);
+      ctx.fillText(" 0", 2, yOf(0) + 3);
+      ctx.fillText("-4", 2, h - padB);
+
+      const s = SONGS[currentKey];
+      // Smooth 10-band EQ curve
+      ctx.strokeStyle = colLine;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const pts = FREQS.map((f, i) => [xOf(f), yOf(s.eq[i])]);
+      ctx.moveTo(xOf(80), yOf(-3.5));
+      ctx.lineTo(xOf(s.hpf), yOf(-1.2));
+      pts.forEach(([x, y]) => ctx.lineTo(x, y));
+      ctx.stroke();
+
+      // Band dots
+      ctx.fillStyle = colLine;
+      pts.forEach(([x, y]) => {
+        ctx.beginPath();
+        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Narrow-Q surgical notch markers
+      ctx.strokeStyle = colNotch;
+      ctx.fillStyle = colNotch;
+      s.notches.forEach(([nf, ng]) => {
+        const nx = xOf(nf), ny = yOf(ng);
+        ctx.beginPath();
+        ctx.moveTo(nx, yOf(0));
+        ctx.lineTo(nx, ny);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(nx, ny, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    function render(key) {
+      currentKey = key;
+      const s = SONGS[key];
+      document.querySelectorAll(".tab-btn").forEach(btn => {
+        const active = btn.dataset.song === key;
+        btn.className = active
+          ? "tab-btn px-2.5 py-1 rounded-md text-xs font-semibold border border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)] cursor-pointer"
+          : "tab-btn px-2.5 py-1 rounded-md text-xs font-semibold border border-[var(--card-border)] bg-[var(--card)] text-[var(--foreground)] hover:bg-[var(--secondary)] cursor-pointer";
+      });
+      document.getElementById("meta-pill").textContent = s.meta;
+      document.getElementById("ch1-fader").textContent = s.fader;
+      document.getElementById("ch1-inserts").innerHTML = s.ch1.map(t => pillHtml(t)).join("");
+      document.getElementById("ch2-sends").innerHTML = s.sends.map(t => pillHtml(t)).join("");
+      document.getElementById("ch2-footer").textContent = s.sendsFoot;
+      document.getElementById("ch3-inserts").innerHTML = s.ch3.map(t => pillHtml(t)).join("");
+      document.getElementById("ch4-inserts").innerHTML = s.ch4.map(t => pillHtml(t)).join("");
+      document.getElementById("ch4-footer").textContent = s.ch4Foot;
+      document.getElementById("ch5-inserts").innerHTML = s.ch5.map(t => pillHtml(t)).join("");
+      document.getElementById("eq-meta").textContent = `HPF ${s.hpf}Hz | ノッチ: ${s.notches.map(n => n[0]+"Hz("+n[1]+"dB)").join(", ")}`;
+      document.getElementById("telemetry-box").innerHTML = s.telemetry.map(([k, v, sub]) =>
+        `<div class="flex items-center justify-between gap-2">
+          <span class="text-[var(--muted-foreground)] truncate">${k}</span>
+          <span class="font-mono"><strong class="text-[var(--foreground)]">${v}</strong> <span class="text-[var(--muted-foreground)]">(${sub})</span></span>
+        </div>`
+      ).join("");
+      drawEq();
+    }
+
+    document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => render(btn.dataset.song)));
+    window.addEventListener("resize", drawEq);
+    window.addEventListener("themechange", drawEq);
+    render("six");
+  </script>
+</body>
+</html>
