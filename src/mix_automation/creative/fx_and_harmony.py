@@ -43,6 +43,10 @@ from pedalboard import (
 from scipy import ndimage, signal
 
 from mix_automation.config.plugin_registry import get_plugin_map
+from mix_automation.dsp.vst3_adapter import (
+    configure_vocalsynth2_biovox_gloss,
+    configure_vocalsynth2_radio,
+)
 from mix_automation.dsp.vst3_optimizer import SongSection
 
 
@@ -246,12 +250,21 @@ def apply_verified_radio_fx_inline(
     sr: int,
     events: list[CreativeFXEvent],
 ) -> np.ndarray:
-    """Apply smooth 40ms-crossfaded telephone/radio bandpass tone at reference-verified `radio_voice` spans."""
+    """Apply smooth 40ms-crossfaded VocalSynth 2 (or bandpass fallback) radio FX at verified `radio_voice` spans."""
     radio_events = [ev for ev in events if ev.fx_type == "radio_voice"]
     if not radio_events:
         return lead_mono
 
     out = lead_mono.copy()
+    pmap = get_plugin_map()
+    vs_plug = None
+    if "izotope_vocalsynth2" in pmap and pmap["izotope_vocalsynth2"].exists:
+        try:
+            vs_plug = load_plugin(str(pmap["izotope_vocalsynth2"].loadable_path))
+            configure_vocalsynth2_radio(vs_plug, freq_hz=1650.0, drive=3.8, distort_mix=42.0)
+        except Exception:
+            vs_plug = None
+
     radio_board = Pedalboard(
         [
             HighpassFilter(cutoff_frequency_hz=520.0),
@@ -271,7 +284,13 @@ def apply_verified_radio_fx_inline(
         dry_rms = float(np.sqrt(np.mean(dry_seg**2) + 1e-12))
         if dry_rms < 1e-4:
             continue
-        rad_seg = radio_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
+        if vs_plug is not None:
+            st_seg = np.stack([dry_seg, dry_seg], axis=0).astype(np.float32)
+            rad_seg = np.mean(vs_plug(st_seg, sr, reset=True), axis=0, dtype=np.float32)
+            if float(np.sqrt(np.mean(rad_seg**2))) < 1e-5:
+                rad_seg = radio_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
+        else:
+            rad_seg = radio_board(dry_seg[np.newaxis, :].astype(np.float32), sr)[0]
         rad_rms = float(np.sqrt(np.mean(rad_seg**2) + 1e-12))
         rad_seg = (rad_seg * min((dry_rms * 0.90) / rad_rms, 2.5)).astype(np.float32)
 
@@ -284,6 +303,26 @@ def apply_verified_radio_fx_inline(
         out[s0:s1] = dry_seg * (1.0 - w) + rad_seg * w
 
     return out.astype(np.float32)
+
+
+def apply_vocalsynth2_harmony_gloss(
+    harm_stereo: np.ndarray,
+    sr: int,
+    wet_mix: float = 12.0,
+) -> np.ndarray:
+    """Optionally polish synthetic harmonies with licensed iZotope VocalSynth 2 Biovox vocal-tract gloss."""
+    pmap = get_plugin_map()
+    if wet_mix <= 0.5 or "izotope_vocalsynth2" not in pmap or not pmap["izotope_vocalsynth2"].exists:
+        return harm_stereo
+    try:
+        vs = load_plugin(str(pmap["izotope_vocalsynth2"].loadable_path))
+        configure_vocalsynth2_biovox_gloss(vs, wet_mix=wet_mix, breath=16.0, clarity=76.0)
+        y = vs(harm_stereo.astype(np.float32), sr, reset=True)
+        if float(np.max(np.abs(y))) > 1e-5:
+            return y.astype(np.float32)
+    except Exception:
+        pass
+    return harm_stereo
 
 
 def render_ethereal_throw_stem(

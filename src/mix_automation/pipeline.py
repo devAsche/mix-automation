@@ -43,6 +43,7 @@ from mix_automation.analysis.relative_profile import (
 )
 from mix_automation.creative.fx_and_harmony import (
     apply_verified_radio_fx_inline,
+    apply_vocalsynth2_harmony_gloss,
     detect_creative_fx_events,
     generate_nectar3_harmonies_and_plan,
     render_ethereal_throw_stem,
@@ -61,7 +62,8 @@ from mix_automation.dsp.vst3_optimizer import (
     compute_continuous_distance_envelopes,
     detect_song_sections,
     optimize_real_vst3_chain,
-    process_dedicated_harmony_bus,
+    process_choir_bus,
+    process_main_harmony_bus,
 )
 from mix_automation.io.audio_loader import (
     _classify_filename_role,
@@ -393,19 +395,22 @@ def run_full_automix_for_song(
         sr=target_sr,
         bpm=bpm,
         target_profile=target_prof,
-        n_iterations=32,
+        n_iterations=36,
         forced_archetype=song_archetype,
+        median_f0_hz=pt_report.median_f0_hz,
     )
     top_nn_str = ", ".join(f"{n['title']}({n['weight_pct']}%)" for n in knn_neighbors[:3]) if knn_neighbors else resolved_style
+    notch_str = ", ".join(f"{x[0]:.0f}Hz({x[1]:+.1f}dB)" for x in chain_params.surgical_notches) or "none"
     print(
         f"Archetype: '{chain_params.archetype_chain}' (FullDens={full_backing_desc['full_inst_mid_density_index']}, "
         f"DynR={full_backing_desc['backing_dynamic_range_db']}dB) | Profile: '{resolved_style}' | k-NN: [{top_nn_str}]\n"
         f"  Anchor '{a_lbl}' (loss={final_loss}) | Sections: {len(raw_spans)} | Verse Intimacy Shift: +{learned_verse_shift:.2f}dB\n"
-        f"  EQ: HPF={chain_params.hpf_hz}Hz, Body={chain_params.body_gain_db:+.2f}, Mud={chain_params.mud_cut_db:+.2f}, "
-        f"Mid={chain_params.core_mid_gain_db:+.2f}, Pres={chain_params.presence_gain_db:+.2f}, Air={chain_params.air_shelf_db:+.2f} dB\n"
-        f"  Dyn & Texture: VCA th={chain_params.vca_threshold_db}dB (GR={chain_params.vca_measured_gr_db}dB), "
-        f"Comp2={chain_params.comp2_param} (crestGR={chain_params.comp2_measured_gr_db}dB), "
-        f"Sat={chain_params.parallel_sat_amount} ({chain_params.parallel_sat_wet_pct}% par), Fader={chain_params.vocal_fader_db:+.2f}dB",
+        f"  16-Band PQ: HPF={chain_params.hpf_hz}Hz, Body={chain_params.body_gain_db:+.2f}, Mud={chain_params.mud_cut_db:+.2f}, "
+        f"Mid={chain_params.core_mid_gain_db:+.2f}, Pres={chain_params.presence_gain_db:+.2f}, Air={chain_params.air_shelf_db:+.2f} dB | Notches: [{notch_str}]\n"
+        f"  Dyn & Polish: VCA th={chain_params.vca_threshold_db}dB (atk={chain_params.vca_attack_norm}, GR={chain_params.vca_measured_gr_db}dB), "
+        f"LA-2A={chain_params.comp2_param} (crestGR={chain_params.comp2_measured_gr_db}dB), "
+        f"MidSat={chain_params.parallel_sat_amount} ({chain_params.parallel_sat_wet_pct}% 240Hz-4kHz), "
+        f"Post-Soothe2={chain_params.soothe2_depth}dB, BarkTame={chain_params.bark_transient_tame_amt}, Fader={chain_params.vocal_fader_db:+.2f}dB",
         flush=True,
     )
 
@@ -565,17 +570,37 @@ def run_full_automix_for_song(
         if sup_oc_bal is not None:
             aux_layers_stereo += sup_oc_bal
 
-    harmony_target_rel_db = -11.2
-    if consolidated.harmonies_stereo_bus is not None:
-        harm_bus_processed = process_dedicated_harmony_bus(
-            consolidated.harmonies_stereo_bus,
+    harmony_target_rel_db = -8.6
+    choir_target_rel_db = -11.2
+    main_harm_processed = np.zeros((2, common_len), dtype=np.float32)
+    choir_processed: np.ndarray | None = None
+
+    if consolidated.main_harmonies_stereo_bus is not None:
+        main_harm_processed = process_main_harmony_bus(
+            consolidated.main_harmonies_stereo_bus,
             lead_final_dry,
             sr=target_sr,
+            lead_core_hz=chain_params.lead_core_formant_hz,
             target_rel_db=harmony_target_rel_db,
-            side_boost_db=1.4,
+            side_boost_db=1.6,
             plate_plugin=rig.r2,
             room_plugin=rig.phoenix,
         )
+        harm_bus_processed = (harm_bus_processed + main_harm_processed).astype(np.float32)
+
+    if consolidated.choir_stereo_bus is not None:
+        choir_processed = process_choir_bus(
+            consolidated.choir_stereo_bus,
+            lead_final_dry,
+            sr=target_sr,
+            target_rel_db=choir_target_rel_db,
+            side_boost_db=1.8,
+            plate_plugin=rig.r2,
+            room_plugin=rig.phoenix,
+        )
+        harm_bus_processed = (harm_bus_processed + choir_processed).astype(np.float32)
+
+    if consolidated.harmonies_stereo_bus is not None:
         # Stage Studio One harmvocal / harmvocal2 mono stems cleanly to -18 LUFS matching mainvocal!
         if consolidated.harm1_mono is not None:
             h1_pad = np.pad(consolidated.harm1_mono, (0, max(0, common_len - len(consolidated.harm1_mono))))[:common_len]
@@ -584,17 +609,18 @@ def run_full_automix_for_song(
             h2_pad = np.pad(consolidated.harm2_mono, (0, max(0, common_len - len(consolidated.harm2_mono))))[:common_len]
             harm2_mono_for_s1, _ = stage_vocal_loudness(h2_pad, sr=target_sr, target_lufs=-18.0)
 
-    # Real-Harmony Priority: ONLY blend Nectar 3 into 2mix when user has ZERO harmonies (or explicitly enabled)!
+    # Real-Harmony Priority: ONLY blend Nectar 3 (+ subtle VocalSynth 2 Biovox gloss) when user has ZERO harmonies!
     use_nectar_in_2mix = (not consolidated.has_user_harmonies) or enable_nectar_in_mix
     if use_nectar_in_2mix:
-        harm_bus_processed = (harm_bus_processed + harmony_res.auto_mix_harmony_stereo * 0.72).astype(np.float32)
+        nectar_polished = apply_vocalsynth2_harmony_gloss(harmony_res.auto_mix_harmony_stereo, sr=target_sr, wet_mix=12.0)
+        harm_bus_processed = (harm_bus_processed + nectar_polished * 0.78).astype(np.float32)
 
-    # 14-Band Bark Adaptive Spectral Mid-Channel Unmasking (Side stereo image 100% intact!)
+    # Gentle 14-Band Bark Adaptive Spectral Mid-Channel Unmasking (pre-matched during Stage D CMA-ES!)
     inst_unmasked = apply_dynamic_instrumental_unmasking(
         inst_stereo, lead_final_dry, sr=target_sr, max_dip_db=chain_params.unmask_mid_dip_db
     )
 
-    # --- Perceptual Closed-Loop Post-Sum Vocal Bus QA (Wet Tail + Bidirectional Stereo Width + K-LUFS) ---
+    # --- Perceptual Closed-Loop Post-Sum Vocal Bus QA (Bidirectional Wet-Tail + Width + Anti-Float K-LUFS) ---
     wet_total = spatial_wet_stereo + fx_throw_stereo
     lead_stereo = np.stack([lead_final_dry, lead_final_dry], axis=0)
     vocal_bus_stereo = lead_stereo + aux_layers_stereo + harm_bus_processed + wet_total
@@ -603,8 +629,9 @@ def run_full_automix_for_song(
         vocal_bus_stereo[:, s0:s1], inst_unmasked[:, s0:s1], sr=target_sr
     )
 
-    # 1. Trim wet space if excessive
+    # 1. Bidirectional Wet Space Cohesion (trim if too wet, bloom gently if >3 dB too dry!)
     wet_ceiling_db = max(target_prof.wet_tail_ratio_db + 1.8, -18.5)
+    wet_floor_db = max(target_prof.wet_tail_ratio_db - 2.6, -26.5)
     if pre_qa_anchor.wet_tail_ratio_db > wet_ceiling_db:
         wet_cut_db = max(-8.0, wet_ceiling_db - pre_qa_anchor.wet_tail_ratio_db)
         wet_total = wet_total * float(10.0 ** (wet_cut_db / 20.0))
@@ -612,21 +639,27 @@ def run_full_automix_for_song(
         pre_qa_anchor = compute_section_relative_profile(
             vocal_bus_stereo[:, s0:s1], inst_unmasked[:, s0:s1], sr=target_sr
         )
+    elif pre_qa_anchor.wet_tail_ratio_db < wet_floor_db and float(np.max(np.abs(wet_total))) > 1e-4:
+        wet_boost_db = min(3.8, (wet_floor_db - pre_qa_anchor.wet_tail_ratio_db) * 0.72)
+        wet_total = wet_total * float(10.0 ** (wet_boost_db / 20.0))
+        vocal_bus_stereo = lead_stereo + aux_layers_stereo + harm_bus_processed + wet_total
+        pre_qa_anchor = compute_section_relative_profile(
+            vocal_bus_stereo[:, s0:s1], inst_unmasked[:, s0:s1], sr=target_sr
+        )
 
-    # 2. Bidirectional Stereo Harmony QA: tame overly loud/wide harmonies OR gently bloom overly narrow ones!
+    # 2. Bidirectional Stereo Harmony QA: protect audible main harmonies (-8.6 dB) while capping extreme overshoot
     harm_qa_trim_db = 0.0
     if float(np.max(np.abs(harm_bus_processed))) > 1e-4:
         side_excess = pre_qa_anchor.vocal_side_mid_db - target_prof.vocal_side_mid_db
-        if side_excess > 1.4:
-            # Harmonies/choir are poking out too wide/loud -> pull harmony bus down smoothly into pro pocket!
-            harm_qa_trim_db = round(-float(np.clip(side_excess * 0.85, 0.8, 5.5)), 2)
+        if side_excess > 2.2:
+            harm_qa_trim_db = round(-float(np.clip((side_excess - 0.8) * 0.75, 0.5, 4.5)), 2)
             harm_bus_processed = (harm_bus_processed * float(10.0 ** (harm_qa_trim_db / 20.0))).astype(np.float32)
             vocal_bus_stereo = lead_stereo + aux_layers_stereo + harm_bus_processed + wet_total
             pre_qa_anchor = compute_section_relative_profile(
                 vocal_bus_stereo[:, s0:s1], inst_unmasked[:, s0:s1], sr=target_sr
             )
-        elif side_excess < -2.6:
-            width_gap = min(2.8, (-1.8) - side_excess)
+        elif side_excess < -2.8:
+            width_gap = min(2.6, (-1.8) - side_excess)
             hm = 0.5 * (harm_bus_processed[0] + harm_bus_processed[1])
             hs = 0.5 * (harm_bus_processed[0] - harm_bus_processed[1]) * float(10.0 ** (width_gap / 20.0))
             harm_bus_processed = np.stack([hm + hs, hm - hs], axis=0).astype(np.float32)
@@ -635,15 +668,15 @@ def run_full_automix_for_song(
                 vocal_bus_stereo[:, s0:s1], inst_unmasked[:, s0:s1], sr=target_sr
             )
 
-    # 3. Final Perceptual Level Lock (K-LUFS + Mid K-LUFS + Partial Loudness)
+    # 3. Final Anti-Float Perceptual Level Lock (K-LUFS + Mid K-LUFS + Partial Loudness)
     perceptual_overshoot_db = (
-        0.45 * (pre_qa_anchor.k_lufs_vi_ratio_db - target_prof.k_lufs_vi_ratio_db)
+        0.40 * (pre_qa_anchor.k_lufs_vi_ratio_db - target_prof.k_lufs_vi_ratio_db)
         + 0.35 * (pre_qa_anchor.mid_k_lufs_vi_ratio_db - target_prof.mid_k_lufs_vi_ratio_db)
-        + 0.20 * (pre_qa_anchor.partial_loudness_margin_db - target_prof.partial_loudness_margin_db)
+        + 0.25 * (pre_qa_anchor.partial_loudness_margin_db - target_prof.partial_loudness_margin_db)
     )
     closed_loop_trim_db = 0.0
-    if abs(perceptual_overshoot_db) > 0.35:
-        closed_loop_trim_db = round(float(np.clip(-perceptual_overshoot_db * 0.85, -3.5, 4.0)), 2)
+    if abs(perceptual_overshoot_db) > 0.25:
+        closed_loop_trim_db = round(float(np.clip(-perceptual_overshoot_db * 0.90, -4.0, 3.5)), 2)
         vocal_bus_stereo = (vocal_bus_stereo * float(10.0 ** (closed_loop_trim_db / 20.0))).astype(np.float32)
 
     final_master_2mix = apply_2mix_bus_glue_and_safe_master(
@@ -722,6 +755,10 @@ def run_full_automix_for_song(
     if sup_oc_bal is not None:
         write_pcm24_wav(aux_sup_wav, sup_oc_bal, target_sr)
         extra_tracks.append(TrackMediaSpec(name="aux_super_octave", wav_path=aux_sup_wav, stereo=True, color="FF3498DB", gain_db=0.0))
+    if choir_processed is not None and float(np.max(np.abs(choir_processed))) > 1e-4:
+        choir_wav = media_dir / "11_choir_wide_bus.wav"
+        write_pcm24_wav(choir_wav, choir_processed, target_sr)
+        extra_tracks.append(TrackMediaSpec(name="choir_wide_bus", wav_path=choir_wav, stereo=True, color="FF1ABC9C", gain_db=0.0))
 
     if has_throw_events and throws_wav.exists():
         extra_tracks.append(
@@ -789,7 +826,7 @@ def run_full_automix_for_song(
             self_mix_prof_dict = None
 
     report = {
-        "schema_version": "5.0",
+        "schema_version": "6.0",
         "song_name": song_name,
         "requested_style": style,
         "taste_style": eff_taste,
@@ -884,7 +921,7 @@ def _write_director_markdown_report(md_path: Path, report: dict) -> None:
         return f"| {label} | `{t_val}` | `{b_val}` | `{s_val}` |" if s_val is not None else f"| {label} | `{t_val}` | `{b_val}` | - |"
 
     lines = [
-        f"# 自動MIX＆ディレクション診断レポート (v5) — {report['song_name']}",
+        f"# 自動MIX＆ディレクション診断レポート (v6) — {report['song_name']}",
         "",
         f"- **フル尺オケ編成アーキタイプ判定**: `{p['archetype_chain']}` （フル尺密度 `{fd.get('full_inst_mid_density_index', '-')}` / ダイナミックレンジ `{fd.get('backing_dynamic_range_db', '-')} dB`）",
         f"- **適用リファレンス目標プロファイル (44曲音響k-NN＋テイスト)**: `{report['resolved_target_profile']}` （指定: `{report['requested_style']}`）",
@@ -918,14 +955,14 @@ def _write_director_markdown_report(md_path: Path, report: dict) -> None:
             "",
             "| ステージ / プラグイン | パラメータ | 算出値 | 役割 |",
             "|---|---|---|---|",
-            f"| **Persistent Q (6-Band)** | HPF / Body(225Hz) / Mud(560Hz) | `{p['hpf_hz']}Hz` / `{p['body_gain_db']:+.2f}dB` / `{p['mud_cut_db']:+.2f}dB` | 固有ボーカル形状の下支えと箱鳴り整理 |",
-            f"| **Persistent Q (6-Band)** | Mid(1.25kHz) / Presence(2.9kHz) / Air(10.5kHz) | `{p['core_mid_gain_db']:+.2f}dB` / `{p['presence_gain_db']:+.2f}dB` / `{p['air_shelf_db']:+.2f}dB` | 声の芯・抜け・オケ高域質感との同期 |",
-            f"| **Softube VCA Compressor** | Threshold (実測GR) | `{p['vca_threshold_db']} dB` (`GR={p['vca_measured_gr_db']:.2f} dB`) | アタックを残す1段目ピーク制御 |",
-            f"| **Stage 2 Leveler** | Calibration Param (Crest GR) | `{p['comp2_param']}` (`-{p['comp2_measured_gr_db']:.2f} dB`) | ボーカル中域密度・位置安定化 |",
-            f"| **Softube Saturation Knob** | Amount / Parallel Wet Blend | `{p['parallel_sat_amount']}` / `{p['parallel_sat_wet_pct']}%` | 連続距離連動パラレル倍音付加 |",
-            f"| **Bark Adaptive Unmasking** | 14帯域Midスペクトル空間確保 | 最大 `-{p['unmask_mid_dip_db']:.2f} dB` | Side無傷のままオケ中央に声ポケット確保 |",
-            f"| **Spatial Glue** | EarlyRoom(8m) / Slap / 1/8 Ducked / Clean Plate | `{p['early_room_send_db']:+.1f}` / `{p['slap_delay_send_db']:+.1f}` / `{p['tempo_delay_send_db']:+.1f}` / `{p['plate_reverb_send_db']:+.1f} dB` | 落ちサビ連動の初期反射＋ディレイ音場接着 |",
-            f"| **Harmony Bus QA** | 真ステレオK-LUFS整合＆自動トリム | `Trim {report.get('harmony_qa_trim_db', 0.0):+.2f} dB` | 録音ハモリの歯擦音緩和・室内接着・音量保護 |",
+            f"| **Persistent Q (16-Band)** | HPF / 10帯域微分彫刻EQ + 自動狭Qノッチ | `HPF {p['hpf_hz']}Hz` / `Body {p['body_gain_db']:+.2f}` / `Mud {p['mud_cut_db']:+.2f}` / `Mid {p['core_mid_gain_db']:+.2f}` / `Pres {p['presence_gain_db']:+.2f}` / `Air {p['air_shelf_db']:+.2f} dB` | オケ補完ポケット彫刻＋狭Q共鳴ノッチ({len(p.get('surgical_notches', []))}箇所)＋3帯域Dynamic/Spectral EQ |",
+            f"| **Softube VCA Compressor** | Fast Clean Peak Tamer (実測GR) | `th={p['vca_threshold_db']} dB` (`atk={p.get('vca_attack_norm', 0.55)}`, `drv={p.get('vca_output_drive', 0.1)}`, `GR={p['vca_measured_gr_db']:.2f} dB`) | 鋭い子音アタックを丸める1段目ピーク制御 |",
+            f"| **UAD Teletronix LA-2A** | Zero-Noise Optical Body Glue | `peak_reduct={p['comp2_param']}` (`-{p['comp2_measured_gr_db']:.2f} dB`) | 暗騒音を持ち上げず声の芯を滑らかに整える光学レベラー |",
+            f"| **Midrange-Only Saturation** | 240Hz-4kHz限定パラレル倍音 | `Amount {p['parallel_sat_amount']}` / `{p['parallel_sat_wet_pct']}%` | 高域ジリジリ成分を物理遮断した中域密度付加 |",
+            f"| **Post-Comp Soothe2 & Bark** | 4帯域動的共鳴研磨＋子音針緩和 | `Soothe2 {p.get('soothe2_depth', 3.2)} dB` / `Bark Tame {p.get('bark_transient_tame_amt', 0.30)}` | コンプ・サチュ後の耳障りな3k/6.4k/10k+刺激成分を研磨 |",
+            f"| **Bark Adaptive Unmasking** | 事前整合済み14帯域Midポケット | 最大 `-{p['unmask_mid_dip_db']:.2f} dB` | 音量二重計上を防ぎつつオケ中央に自然な声ポケット確保 |",
+            f"| **Spatial Glue** | EarlyRoom(8m) / Slap / 1/8 Ducked / Clean Plate | `{p['early_room_send_db']:+.1f}` / `{p['slap_delay_send_db']:+.1f}` / `{p['tempo_delay_send_db']:+.1f}` / `{p['plate_reverb_send_db']:+.1f} dB` | 双方向Wet-Tail整合によるオケ室内空間への接着 |",
+            f"| **Dual Harmony / Choir** | 芯抜き＋語頭潰しハモリ(-8.6dB)＋ワイドコーラス(-11.2dB) | `LeadCore {p.get('lead_core_formant_hz', 1550.0)}Hz` / `QA Trim {report.get('harmony_qa_trim_db', 0.0):+.2f} dB` | 0.8msアタック/340msリリース＋5ms短プリディレイで背後に分離配置 |",
             f"| **Channel Fader** | Main Vocal Fader (QA Trim込) | `{p['vocal_fader_db']:+.2f} dB` | 最終合算バスの聴覚ラウドネスロック |",
             "",
             "## 3. 心理音響バランス＆固有声質比較（基準サビ・全レイヤー合算後）",

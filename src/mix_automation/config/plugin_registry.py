@@ -61,7 +61,7 @@ class PluginSpec:
 
 
 # Verified active & licensed VST3 plugins on this workstation
-# (Excludes expired licenses such as VocalSynth 2 and VocAlign 6 Standard)
+# (Includes newly licensed iZotope VocalSynth 2; excludes expired VocAlign 6 Standard)
 DEFAULT_PLUGIN_CATALOG: tuple[PluginSpec, ...] = (
     # --- Stage 1: iZotope RX 10 Pre-processing ---
     PluginSpec(
@@ -238,6 +238,13 @@ DEFAULT_PLUGIN_CATALOG: tuple[PluginSpec, ...] = (
         path=VST3_ROOT / "iZotope" / "Nectar 3.vst3",
         offline_render_only=True,
         notes="Formant-preserving vocal harmony engine (solo harmony + chromatic interval selection).",
+    ),
+    PluginSpec(
+        key="izotope_vocalsynth2",
+        name="iZotope VocalSynth 2",
+        role=PluginRole.PITCH_FX,
+        path=VST3_ROOT / "iZotope" / "VocalSynth 2.vst3",
+        notes="Licensed 317-param vocal synthesizer (Biovox formant/breath, Polyvox, Vocoder, Talkbox, Radio Filter/Distort).",
     ),
     # --- Stage 4: Mastering ---
     PluginSpec(

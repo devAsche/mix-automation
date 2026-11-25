@@ -1,17 +1,17 @@
-# MIX Automation v5 (`mix-automation`)
+# MIX Automation v6 (`mix-automation`)
 
-歌ってみた制作における**「どの楽曲・声域・編成でも破綻しない上級者クオリティの混ざり具合」**と**「Studio One 5.5 での真正 Steinberg `.vstpreset` 1対1再現・時短ディレクション支援」**を両立する自動ボーカルMIXエンジン（v5）です。
+歌ってみた制作における**「どの楽曲・声域・編成でも破綻せずオケの内側へ溶け込む上級者クオリティ」**と**「Studio One 5.5 での真正 Steinberg `.vstpreset` 1対1再現・緻密な音作り支援」**を両立する自動ボーカルMIXエンジン（v6）です。
 
-## v5 主要アーキテクチャ
+## v6 主要アーキテクチャ
 
-1. **44曲プロ完成音源×公式オフボーカル較正「連続音響 k-NN」＋梓川テイストアンカー**
-   8組・計44曲（ロック／ボカロEDM／グルーヴポップス／バラード／スパースポップ）を `BS-RoFormer` で分離し、全44曲の公式オフボーカル音源とペア較正（`schema_version: 4.0`）。フル尺オケ密度・ダイナミックレンジ・ステレオ幅・高域ロールオフ・歌唱F0から音響的に最も近い9曲を連続合成し、標準で好みのMIX師テイスト（`--taste azusagawa --taste-weight 0.25`、解除は `--taste none`）を滑らかに統合します。
-2. **グルーヴ保護ピッチ／タイミング制御＆自己較正・アタック保護ディエッシング**
-   Melodyne 補正済み・人間グルーヴのテイクに対しては無断のタイミングスリップやボコーダ再処理を一切行わず、確認箇所を Studio One マーカーとして配置します（未補正テイク向け `--auto-pitch` は Praat `PitchTier` 連続オーバーラップ加算でビブラート・子音を保護、タイミング自動調整は `--auto-align` で明示オプトイン）。下処理は `-18.0 LUFS` ゲインステージング後に `RX 10 Voice De-noise`（`'Music'`／`'Gentle'`）＋広域二分探索の `RX 10 Spectral De-ess`（`5.8 kHz`、子音アタック `1.8〜4.2 kHz` 保護）を実行します。
-3. **連続距離トラッカー＆14帯域Bark適応スペクトル空間確保＆真ステレオK-LUFSハモリバス**
-   上下両方向のセクション変化検出に加えて、オケのボーカル競合帯域（`350 Hz–7.5 kHz`）を連続追従する距離トラッカーを導入。サブベースを残したままギターやハイハットが抜ける静かなブレイク／落ちサビでも、音量・パラレル倍音・高域エッジ緩和・ルーム接着を滑らかに自動連動させます。録音済みハモリ・コーラスは真のステレオK特性ラウドネス基準（`-11.2 dB`）＋歯擦音緩和＋共有ルーム／プレート接着で自然に馴染ませ、録音ハモリがある曲では `Nectar 3` を自動ミュートしてガイド専用に徹します。
-4. **Studio One 5.5 真正 Steinberg `.vstpreset` 1対1動的注入（JUCE→Steinberg 変換）**
-   Pedalboard の JUCE `<VST3PluginState>` ラッパーからネイティブ Steinberg `Comp`／`Cont` チャンクを完全復号し、チャンネル名一致（`メイン`／`Saturation Parallel`／`Phoenix EarlyRoom`）・クリーンなハモリインサート構成（旧テンプレート `C1`/`L1`/`Doubler2` 除去）・展開済みミキサーコンソールで Studio One 5 上でもそのまま全ノブ設定が実機再現されます。`stems/` サブフォルダ形式とフラットフォルダ形式の両方を自動認識します。
+1. **16バンド超高精細 `Persistent Q`（10帯域微分彫刻EQ＋自動狭Qノッチ＋3帯域Dynamic/Spectral EQ）**
+   従来の6バンド静的EQを刷新し、歌唱F0連動のHPF（Band 1）、44曲固有声質プロファイルと対象曲のオケ補完マージン（`band_margins_db`）を同時最適化する10帯域ERB/オクターブ微分EQ（Bands 2–11、`z_db.detach()` による中低域スクープ防止機構付き）、声・部屋の定常共鳴を自動検出して除去する狭Qノッチ2本（Bands 12–13、`Q=6.5–7.2`）、さらに実時間3帯域 Dynamic / Spectral EQ（Band 14: 290Hz動的近接こもり制御、Band 15: 1.2ms超高速動的3.25kHzアタック抑制、Band 16: 7.8kHzスペクトル高域ジリジリ緩和）を単一の `Persistent Q` 内に統合し、Studio One 5 へ1対1ネイティブ書き出しします。
+2. **高域ジリジリ物理根絶・アタック平滑化ダイナミクス＋Post-Comp 4帯域 `Soothe2`＋6帯域Bark子音針緩和**
+   暗騒音を持ち上げていた `Waves MV2` 過剰アップワード圧縮と遅いアタック・過ドライブの1段目VCA設定を全面刷新。クリーンな高速アタック `Softube VCA Compressor`（`attack=0.52–0.72`、`output_drive=0.1`）で鋭い子音ピークを丸め、全アーキタイプでユニティゲイン自動較正済み `UAD Teletronix LA-2A` により暗騒音を持ち上げずに声の芯を滑らかに整えます。パラレルサチュレーション（`Softube Saturation Knob`）は `240 Hz–4.0 kHz` 中域限定バンドパスで高域歪みを物理遮断し、後段に4帯域較正済み `Oeksound Soothe2`（`3.1k` 刺激・`6.4k` 歯擦音・`10k+` ジリジリ高域シェル）と6帯域Bark子音トランジェントソフトシェイパーを配置しています。
+3. **事前アンマスキング整合＆双方向 `Wet-Tail` 接着（声浮き防止）**
+   14帯域Bark適応Midアンマスキング（`0.65–1.5 dB`）を最適化計算の前段に組み込み、音量・部分ラウドネスの二重持ち上がりを解消。同時に `Wet-Tail`（空間余韻比）を過多・過少の双方向でプロ目標へ揃え、ボーカルをオケの室内空間の内側へ定着させます。
+4. **メインハモリ／コーラス分離処理＆ライセンス済み `iZotope VocalSynth 2` 統合**
+   メインハモリ（`+3`/`-3`/`harm`）とコーラス（`choir`）を独立バスへ分離。メインハモリはリード声の中心フォルマント連動「芯抜きEQ」、`0.8 ms` 超高速アタック＋`340 ms` 低速リリース高レシオ圧縮による「語頭潰し」、`5 ms` 短プリディレイの奥行きリバーブ＋拡散マイクロディレイでリードの背後へ立体分離させつつ聴こえやすい音量（`-8.6 dB` 真ステレオK-LUFS）を確保します。また新規導入された `iZotope VocalSynth 2`（317パラメータ）をレジストリ・アダプタ・Studio One クラス定義へ統合し、Stage 3 のラジオボイス演出や合成ハモリ質感補正に活用します。
 
 ## 使い方（CLI）
 
@@ -25,10 +25,10 @@ C:\MIX_automation\.venv\Scripts\mix-auto.exe mix "C:\MIX_automation\data\raw\Fal
 C:\MIX_automation\.venv\Scripts\mix-auto.exe mix "C:\MIX_automation\data\raw\曲フォルダ" --taste none
 C:\MIX_automation\.venv\Scripts\mix-auto.exe mix "C:\MIX_automation\data\raw\曲フォルダ" --taste sou --taste-weight 0.30
 
-# 2. リファレンス全曲（manifest*.json自動検出）の再分離＆プロファイル再構築
+# 2. リファレンス全曲の再分離＆プロファイル再構築
 C:\MIX_automation\.venv\Scripts\mix-auto.exe build-references
 
-# 3. ローカル診断 & 全19テスト実行
+# 3. ローカル診断 & 全21テスト（単体＋実VST3契約テスト）実行
 C:\MIX_automation\.venv\Scripts\mix-auto.exe doctor
 C:\MIX_automation\.venv\Scripts\pytest.exe C:\MIX_automation\tests -v
 ```

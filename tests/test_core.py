@@ -23,11 +23,15 @@ from mix_automation.dsp.pitch_timing import ReviewMarker
 from mix_automation.dsp.vst3_optimizer import (
     SongSection,
     VocalChainParams,
+    apply_bark_consonant_transient_tamer,
     apply_dynamic_instrumental_unmasking,
     compute_continuous_distance_envelopes,
     detect_song_sections,
+    detect_vocal_surgical_notches,
     process_dedicated_harmony_bus,
+    process_main_harmony_bus,
     solve_differentiable_intrinsic_eq_gpu,
+    solve_precision_10band_eq_gpu,
 )
 from mix_automation.io.audio_loader import consolidate_vocal_stem_folder
 from mix_automation.io.song_builder import (
@@ -530,3 +534,51 @@ def test_true_stereo_harmony_leveling_and_flat_folder_discovery(tmp_path: Path) 
     assets = discover_song_assets(tmp_path)
     assert assets["inst"] is not None and assets["inst"].name == "20261125 - inst.wav"
     assert len(assets["stems"]) == 2
+
+
+def test_v6_precision_10band_eq_notch_bark_tamer_and_dual_harmony_split(tmp_path: Path) -> None:
+    sr = 44100
+    t = np.linspace(0.0, 2.0, sr * 2, endpoint=False)
+    rng = np.random.default_rng(99)
+
+    # 1. Automated Narrow-Q Resonance Notch Detection on synthetic sharp 1.45 kHz ringing resonance
+    base_noise = 0.08 * rng.standard_normal(len(t))
+    ring_v = (base_noise + 0.28 * np.sin(2 * np.pi * 1450 * t)).astype(np.float32)
+    notches = detect_vocal_surgical_notches(ring_v, sr=sr, max_notches=2)
+    assert len(notches) >= 1
+    assert any(1300.0 <= n[0] <= 1600.0 and n[1] <= -1.0 for n in notches)
+
+    # 2. 10-Band Precision EQ zero-scoop anchor + backing-complementary dark-backing air guardrail
+    dark_inst = (0.25 * np.sin(2 * np.pi * 220 * t) + 0.12 * np.sin(2 * np.pi * 1200 * t)).astype(np.float32)
+    prof = compute_section_relative_profile(ring_v, np.stack([dark_inst, dark_inst], axis=0), sr=sr)
+    eq10 = solve_precision_10band_eq_gpu(
+        ring_v, np.stack([dark_inst, dark_inst], axis=0), sr=sr, target_profile=prof, inst_high_rolloff_db=-12.0
+    )
+    gains = eq10["precision_eq_gains_db"]
+    assert isinstance(gains, dict) and len(gains) == 10
+    assert gains["air_shelf"] <= 2.0  # Never blasts +5 dB air on dark backing!
+
+    # 3. 6-Bark Consonant Transient Spike Tamer softens extreme 3.2 kHz spike without hurting vowel
+    spiky = (0.14 * np.sin(2 * np.pi * 350 * t)).astype(np.float32)
+    spiky[int(0.50 * sr) : int(0.515 * sr)] += (0.55 * np.sin(2 * np.pi * 3200 * t[int(0.50 * sr) : int(0.515 * sr)])).astype(np.float32)
+    tamed = apply_bark_consonant_transient_tamer(spiky, sr=sr, amount=0.45)
+    spike_before = float(np.max(np.abs(spiky[int(0.50 * sr) : int(0.515 * sr)])))
+    spike_after = float(np.max(np.abs(tamed[int(0.50 * sr) : int(0.515 * sr)])))
+    assert spike_after < spike_before * 0.90
+
+    # 4. Separate Main Harmony vs Choir buses + audible Hollow-Core/Onset-Crushed harmony leveling
+    p_m = tmp_path / "song - main1.wav"
+    p_h = tmp_path / "song - +3.wav"
+    p_c = tmp_path / "song - choir1.wav"
+    write_pcm24_wav(p_m, (0.22 * np.sin(2 * np.pi * 330 * t)).astype(np.float32), sr)
+    write_pcm24_wav(p_h, (0.12 * np.sin(2 * np.pi * 415 * t)).astype(np.float32), sr)
+    write_pcm24_wav(p_c, (0.10 * np.sin(2 * np.pi * 495 * t)).astype(np.float32), sr)
+    cons = consolidate_vocal_stem_folder([p_m, p_h, p_c], target_sr=sr)
+    assert cons.main_harmonies_stereo_bus is not None
+    assert cons.choir_stereo_bus is not None
+    mh = process_main_harmony_bus(cons.main_harmonies_stereo_bus, cons.lead_mono, sr=sr, target_rel_db=-8.6)
+    rel_mh = 20.0 * np.log10(
+        (float(np.sqrt(0.5 * (np.mean(mh[0] ** 2) + np.mean(mh[1] ** 2)))) + 1e-12)
+        / (float(np.sqrt(np.mean(cons.lead_mono**2))) + 1e-12)
+    )
+    assert -12.5 <= rel_mh <= -5.5

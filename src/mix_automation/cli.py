@@ -137,7 +137,7 @@ def mix_song(
     profiles_json: Path = typer.Option(DEFAULT_PROFILES_JSON, "--profiles", "-p", help="Target profiles JSON"),
     output_root: Path = typer.Option(PROJECT_ROOT / "data" / "outputs", "--out-dir", "-o", help="Output directory"),
 ) -> None:
-    """Run full v5 automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
+    """Run full v6 ultra-precision automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
     from mix_automation.pipeline import run_full_automix_for_song
 
     report = run_full_automix_for_song(
@@ -152,7 +152,7 @@ def mix_song(
         taste_weight=taste_weight,
         enable_nectar_in_mix=enable_nectar_mix,
     )
-    console.print("\n[bold green]v5 Auto-MIX Complete![/bold green]")
+    console.print("\n[bold green]v6 Auto-MIX Complete![/bold green]")
     console.print(f"  Archetype & Target   : [magenta]{report['optimized_chain_params']['archetype_chain']} -> {report['resolved_target_profile']}[/magenta]")
     console.print(f"  Studio One 5 Session : [cyan]{report['studio_one_song']}[/cyan] ({len(report.get('studio_one_injected_presets', []))} native VST3 presets)")
     console.print(f"  Mastered 2mix WAV    : [cyan]{report['master_wav']}[/cyan]")

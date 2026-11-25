@@ -41,8 +41,8 @@ class PreprocessConfig:
     mouth_declick_sensitivity: float = 3.5
     deplosive_sensitivity: float = 4.2
     deplosive_strength: float = 4.5
-    voice_denoise_reduction_db: float = 3.5
-    breath_target_db: float = -20.0
+    voice_denoise_reduction_db: float = 4.2
+    breath_target_db: float = -21.0
     breath_sensitivity: float = 48.0
     force_auto_pitch: bool = False
     enable_auto_align: bool = False
@@ -50,9 +50,9 @@ class PreprocessConfig:
     rider_max_boost_db: float = 4.0
     rider_max_cut_db: float = -4.0
     rider_backing_follow: float = 0.35
-    target_deess_sib_gr_db: float = 2.4   # Self-calibrated GR ONLY on 5.6-9.5kHz sibilant bursts!
+    target_deess_sib_gr_db: float = 2.6   # Self-calibrated GR ONLY on 5.6-9.5kHz sibilant bursts!
     deess_cutoff_hz: float = 5800.0
-    soothe_depth_db: float = 1.0          # Gentle narrow-resonance smoothing (verified via strict adapter!)
+    soothe_depth_db: float = 0.6          # Light Stage-1 prep (primary 4-band Soothe2 now runs Post-Comp/Sat!)
     target_staged_lufs: float = -18.0
 
 

@@ -259,7 +259,7 @@ def _infer_role_by_pitch_offset(aux_mono: np.ndarray, lead_mono: np.ndarray, sr:
 
 @dataclass(frozen=True)
 class ConsolidatedStems:
-    """Losslessly consolidated & acoustically deduplicated vocal stems with leveled wide harmonies."""
+    """Losslessly consolidated & acoustically deduplicated vocal stems with separate Main Harmony & Choir buses."""
 
     lead_mono: np.ndarray
     double_stereo: np.ndarray | None
@@ -273,6 +273,8 @@ class ConsolidatedStems:
     deduplicated_files: list[str]
     stem_roles_summary: dict[str, list[str]]
     sr: int
+    main_harmonies_stereo_bus: np.ndarray | None = None
+    choir_stereo_bus: np.ndarray | None = None
 
 
 def consolidate_vocal_stem_folder(
@@ -435,23 +437,49 @@ def consolidate_vocal_stem_folder(
     sub_st = _stage_leveled_stereo_group(role_buckets["sub_octave"], [-0.25, +0.25])
     sup_st = _stage_leveled_stereo_group(role_buckets["super_octave"], [-0.42, +0.42], micro_haas_ms=4.0)
 
-    # Stage harmonies with balanced L/R separation:
-    # Upper harmonies (+3) slightly Left-biased pair; Lower harmonies (-3) Right-biased pair;
-    # Choir stacks wide across [-0.88 .. +0.88] with subtle ensemble micro-spread!
-    harm_parts: list[np.ndarray] = []
+    # Stage Main Harmonies (+3/-3/harm) SEPARATELY from Choirs (choir1..N) so v6 can apply
+    # distinct Pro Hollow-Core + Transient-Crushed Main Harmony processing vs Lush Wide Choir Halo!
+    main_harm_parts: list[np.ndarray] = []
     if role_buckets["upper_harm"]:
-        # If multiple upper harmony tracks exist (e.g. +3 AB, +3 sabi, +3 2), pan alternating L/R!
-        up_st = _stage_leveled_stereo_group(role_buckets["upper_harm"], [-0.62, +0.62, -0.78, +0.78], micro_haas_ms=6.5)
+        up_st = _stage_leveled_stereo_group(role_buckets["upper_harm"], [-0.58, +0.58, -0.74, +0.74], micro_haas_ms=7.0)
         if up_st is not None:
-            harm_parts.append(up_st)
+            main_harm_parts.append(up_st)
     if role_buckets["lower_harm"]:
-        lo_st = _stage_leveled_stereo_group(role_buckets["lower_harm"], [+0.58, -0.58, +0.76, -0.76], micro_haas_ms=7.0)
+        lo_st = _stage_leveled_stereo_group(role_buckets["lower_harm"], [+0.56, -0.56, +0.72, -0.72], micro_haas_ms=7.5)
         if lo_st is not None:
-            harm_parts.append(lo_st)
+            main_harm_parts.append(lo_st)
     if role_buckets["harmony"]:
-        gen_st = _stage_leveled_stereo_group(role_buckets["harmony"], [-0.65, +0.65, -0.82, +0.82], micro_haas_ms=6.0)
-        if gen_st is not None:
-            harm_parts.append(gen_st)
+        # If there is only 1 mono harmony stem (e.g. Fall in Love `harm1.wav`), wrap symmetrically L/R via 11ms Haas
+        # rather than hard-panning lopsided to one ear!
+        if len(role_buckets["harmony"]) == 1 and not role_buckets["harmony"][0]["is_true_stereo"]:
+            rec0 = role_buckets["harmony"][0]
+            n0 = min(len(rec0["mono"]), max_len)
+            m0 = _active_level_normalize(strip_silence_gate(rec0["mono"][:n0], target_sr), target_active_rms_db=-19.0)
+            if float(np.max(np.abs(m0))) >= 1e-5:
+                sym = np.zeros((2, max_len), dtype=np.float32)
+                sym[0, :n0] = m0
+                sym[1, :n0] = _delay_samples(m0, int(target_sr * 0.011)) * 0.92
+                main_harm_parts.append(sym)
+        else:
+            gen_st = _stage_leveled_stereo_group(role_buckets["harmony"], [-0.62, +0.62, -0.78, +0.78], micro_haas_ms=6.5)
+            if gen_st is not None:
+                main_harm_parts.append(gen_st)
+
+    def _center_lr_bus(parts: list[np.ndarray]) -> np.ndarray | None:
+        if not parts:
+            return None
+        bus = np.sum(parts, axis=0).astype(np.float32)
+        l_rms = float(np.sqrt(np.mean(bus[0] ** 2) + 1e-12))
+        r_rms = float(np.sqrt(np.mean(bus[1] ** 2) + 1e-12))
+        if l_rms > 1e-5 and r_rms > 1e-5:
+            lr_ratio = float(np.clip(np.sqrt(r_rms / l_rms), 0.72, 1.38))
+            bus[0] *= lr_ratio
+            bus[1] /= lr_ratio
+        return bus
+
+    main_harm_bus = _center_lr_bus(main_harm_parts)
+
+    choir_bus: np.ndarray | None = None
     if role_buckets["choir"]:
         ch_st = _stage_leveled_stereo_group(
             role_buckets["choir"],
@@ -459,18 +487,11 @@ def consolidate_vocal_stem_folder(
             micro_haas_ms=8.5,
         )
         if ch_st is not None:
-            harm_parts.append(ch_st)
+            choir_bus = _center_lr_bus([ch_st])
 
-    harm_bus: np.ndarray | None = None
-    if harm_parts:
-        harm_bus = np.sum(harm_parts, axis=0).astype(np.float32)
-        # Re-balance L/R channels of the combined harmony bus within ±1.5 dB so stereo stage stays centered!
-        l_rms = float(np.sqrt(np.mean(harm_bus[0] ** 2) + 1e-12))
-        r_rms = float(np.sqrt(np.mean(harm_bus[1] ** 2) + 1e-12))
-        if l_rms > 1e-5 and r_rms > 1e-5:
-            lr_ratio = float(np.clip(np.sqrt(r_rms / l_rms), 0.72, 1.38))
-            harm_bus[0] *= lr_ratio
-            harm_bus[1] /= lr_ratio
+    combined_parts = [b for b in (main_harm_bus, choir_bus) if b is not None]
+    harm_bus = _center_lr_bus(combined_parts)
+    primary_s1_harm = main_harm_bus if main_harm_bus is not None else choir_bus
 
     user_harm_cnt = (
         len(role_buckets["upper_harm"])
@@ -487,11 +508,13 @@ def consolidate_vocal_stem_folder(
         sub_octave_stereo=sub_st,
         super_octave_stereo=sup_st,
         harmonies_stereo_bus=harm_bus,
-        harm1_mono=(harm_bus[0] if harm_bus is not None else None),
-        harm2_mono=(harm_bus[1] if harm_bus is not None else None),
+        harm1_mono=(primary_s1_harm[0] if primary_s1_harm is not None else None),
+        harm2_mono=(primary_s1_harm[1] if primary_s1_harm is not None else None),
         has_user_harmonies=(harm_bus is not None),
         user_harmony_track_count=user_harm_cnt,
         deduplicated_files=skipped_dups,
         stem_roles_summary=roles_summary,
         sr=target_sr,
+        main_harmonies_stereo_bus=main_harm_bus,
+        choir_stereo_bus=choir_bus,
     )

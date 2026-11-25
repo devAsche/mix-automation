@@ -21,10 +21,13 @@ from mix_automation.config.plugin_registry import get_plugin_map
 from mix_automation.dsp.vst3_adapter import (
     configure_clean_plate_r2,
     configure_persistent_q_5band,
+    configure_persistent_q_precision,
     configure_rx10_spectral_deess,
     configure_softube_saturation,
     configure_softube_vca,
+    configure_soothe2_precision,
     configure_uad_la2a,
+    configure_vocalsynth2_radio,
 )
 
 
@@ -134,3 +137,48 @@ def test_persistent_q_and_r2_contracts() -> None:
         assert r2.revbtype == "Plate"
         assert float(r2.chordpth) == 0.0
         assert 0.85 <= float(r2.rvb_time) <= 1.0
+
+
+def test_v6_persistent_q_16band_dynamic_spectral_and_soothe2_and_vocalsynth2() -> None:
+    pm = get_plugin_map()
+    sr = 44100
+    t = np.linspace(0.0, 2.0, sr * 2, endpoint=False)
+    x = np.zeros(sr * 2, dtype=np.float32)
+    x[:sr] = (0.04 * np.sin(2 * np.pi * 3200 * t[:sr]) + 0.04 * np.sin(2 * np.pi * 7800 * t[:sr])).astype(np.float32)
+    x[sr:] = (0.35 * np.sin(2 * np.pi * 3200 * t[sr:]) + 0.35 * np.sin(2 * np.pi * 7800 * t[sr:])).astype(np.float32)
+    st = np.stack([x, x], axis=0)
+
+    if pm["persistent_q"].exists:
+        pq = load_plugin(str(pm["persistent_q"].loadable_path))
+        configure_persistent_q_precision(
+            pq,
+            hpf_hz=90.0,
+            band_gains_db={"warm_body": 1.0, "mud_honk": -1.5, "air_shelf": 0.5},
+            surgical_notches=[(1200.0, -2.5, 6.5)],
+            dynamic_bite_hz=3200.0,
+            dynamic_bite_thresh_db=-24.0,
+            dynamic_bite_range_db=5.5,
+            spectral_hf_hz=7800.0,
+            spectral_hf_thresh_db=-24.0,
+            spectral_hf_range_db=5.5,
+            enable_dynamic_bands=True,
+        )
+        y_pq = np.mean(pq(st, sr, reset=True), axis=0)
+        loud_3k = _band_db(y_pq[sr:], sr, 2800, 3600) - _band_db(x[sr:], sr, 2800, 3600)
+        quiet_3k = _band_db(y_pq[:sr], sr, 2800, 3600) - _band_db(x[:sr], sr, 2800, 3600)
+        loud_7k = _band_db(y_pq[sr:], sr, 7200, 8400) - _band_db(x[sr:], sr, 7200, 8400)
+        assert loud_3k < quiet_3k - 2.0, f"PQ dynamic bite band inactive: quiet={quiet_3k:.2f}, loud={loud_3k:.2f}"
+        assert loud_7k < -1.5, f"PQ spectral HF band inactive: loud_7k={loud_7k:.2f}"
+
+    if pm["soothe2"].exists:
+        s2 = load_plugin(str(pm["soothe2"].loadable_path))
+        configure_soothe2_precision(s2, depth=3.6, bite_sens_db=4.0, sibilance_sens_db=6.0, hf_sizzle_sens_db=5.0)
+        y_s2 = np.mean(s2(st, sr, reset=True), axis=0)
+        assert (_band_db(y_s2[sr:], sr, 2800, 3600) - _band_db(x[sr:], sr, 2800, 3600)) < -3.0
+        assert (_band_db(y_s2[sr:], sr, 7200, 8400) - _band_db(x[sr:], sr, 7200, 8400)) < -3.0
+
+    if "izotope_vocalsynth2" in pm and pm["izotope_vocalsynth2"].exists:
+        vs = load_plugin(str(pm["izotope_vocalsynth2"].loadable_path))
+        configure_vocalsynth2_radio(vs, freq_hz=1650.0, drive=3.8, distort_mix=42.0)
+        y_vs = vs(st, sr, reset=True)
+        assert float(np.sqrt(np.mean(y_vs**2))) > 0.02, "VocalSynth 2 radio chain output silence!"
