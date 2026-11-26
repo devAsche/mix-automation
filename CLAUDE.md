@@ -29,6 +29,7 @@ Claude 固有の運用メモ:
   - `time_to_section.py <曲> 0:20 …` / `--issues docs/evaluations/issues.yaml`: 時刻 → 区間の対応表
   - `section_spectral_diff.py <曲> [--pre raw|prepared|<file>] [--at 0:20 --win 1]`: 区間ごとの処理前後スペクトル差分
   - `section_balance.py <曲> [--at …]`: 区間ごとの V/I 比・Side/Mid・部分ラウドネス余裕
+  - `compare_renders.py <A> <B>`: 同じ曲の 2 つのレンダーの LUFS・ヌル残差・mix_report 数値の差（再現確認・A/B）
   - その場で書いた解析で再利用できるものは `scripts/analysis/` に足す（出力は短い表だけ）
 - **`.claude/agents` の使い分け:**
   - `implementer`（Opus / effort medium）: 1 段階内の実装とテスト。報告は差分要約と結果表のみ
