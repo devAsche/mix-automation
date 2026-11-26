@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(r"C:\MIX_automation")
 STUDIO_ONE_EXE = Path(r"C:\Program Files\PreSonus\Studio One 5\Studio One.exe")
 DEFAULT_TEMPLATE_SONG = PROJECT_ROOT / "data" / "templates" / "test20261124" / "test20261124.song"
 DEFAULT_PROFILES_JSON = PROJECT_ROOT / "profiles" / "pro_target_profiles.json"
+ENGINES = ("v7", "v8")
 
 
 @app.command()
@@ -138,8 +139,33 @@ def mix_song(
     template_song: Path = typer.Option(DEFAULT_TEMPLATE_SONG, "--template", "-t", help="Base Studio One 5 .song"),
     profiles_json: Path = typer.Option(DEFAULT_PROFILES_JSON, "--profiles", "-p", help="Target profiles JSON"),
     output_root: Path = typer.Option(PROJECT_ROOT / "data" / "outputs", "--out-dir", "-o", help="Output directory"),
+    engine: str = typer.Option(
+        "v7",
+        "--engine",
+        help="Mixing engine: v7 (current, default) | v8 (under construction, see docs/V8_PLAN.md)",
+    ),
 ) -> None:
     """Run full v6 ultra-precision automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
+    engine = engine.strip().lower()
+    if engine not in ENGINES:
+        console.print(f"[red]Unknown --engine '{engine}'. Choose one of: {', '.join(ENGINES)}[/red]")
+        raise typer.Exit(code=2)
+
+    if engine == "v8":
+        from mix_automation.v8 import V8NotImplementedError, run_v8_automix_for_song
+
+        try:
+            run_v8_automix_for_song(
+                song_folder=song_folder,
+                template_song_path=template_song,
+                profiles_json_path=profiles_json,
+                output_root=output_root,
+            )
+        except V8NotImplementedError as exc:
+            console.print(f"[red][v8 未実装][/red] {exc}")
+            raise typer.Exit(code=3) from exc
+        return
+
     from mix_automation.pipeline import run_full_automix_for_song
 
     report = run_full_automix_for_song(
