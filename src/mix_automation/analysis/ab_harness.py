@@ -157,6 +157,25 @@ def _find_self_mix_path(song_dir: Path, raw_root: Path | None, song_name: str) -
     return None
 
 
+def _latest_report_per_song(outputs_root: Path) -> list[tuple[Path, dict]]:
+    """Pick only the newest render per song.
+
+    Old `_consensus` renders and timestamped fallback folders (written while Studio One locks
+    `<song>_auto`) would otherwise be audited side by side with the current render.
+    """
+    newest: dict[str, tuple[float, Path, dict]] = {}
+    for song_dir in sorted(p for p in outputs_root.iterdir() if p.is_dir()):
+        report_path = song_dir / "mix_report.json"
+        if not report_path.exists():
+            continue
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        key = str(report.get("song_name", song_dir.name))
+        mtime = report_path.stat().st_mtime
+        if key not in newest or mtime > newest[key][0]:
+            newest[key] = (mtime, song_dir, report)
+    return [(d, r) for _, d, r in sorted(newest.values(), key=lambda v: str(v[1]))]
+
+
 def _resolve_song_artifacts(song_dir: Path, report: dict) -> tuple[Path | None, Path | None, Path | None, Path | None]:
     master_wav = Path(report["master_wav"]) if report.get("master_wav") else None
     if master_wav is None or not master_wav.exists():
@@ -426,11 +445,7 @@ def extract_loudness_normalized_ab_clips(
             "songs": [],
         }
 
-    for song_dir in sorted(p for p in outputs_root.iterdir() if p.is_dir()):
-        report_path = song_dir / "mix_report.json"
-        if not report_path.exists():
-            continue
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+    for song_dir, report in _latest_report_per_song(outputs_root):
         master_wav, vocal_bus_wav, inst_wav, song_file = _resolve_song_artifacts(song_dir, report)
         if master_wav is None or not master_wav.exists() or vocal_bus_wav is None or not vocal_bus_wav.exists():
             continue

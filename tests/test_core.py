@@ -73,7 +73,7 @@ from mix_automation.io.song_builder import (
     write_pcm24_wav,
 )
 from mix_automation.io.studio_one import write_vstpreset
-from mix_automation.pipeline import discover_song_assets
+from mix_automation.pipeline import discover_song_assets, resolve_writable_output_dir
 
 
 def test_relative_profile_and_anchor_propagation() -> None:
@@ -1126,3 +1126,53 @@ def test_v7_1_studio_one_sync_lock_coactive_choir_and_smart_asset_discovery(tmp_
             for aev in mtrk.iter("AudioEvent"):
                 if "start" in aev.attrib and "offset" in aev.attrib:
                     assert abs(float(aev.attrib["start"]) - float(aev.attrib["offset"])) < 1e-6
+
+
+def test_v7_1_locked_output_dir_falls_back_to_timestamped_sibling(tmp_path: Path, monkeypatch) -> None:
+    """Studio One holding Media WAVs of an open project must not crash a re-render (Claude handover fix)."""
+    from datetime import datetime
+
+    import mix_automation.pipeline as pl
+
+    base = tmp_path / "Song_auto"
+    assert resolve_writable_output_dir(base) == base  # fresh folder: used as-is
+
+    (base / "Media").mkdir(parents=True)
+    locked_wav = base / "Media" / "00_offvocal_raw_backup.wav"
+    locked_wav.write_bytes(b"RIFF")
+    assert resolve_writable_output_dir(base) == base  # unlocked previous render: overwrite in place
+
+    monkeypatch.setattr(pl, "_is_file_write_locked", lambda p: p.name == locked_wav.name)
+    alt = resolve_writable_output_dir(base, now=datetime(2026, 11, 26, 14, 5, 9))
+    assert alt == tmp_path / "Song_auto_20261126-140509"
+    assert locked_wav.exists()  # the user's open session is never touched
+
+
+def test_v7_1_asset_discovery_reports_offvocal_candidates(tmp_path: Path) -> None:
+    sr = 22050
+    sig = (0.2 * np.sin(2.0 * np.pi * 330.0 * np.linspace(0.0, 2.0, sr * 2, endpoint=False))).astype(np.float32)
+    write_pcm24_wav(tmp_path / "x - main1.wav", sig, sr)
+    write_pcm24_wav(tmp_path / "x - offvocal.wav", np.stack([sig, sig]), sr)
+    write_pcm24_wav(tmp_path / "x - offvocal(修正版).wav", np.stack([sig, sig]), sr)
+    write_pcm24_wav(tmp_path / "x - 自mix.wav", np.stack([sig, sig]), sr)
+    write_pcm24_wav(tmp_path / "202611260841Mixdown.wav", np.stack([sig, sig]), sr)
+    assets = discover_song_assets(tmp_path)
+    assert sorted(p.name for p in assets["inst_candidates"]) == ["x - offvocal(修正版).wav", "x - offvocal.wav"]
+    assert assets["self_mix"] is not None and assets["self_mix"].name == "x - 自mix.wav"
+    assert assets["original"] is None
+
+
+def test_v7_1_benchmark_ab_audits_only_latest_render_per_song(tmp_path: Path) -> None:
+    import json
+    import os
+
+    from mix_automation.analysis.ab_harness import _latest_report_per_song
+
+    for i, folder in enumerate(["Song_consensus", "Song_auto", "Song_auto_20261126-140509", "Other_auto"]):
+        d = tmp_path / folder
+        d.mkdir()
+        rp = d / "mix_report.json"
+        rp.write_text(json.dumps({"song_name": "Other" if folder.startswith("Other") else "Song"}), encoding="utf-8")
+        os.utime(rp, (1_000_000 + i, 1_000_000 + i))
+    picked = {r["song_name"]: d.name for d, r in _latest_report_per_song(tmp_path)}
+    assert picked == {"Song": "Song_auto_20261126-140509", "Other": "Other_auto"}

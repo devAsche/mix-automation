@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -242,6 +243,7 @@ def discover_song_assets(song_folder: Path) -> dict[str, Path | list[Path] | Non
     return {
         "stems": stem_files,
         "inst": inst_file,
+        "inst_candidates": inst_candidates,
         "original": orig_file,
         "self_mix": self_mix_file,
         "lyrics": lyrics_file,
@@ -299,6 +301,53 @@ def _smooth_envelope(raw_env: np.ndarray, sr: int, smooth_sec: float = 0.25) -> 
     return signal.fftconvolve(raw_env.astype(np.float32), xf_win, mode="same").astype(np.float32)
 
 
+def _is_file_write_locked(path: Path) -> bool:
+    """True when another process (e.g. Studio One holding an open project's Media) blocks writing `path`."""
+    try:
+        with open(path, "r+b"):
+            return False
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def resolve_writable_output_dir(base_out_dir: Path, now: datetime | None = None) -> Path:
+    """Return `base_out_dir`, or a timestamped sibling when its previous outputs are locked.
+
+    Studio One keeps the Media WAVs of an open project locked; re-rendering into the same folder
+    then fails inside libsndfile ("System error") and would also clobber a session the user is editing.
+    Instead of failing, render into `<name>_YYYYMMDD-HHMMSS` and leave the open session untouched.
+    """
+    if not base_out_dir.exists():
+        return base_out_dir
+    candidates = [p for p in base_out_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".wav", ".song"}]
+    locked = [p for p in candidates if _is_file_write_locked(p)]
+    if not locked:
+        return base_out_dir
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    alt = base_out_dir.with_name(f"{base_out_dir.name}_{stamp}")
+    print(
+        f"[WARN] {len(locked)} file(s) in '{base_out_dir}' are locked by another process "
+        f"(e.g. '{locked[0].name}' open in Studio One). Writing this render to '{alt}' instead.",
+        flush=True,
+    )
+    return alt
+
+
+def _measure_file_lufs(path: Path, sr: int = 44100) -> float | None:
+    """Integrated LUFS of an input file for the report (None when silent/unreadable)."""
+    import pyloudnorm as pyln
+
+    try:
+        audio, _ = load_audio(path, target_sr=sr, mono=False)
+        data = audio.T.astype(np.float64) if audio.ndim == 2 else audio.astype(np.float64)
+        val = float(pyln.Meter(sr).integrated_loudness(data))
+    except Exception:  # noqa: BLE001 - diagnostics only, must never break a render
+        return None
+    return round(val, 2) if np.isfinite(val) else None
+
+
 def run_full_automix_for_song(
     song_folder: Path,
     template_song_path: Path,
@@ -319,7 +368,7 @@ def run_full_automix_for_song(
     eff_taste = None if ts_norm in {"", "none", "off", "false"} else ts_norm
     eff_tw = taste_weight if eff_taste else 0.0
 
-    out_dir = output_root / f"{safe_slug}_{style}"
+    out_dir = resolve_writable_output_dir(output_root / f"{safe_slug}_{style}")
     media_dir = out_dir / "Media"
     media_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1161,6 +1210,21 @@ def run_full_automix_for_song(
         "closed_loop_bus_trim_db": closed_loop_trim_db,
         "harmony_qa_trim_db": harm_qa_trim_db,
         "nectar_mixed_into_2mix": use_nectar_in_2mix,
+        "input_assets": {
+            "song_folder": str(song_folder),
+            "offvocal_file": Path(assets["inst"]).name,  # type: ignore[arg-type]
+            "offvocal_raw_lufs": round(raw_inst_lufs, 2) if np.isfinite(raw_inst_lufs) else None,
+            "offvocal_stage_gain_db": inst_stage_gain_db,
+            "offvocal_candidates": [Path(p).name for p in assets.get("inst_candidates", [])],  # type: ignore[union-attr]
+            "original_file": Path(assets["original"]).name if assets["original"] else None,  # type: ignore[arg-type]
+            "self_mix_file": Path(assets["self_mix"]).name if assets["self_mix"] else None,  # type: ignore[arg-type]
+            "lyrics_file": Path(assets["lyrics"]).name if assets["lyrics"] else None,  # type: ignore[arg-type]
+            "vocal_stems": [
+                {"file": Path(p).name, "lufs": _measure_file_lufs(Path(p), sr=target_sr)}
+                for p in assets["stems"]  # type: ignore[union-attr]
+            ],
+            "output_dir": str(out_dir),
+        },
         "stem_consolidation": {
             "roles": consolidated.stem_roles_summary,
             "deduplicated_skipped": consolidated.deduplicated_files,
@@ -1246,6 +1310,16 @@ def _write_director_markdown_report(md_path: Path, report: dict) -> None:
         f"- **生成済みStudio One 5 プロジェクト**: `{report['studio_one_song']}` （注入済み真正 `.vstpreset`: `{len(report.get('studio_one_injected_presets', []))} 本` / 精密距離クリップイベント: `{report.get('fine_s1_events_count', 0)} 個`）",
         f"- **Stage 4 ディレクターMIDIガイド**: `{report.get('director_midi_guide', '-')}` （カウンターメロディ提案 `{report.get('counter_melody_notes_count', 0)} 音`）",
         f"- **完成マスタリング音源**: `{report['master_wav']}`",
+        (
+            f"- **使用オフボーカル**: `{report.get('input_assets', {}).get('offvocal_file')}` "
+            f"(元 `{report.get('input_assets', {}).get('offvocal_raw_lufs')} LUFS`, ステージング "
+            f"`{report.get('input_assets', {}).get('offvocal_stage_gain_db')} dB`, 候補: "
+            f"{report.get('input_assets', {}).get('offvocal_candidates')})"
+        ),
+        "- **使用ボーカルステム**: "
+        + ", ".join(
+            f"`{s['file']}` ({s['lufs']} LUFS)" for s in report.get("input_assets", {}).get("vocal_stems", [])
+        ),
         "",
     ]
 
