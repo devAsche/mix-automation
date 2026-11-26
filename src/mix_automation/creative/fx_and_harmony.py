@@ -971,6 +971,60 @@ intervals = cfg["intervals"]
 out_dir = Path(cfg["out_dir"])
 
 nectar = load_plugin(cfg["vst_path"])
+
+# Nectar 3 only runs the modules listed in its internal "Element Chain" (default: EQ 0 + Compressor 0).
+# Harmony is not in it, so harmony_* parameters alone leave the voice at unison (bug found 2026-11-27).
+# Rewrite the chain in raw_state to just "Harmony". State layout: b"VC2!" + u32 len + XML whose
+# <IComponent> is JUCE base64 of [u32 magic, u32 ver, u32 len+4, u32 raw_len] + zlib(JSON text).
+import base64, re, struct, zlib
+_JB64 = ".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+"
+
+def _jdec(s):
+    size, _, data = s.partition(".")
+    size = int(size)
+    out = bytearray(size)
+    bit = 0
+    for c in data:
+        v = _JB64.index(c)
+        for i in range(6):
+            if bit >> 3 >= size:
+                break
+            if v >> i & 1:
+                out[bit >> 3] |= 1 << (bit & 7)
+            bit += 1
+    return bytes(out)
+
+def _jenc(b):
+    nbits = len(b) * 8
+    chars = []
+    for pos in range(0, nbits, 6):
+        v = 0
+        for i in range(6):
+            p = pos + i
+            if p < nbits and b[p >> 3] >> (p & 7) & 1:
+                v |= 1 << i
+        chars.append(_JB64[v])
+    return f"{len(b)}." + "".join(chars)
+
+_st = nectar.raw_state
+_xml = _st[_st.index(b"<?xml"):].decode()
+_m = re.search(r"<IComponent>([^<]+)</IComponent>", _xml)
+_comp = _jdec(_m.group(1))
+_magic = struct.unpack("<I", _comp[:4])[0]
+_txt = zlib.decompress(_comp[16:]).decode()
+_chain = base64.b64encode(struct.pack("<I", 7) + b"Harmony").decode()
+_txt, _k = re.subn(
+    r'("Element Chain"\\s*:\\s*\\{.*?"Extra Bytes"\\s*:\\s*\\{\\s*"Type"\\s*:\\s*"Base64",\\s*"Value"\\s*:\\s*")[^"]*(")',
+    lambda mm: mm.group(1) + _chain + mm.group(2), _txt, count=1, flags=re.S,
+)
+if _k != 1:
+    raise RuntimeError("Nectar 3 Element Chain not found in state")
+_raw = _txt.encode()
+_z = zlib.compress(_raw)
+_comp2 = struct.pack("<4I", _magic, 1, len(_z) + 4, len(_raw)) + _z
+_body = (_xml[: _m.start(1)] + _jenc(_comp2) + _xml[_m.end(1):]).encode()
+nectar.raw_state = b"VC2!" + struct.pack("<I", len(_body) - 1) + _body
+
 for bp_key in (
     "gate_bypass", "eq_1_bypass", "eq_2_bypass", "comp_1_bypass", "comp_2_bypass",
     "deesser_bypass", "delay_bypass", "saturation_bypass", "reverb_bypass",
