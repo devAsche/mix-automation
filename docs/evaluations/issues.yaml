@@ -57,6 +57,7 @@ issues:
     lyric: "真の髄から（「し」）"
     category: sibilance
     direction: crushed
+    note: "「潰れ」= ディエッサーをかけすぎた感じの音（凌の回答、2026-11-26_スレッド発言.txt 質問 1）"
     quote: "0:20～「真の髄から」の「し」の歯擦音がつぶれてる"
   - id: eva-2
     song: エバ
@@ -175,4 +176,30 @@ issues:
     lyric: "悪さを手に入れたい（「さ」）"
     category: sibilance
     direction: crushed
+    note: "「潰れ」= ディエッサーをかけすぎた感じの音（凌の回答、2026-11-26_スレッド発言.txt 質問 1）"
     quote: "0:46の「悪さを手に入れたい」の「さ」がつぶれてる"
+
+  # ---------------- エバ（スレッドでの発言、2026-11-26） ----------------
+  - id: eva-g4
+    song: エバ
+    scope: global
+    category: step_change
+    direction: timbre
+    source: docs/evaluations/2026-11-26_スレッド発言.txt
+    note: "パート（区間）ごとに声質が変わる。v7 の区間別 EQ・サチュレーション切替を疑う"
+    quote: "曲のパートごとに声質がだいぶ変わってしまっていたり"
+  - id: eva-g5
+    song: エバ
+    scope: global
+    category: sits_on_top
+    direction: not_blended
+    source: docs/evaluations/2026-11-26_スレッド発言.txt
+    quote: "声が浮いていたり"
+  - id: eva-g6
+    song: エバ
+    scope: global
+    category: harmony_missing
+    direction: missing
+    source: docs/evaluations/2026-11-26_スレッド発言.txt
+    note: "ハモリが無い（v7 はユーザー録音ハモリが無い曲で Nectar 3 生成ハモリを 2mix に混ぜる設計）。VocalSynth は本人が「入れるといいかなと思っただけ」の案で、必須の指摘ではない"
+    quote: "ハモリやvocalsynthがついていなかったりした まあvocalsynthは俺が入れるといいかなと思っただけだから提案されなかったのも仕方がないが"

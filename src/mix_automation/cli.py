@@ -144,6 +144,11 @@ def mix_song(
         "--engine",
         help="Mixing engine: v7 (current, default) | v8 (under construction, see docs/V8_PLAN.md)",
     ),
+    export_debug_stems: bool = typer.Option(
+        False,
+        "--export-debug-stems",
+        help="v7: also write lead dry / wet returns / harmony bus / aux layers to <out>/debug_stems (analysis only; audio unchanged)",
+    ),
 ) -> None:
     """Run full v6 ultra-precision automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
     engine = engine.strip().lower()
@@ -179,6 +184,7 @@ def mix_song(
         taste_style=taste,
         taste_weight=taste_weight,
         enable_nectar_in_mix=enable_nectar_mix,
+        export_debug_stems=export_debug_stems,
     )
     console.print("\n[bold green]v7 Auto-MIX Complete![/bold green]")
     console.print(f"  Archetype & Target   : [magenta]{report['optimized_chain_params']['archetype_chain']} -> {report['resolved_target_profile']}[/magenta]")

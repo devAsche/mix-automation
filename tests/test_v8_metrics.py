@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from scipy.signal import butter, sosfilt
+from scipy.signal import butter, sosfilt, sosfiltfilt
 
 from mix_automation.v8.metrics import consonants, harmony, loudness, space, spectral, steps, timing
 from mix_automation.v8.metrics._core import p56_activity, phrases, stft_power
@@ -225,3 +225,67 @@ def test_block_masking_loss_tracks_backing_level():
     assert len(quiet) >= 8
     assert np.median(loud[:, 1]) < np.median(quiet[:, 1]) - 3.0
     assert np.median(loud[:, 2]) < np.median(quiet[:, 2])
+
+
+def test_deesser_leaves_traces_but_plain_gain_does_not(sung):
+    x, spans, events = sung
+    sib = [e for e in events if e.kind == "sibilant"]
+    sos = butter(4, [4000, 12000], btype="band", fs=SR, output="sos")
+    deessed = x.copy()
+    for a, b in spans:  # cut the sibilant band only while the sibilant sounds (what a de-esser does)
+        seg = x[a:b]
+        deessed[a:b] = seg - 0.8 * sosfiltfilt(sos, seg)
+    gain_only = 0.5 * x
+    tr_d = consonants.deess_traces(sib, deessed, x, SR)
+    tr_g = consonants.deess_traces(sib, gain_only, x, SR)
+    assert np.median([t.band_att_db for t in tr_d]) < -6.0
+    assert np.median([t.gain_dip_db for t in tr_d]) < -6.0
+    assert np.median([t.centroid_drop_pct for t in tr_d]) > 2.0
+    assert abs(np.median([t.band_att_db for t in tr_g])) < 0.5
+    assert abs(np.median([t.gain_dip_db for t in tr_g])) < 0.5
+
+
+def test_partial_loudness_at_masked_threshold_and_well_above():
+    """Moore et al. (1997): a signal at its masked threshold has ~0 partial loudness; 20 dB above it
+    the partial loudness approaches the loudness of the signal alone."""
+    t = np.arange(SR) / SR
+    tone = np.sin(2 * np.pi * 1000 * t)
+    noise = _band_noise(1.0, 800, 1250, 1.0)
+    noise = noise / np.sqrt(np.mean(noise**2))
+    m = loudness.LoudnessModel.build(stft_power(tone, SR)[0])
+    _, _, pt = stft_power(tone, SR)
+    _, _, pn = stft_power(noise, SR)
+    scale = 10 ** (60 / 10)  # masker at ~60 dB SPL
+    en = m.excitation(pn * scale)
+    et_unit = m.excitation(pt)
+    c = int(np.argmin(np.abs(m.centers - 1000.0)))
+    ethrn = m.k[c] * en[c] + m.ethrq[c]
+    def pl(level_re_thr_db: float) -> tuple[float, float]:
+        g = ethrn / et_unit[c] * 10 ** (level_re_thr_db / 10)
+        es = et_unit * g
+        part = float(np.median(m.specific_partial_loudness(es, en).sum(0)))
+        alone = float(np.median(m.specific_loudness(es).sum(0)))
+        return part, alone
+    p0, a0 = pl(0.0)
+    p20, a20 = pl(20.0)
+    p40, a40 = pl(40.0)
+    assert p0 < 0.15 * a0
+    assert p20 > 0.5 * a20
+    assert p40 / a40 > p20 / a20 > p0 / a0
+
+
+def test_cer_is_spelling_independent_and_counts_errors():
+    from mix_automation.v8.metrics.intelligibility import cer
+
+    assert cer("歌を歌う", "うたをうたう") == 0.0
+    assert cer("あいうえお", "あいうえ") == pytest.approx(0.2)
+
+
+def test_estoi_drops_when_masked():
+    from mix_automation.v8.metrics.intelligibility import estoi
+
+    x, _ = _sung_line(6)
+    b = _pink(len(x))
+    clean = estoi(x, x + 0.01 * b, SR)
+    noisy = estoi(x, x + 1.0 * b, SR)
+    assert clean > noisy + 0.2

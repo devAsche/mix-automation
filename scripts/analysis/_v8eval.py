@@ -18,8 +18,8 @@ from mix_automation.v8.metrics._core import HOP, Segment, phrases, stft_power, t
 
 SR = 44100
 CACHE = ROOT / "data" / "processed" / "v8_eval_cache"
-CACHE_VERSION = 4  # bump when a metric changes
-RENDER_VERSION = 7  # bump when only the render-specific part (D/F/G/H, signal assembly) changes
+CACHE_VERSION = 5  # bump when a metric changes
+RENDER_VERSION = 9  # bump when only the render-specific part (D/F/G/H, signal assembly) changes
 
 
 def _key(*parts: object) -> str:
@@ -370,3 +370,107 @@ def align_to(x: np.ndarray, ref: np.ndarray, max_lag_s: float = 30.0) -> np.ndar
 
 def segment(a: float, b: float) -> Segment:
     return Segment(float(a), float(b))
+
+
+# --------------------------------------------------------------------------- Phase 2b: debug-stem renders
+
+DEBUG_VERSION = 4
+
+
+def debug_signals(render_dir: Path) -> dict | None:
+    d = render_dir / "debug_stems"
+    names = ("lead_dry", "wet", "harmony_bus", "aux_layers", "inst_unmasked")
+    if not all((d / f"{n}.wav").exists() for n in names):
+        return None
+    return {n: d / f"{n}.wav" for n in names}
+
+
+def analyze_debug_render(render_dir: Path) -> dict | None:
+    """Metrics that need the vocal-bus components (render made with --export-debug-stems)."""
+    ds = debug_signals(render_dir)
+    if ds is None:
+        return None
+    sig = render_signals(render_dir)
+    rep = load_report(render_dir)
+    key = _key("debug", DEBUG_VERSION, *[_fid(p) for p in ds.values()], _fid(sig["pre"]))
+
+    def run() -> dict:
+        st = {k: load_ch_first(p) for k, p in ds.items()}
+        pre = true_pre_vocal(render_dir, sig, rep)
+        n = min(len(pre), *[a.shape[1] for a in st.values()])
+        st = {k: a[:, :n] for k, a in st.items()}
+        pre = pre[:n]
+        lead, wet = st["lead_dry"], st["wet"]
+        masker = st["inst_unmasked"] + wet + st["harmony_bus"] + st["aux_layers"]
+        _, pact, ptimes = phrases(pre, SR)
+        res: dict = {"song": rep.get("song_name")}
+        # (a) partial loudness of the dry lead against backing + wet + harmonies
+        tr = loudness.partial_loudness_track(lead, masker, SR)
+        bl = loudness.block_masking_loss(tr, pact)
+        res["A_dry"] = {"blocks": bl, "loss_median": float(np.median(bl[:, 1])) if len(bl) else None}
+        # (b) wet / dry
+        hop = 512
+        m = min(len(pact), n // hop)
+        mask = np.repeat(pact[:m], hop)
+        e_l = float(np.mean(to_mono(lead)[: m * hop][mask] ** 2))
+        e_w = float(np.mean(to_mono(wet)[: m * hop][mask] ** 2))
+        e_w_all = float(np.mean(to_mono(wet) ** 2))
+        e_l_all = float(np.mean(to_mono(lead) ** 2))
+        dsl = space.phrase_end_decay(lead + wet, SR, ref_for_phrases=pre)
+        dsd = space.phrase_end_decay(lead, SR, ref_for_phrases=pre)
+        res["E_dry"] = {
+            "wet_dry_db_active": 10 * np.log10(e_w / e_l), "wet_dry_db_all": 10 * np.log10(e_w_all / e_l_all),
+            "decay_t60_lead_wet": dsl.decay_t60_s, "tail_ratio_lead_wet": dsl.tail_ratio_db,
+            "decay_t60_dry": dsd.decay_t60_s, "tail_ratio_dry": dsd.tail_ratio_db, "n_ends": dsl.n_ends,
+            "side_mid_lead_wet": space.side_mid_db(lead + wet, SR),
+            "harmony_bus_rel_db": 10 * np.log10((np.mean(to_mono(st["harmony_bus"]) ** 2) + 1e-20) / e_l_all),
+        }
+        # (c) consonants on the dry lead
+        feats = consonants.frame_features(pre, SR)
+        evs = consonants.detect_consonants(pre, SR, feats)
+        ms = consonants.measure_consonants(evs, lead, pre, masker, SR)
+        res["C_dry"] = [[c.event.kind, c.event.start, c.event.end, c.delta_ratio_db, c.vi_db, c.delta_crest_db, c.ratio_proc_db] for c in ms]
+        tr_d = consonants.deess_traces(evs, lead, pre, SR)
+        res["Q_dry"] = [[t.event.start, t.event.end, t.peak_hz, t.band_att_db, t.centroid_drop_pct, t.gain_dip_db, t.resid_db, t.lsd_db, t.d_attack_ms, t.d_dur_ms] for t in tr_d]
+        raw = raw_lead_vocal(rep, n, pre)
+        if raw is not None:
+            tr_r = consonants.deess_traces(evs, lead, raw, SR)
+            res["Q_dry_raw"] = [[t.event.start, t.event.end, t.peak_hz, t.band_att_db, t.centroid_drop_pct, t.gain_dip_db, t.resid_db, t.lsd_db, t.d_attack_ms, t.d_dur_ms] for t in tr_r]
+            tr_p = consonants.deess_traces(evs, pre, raw, SR)
+            res["Q_prep_raw"] = [[t.event.start, t.event.end, t.peak_hz, t.band_att_db, t.centroid_drop_pct, t.gain_dip_db, t.resid_db, t.lsd_db, t.d_attack_ms, t.d_dur_ms] for t in tr_p]
+        # D on lead + wet (harmony layers excluded exactly)
+        stp = steps.step_track(lead + wet, pre, SR)
+        res["D_dry"] = {"t": stp.times, "far": stp.far_score, "d_level": stp.d_level, "d_bright": stp.d_bright, "d_wet": stp.d_wet}
+        # ESTOI per pre phrase: reference = pre, degraded = master
+        from mix_automation.v8.metrics import intelligibility
+
+        master = load_ch_first(sig["master"])[:, :n]
+        psegs, _, _ = phrases(pre, SR)
+        res["I_estoi"] = intelligibility.estoi_segments(pre, master, SR, psegs)
+        return res
+
+    return _cached(f"debug_{render_dir.name}", key, run)
+
+
+def asr_cer(name: str, ref_audio: Path | np.ndarray, deg_audio: Path, segs_from: np.ndarray | None, transcriber, ref_id: str = "") -> dict:
+    """CER per chunk: transcripts of the reference (clean vocal) and of the degraded (mix)."""
+    from mix_automation.v8.metrics import intelligibility
+
+    key = _key("asr", ref_id or (_fid(ref_audio) if isinstance(ref_audio, Path) else ""), _fid(deg_audio))
+
+    def run() -> dict:
+        ref = to_mono(load_ch_first(ref_audio)) if isinstance(ref_audio, Path) else to_mono(ref_audio)
+        deg = to_mono(load_ch_first(deg_audio))
+        n = min(len(ref), len(deg))
+        ref, deg = ref[:n], deg[:n]
+        segs, _, _ = phrases(ref if segs_from is None else segs_from[:n], SR)
+        chunks = intelligibility.chunk_segments(segs)
+        rows = []
+        for c in chunks:
+            i0, i1 = int(max(0, c.start - 0.2) * SR), int((c.end + 0.2) * SR)
+            t_ref, _ = transcriber.transcribe(ref[i0:i1], SR)
+            t_deg, _ = transcriber.transcribe(deg[i0:i1], SR)
+            rows.append([c.start, c.end, intelligibility.cer(t_ref, t_deg), t_ref, t_deg])
+        return {"chunks": rows}
+
+    return _cached(f"asr_{name}", key, run)

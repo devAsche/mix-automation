@@ -35,15 +35,18 @@ from mix_automation.v8.metrics._core import (
 
 # Moore, Glasberg & Baer (1997): compressive exponent and constants for G = 1 (f >= 500 Hz).
 ALPHA_HI = 0.2
-A_HI = 4.72  # value for G = 1 (0 dB)
+A_HI = 4.72  # value for G = 1 (0 dB); deeuu/loudness gdBToA(): 4.72096
 # Loudness scaling constant C (ANSI S3.4-2007, which is the 1997 model with revised constants).
 C_SONE = 0.046871
 # Diotic presentation (both ears) = 2x the monaural loudness (ANSI S3.4-2007 sec. 3.6). With this a
 # 1 kHz 40 dB SPL tone reads ~1.1 sone (tests/test_v8_metrics.py).
 BINAURAL = 2.0
-# Values read off Moore et al. (1997): K (dB) of the masked-threshold rule E_THRN = K*E_NOISE + E_THRQ
-# (Fig. 9) and E_THRQ (dB, Fig. 3) at the frequencies below. Above 1 kHz K = -3 dB and above 500 Hz
-# E_THRQ = 3.73 dB as stated in the paper. Tabulation as used by deeuu/loudness (kdB, internalExcitation).
+# K (dB) of the masked-threshold rule E_THRN = K*E_NOISE + E_THRQ (Moore et al. 1997, Fig. 9) and the
+# internal excitation at absolute threshold E_THRQ (dB, Fig. 3), at the frequencies below. Source of the
+# numbers: the polynomial fits of those figures in deeuu/loudness (Ward 2014, GPL-3.0),
+# src/support/AuditoryTools.cpp, functions kdB() and internalExcitation(), evaluated at these
+# frequencies (K = -3 dB at >= 1 kHz, E_THRQ = 3.73 dB at >= 500 Hz as in the paper). Only the
+# numbers are quoted; no code was copied. Values in between are interpolated linearly in log f.
 _TAB_F = np.array([50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000], dtype=float)
 _TAB_K_DB = np.array([13.5, 10.04, 7.13, 4.92, 3.13, 1.54, 0.40, -0.51, -1.27, -1.88, -2.33, -2.67, -2.90, -3.0])
 _TAB_ETHRQ_DB = np.array([28.25, 23.71, 19.33, 15.73, 12.68, 9.95, 8.01, 6.50, 5.30, 4.39, 3.73, 3.73, 3.73, 3.73])
@@ -123,8 +126,9 @@ class LoudnessModel:
         # cochlear amplifier gain relative to 500 Hz, expressed through E_THRQ; A and alpha follow G.
         g_db = ethrq_db(np.array([500.0]))[0] - ethrq_c
         g = 10 ** (g_db / 10.0)
-        # A and alpha as functions of G (Moore et al. 1997, Fig. 5): A rises and alpha rises slightly
-        # as G falls. Polynomial fits of that figure (same tabulation source as above).
+        # A and alpha as functions of G (Moore et al. 1997, Fig. 5 / eqs. 4-5). Coefficients: the
+        # polynomial fits gdBToA() and gdBToAlpha() in deeuu/loudness src/support/AuditoryTools.cpp
+        # (numbers quoted only, rounded to 8 significant digits).
         a = np.where(
             g_db >= 0,
             A_HI,

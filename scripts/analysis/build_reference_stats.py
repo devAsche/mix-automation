@@ -34,6 +34,8 @@ PROC = ROOT / "data" / "processed"
 ARCHIVE = ROOT / "data" / "archive" / "gemini_v7_20261126"
 OUT = ROOT / "docs" / "evaluations" / "reference_stats.json"
 PCTS = (1, 5, 10, 25, 50, 75, 90, 95, 99)
+# Pro covers of the four songs found in the reference set (2026-11-26: only ラブ&デストロイ by 梓川).
+SAME_SONG_COVERS = {"ラブ&デストロイ": "Azusagawa_03_LoveAndDestroy_MI8k"}
 CONSONANT_SUBSET = 20
 
 V7_DIRS = {
@@ -145,6 +147,22 @@ def main() -> None:
             r = analyze_stem_pair(f"v7sep_{dname}", v, i)
             v7sep_rows[song] = scalars(r)
 
+    # Same-song references: the original (本家) separated with the same BS-RoFormer
+    # (original minus off-vocal does not null: different masters, residual -0.3..-7 dB in
+    # instrument-only frames, see metric_validation.md), and pro covers of the same song.
+    orig_rows, cover_rows = {}, {}
+    for song, dname in V7_DIRS.items():
+        stem = dname.split("_auto")[0]
+        v, i = PROC / "orig_stems" / f"orig_{stem}_vocals.wav", PROC / "orig_stems" / f"orig_{stem}_inst.wav"
+        if v.exists() and i.exists():
+            orig_rows[song] = scalars(analyze_stem_pair(f"orig_{stem}", v, i))
+    for song, slug in SAME_SONG_COVERS.items():
+        for folder in ("reference_stems", "roformer_stems"):
+            v, i = PROC / folder / f"{slug}_vocals.wav", PROC / folder / f"{slug}_inst.wav"
+            if v.exists() and i.exists():
+                cover_rows[song] = {"slug": slug} | scalars(analyze_stem_pair(f"pro_{slug}", v, i))
+                break
+
     keys = list(next(iter(pro_rows.values())).keys()) if pro_rows else []
     stats = {
         "schema_version": 1,
@@ -174,6 +192,8 @@ def main() -> None:
             },
         },
         "v7_separated": v7sep_rows,
+        "original": orig_rows,
+        "same_song_cover": cover_rows,
     }
     OUT.write_text(json.dumps(stats, ensure_ascii=False, indent=1), encoding="utf-8")
     sl = stats["pro"]["song_level"]

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 from pedalboard import Compressor, HighpassFilter, LowpassFilter, PeakFilter, Pedalboard
 from scipy import signal
 
@@ -349,6 +350,17 @@ def _measure_file_lufs(path: Path, sr: int = 44100) -> float | None:
     return round(val, 2) if np.isfinite(val) else None
 
 
+def _write_debug_stems(folder: Path, sr: int, **stems: np.ndarray) -> None:
+    """Write vocal-bus components exactly as summed into the 2mix (float32, no normalisation).
+
+    lead_dry + wet + harmony_bus + aux_layers == vocal bus fed to the master bus.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, audio in stems.items():
+        a = np.asarray(audio, dtype=np.float32)
+        sf.write(str(folder / f"{name}.wav"), a.T if a.ndim == 2 else a, sr, subtype="FLOAT")
+
+
 def run_full_automix_for_song(
     song_folder: Path,
     template_song_path: Path,
@@ -361,8 +373,13 @@ def run_full_automix_for_song(
     taste_style: str | None = "azusagawa",
     taste_weight: float = 0.25,
     enable_nectar_in_mix: bool = False,
+    export_debug_stems: bool = False,
 ) -> dict:
-    """Execute the complete v5 automated vocal mixing & true 1:1 Studio One 5 pipeline."""
+    """Execute the complete v5 automated vocal mixing & true 1:1 Studio One 5 pipeline.
+
+    `export_debug_stems` (v8 Phase 2 analysis aid) additionally writes the final vocal-bus components
+    to `<out>/debug_stems/` as float WAV; it does not change any audio or the master.
+    """
     song_name = song_folder.name
     safe_slug = song_name.replace("&", "and").replace(" ", "_")
     ts_norm = (taste_style or "").lower().strip()
@@ -876,6 +893,17 @@ def run_full_automix_for_song(
     final_master_2mix = apply_2mix_bus_glue_and_safe_master(
         inst_unmasked, vocal_bus_stereo, sr=target_sr, target_lufs=-9.0
     )
+
+    if export_debug_stems:
+        _write_debug_stems(
+            out_dir / "debug_stems",
+            target_sr,
+            lead_dry=lead_stereo,
+            wet=wet_total,
+            harmony_bus=harm_bus_processed,
+            aux_layers=aux_layers_stereo,
+            inst_unmasked=inst_unmasked,
+        )
 
     inst_raw_wav = media_dir / "00_offvocal_raw_backup.wav"
     inst_wav = media_dir / "01_offvocal_unmasked.wav"

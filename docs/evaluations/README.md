@@ -1,11 +1,13 @@
 # ユーザー評価（正解データ）
 
-v8 の「正解」は、ユーザー（凌）の耳による評価・自 MIX・Studio One での手直し履歴を主とします（[V8_PLAN.md](../V8_PLAN.md)）。
+v8 の「正解」は、ユーザー（凌）の耳による評価と Studio One での手直し履歴です。基準は同じオケに乗った本家の声、プロ音源は上下限の参考です（[V8_PLAN.md](../V8_PLAN.md)）。
+自 MIX は正解・上限・否定例のどれにも使いません（2026-11-26 凌「二つともそんなに納得してない、これを天井にはしないで」、`2026-11-26_スレッド発言.txt`）。
 このフォルダは、そのうち耳による評価を保存・構造化する場所です。
 
 | ファイル | 内容 |
 |---|---|
 | `YYYY-MM-DD_曲の評価.txt` | ユーザーのメモの原文（一字一句そのまま。編集しない） |
+| `YYYY-MM-DD_スレッド発言.txt` | プロジェクトのスレッドでの発言の原文（同上）。issues.yaml の項目は `source:` でこのファイルを指す |
 | `issues.yaml` | 原文を 1 指摘 = 1 項目に構造化したもの。評価指標の検証（指摘を当てられるか）に使う |
 | `metric_validation.md` | Phase 2: 指摘 × 指標の判定表・hit 率・誤報・v7 の合否（`scripts/analysis/evaluate_issues.py --write-md` の出力） |
 | `reference_stats.json` | Phase 2: 指標の参照分布（プロ 87 曲の分離ステム・自 MIX 2 曲・v7 分離版、`scripts/analysis/build_reference_stats.py`） |
@@ -36,14 +38,15 @@ v8 の「正解」は、ユーザー（凌）の耳による評価・自 MIX・S
 | `polarity` |  | 良い評価（守るべき点）は `positive`。既定は問題指摘 |
 | `note` |  | 補足（解釈、同じ指摘の重複など） |
 | `quote` | ○ | ユーザーの言葉そのまま。複数行をまとめたときは ` / ` で区切る |
+| `source` |  | 原文ファイル（既定はファイル先頭の `source`）。別の原文から取った項目だけ書く |
 
 ## 分類（category）
 
 | category | 定義 | 主な direction |
 |---|---|---|
-| `sibilance` | サ行・シ・チなど歯擦音の量。潰れて聞こえない／強すぎて刺さる | `crushed`, `too_strong` |
+| `sibilance` | サ行・シ・チなど歯擦音。潰れ（crushed）= ディエッサーをかけすぎたような音（舌足らず、サ行の芯が抜ける。凌の説明「ディエッサーかけすぎた感じの音」2026-11-26）／強すぎて刺さる | `crushed`, `too_strong` |
 | `consonant_attack` | 破裂音・語頭のアタック（タ・カ・パ、アドリブの頭など）の強さ | `crushed`, `too_strong` |
-| `step_change` | ある時点を境に、声の距離・音量・質感が一段変わる（区間切替の段差） | `too_far`, `too_close`, `louder`, `quieter` |
+| `step_change` | ある時点を境に、声の距離・音量・質感が一段変わる（区間切替の段差） | `too_far`, `too_close`, `louder`, `quieter`, `timbre` |
 | `buried` | 声がオケに負けて聞き取れない（音量・帯域のマスキング） | `buried` |
 | `sits_on_top` | 声がオケの上に載っていて混ざっていない（分離しすぎ） | `not_blended` |
 | `thin_light` | 声が軽い・細い・中域が足りない（芯・密度の不足） | `too_light`, `mid_scooped` |
@@ -53,6 +56,7 @@ v8 の「正解」は、ユーザー（凌）の耳による評価・自 MIX・S
 | `delay_offbeat` | ディレイ（飛ばし含む）が曲の拍に合っていない | `off_grid` |
 | `fx_dropout` | 演出エフェクト（ラジオボイス等）が語尾などで抜けている・途切れる | `missing_fx` |
 | `harmony_prominent` | ハモリ（特に生成ハモリ）の主張が強すぎる・生成感が目立つ | `too_strong` |
+| `harmony_missing` | あるべきハモリ（や演出の声）が付いていない | `missing` |
 | `distance` | 声の距離感そのもの | `ok`, `too_far`, `too_close` |
 
 新しい分類が必要になったら、この表と `tests/test_evaluations.py` の `CATEGORIES` を同時に更新してください。
