@@ -89,14 +89,16 @@ def inspect_plugin(plugin_key: str) -> None:
 @app.command("build-references")
 def build_references(
     references_dir: Path = typer.Option(PROJECT_ROOT / "data" / "references", help="References root"),
+    inbox_dir: Path = typer.Option(PROJECT_ROOT / "youtube_references", help="Optional muse inbox root to quality-gate & include"),
     cache_dir: Path = typer.Option(PROJECT_ROOT / "data" / "processed" / "roformer_stems", help="BS-RoFormer stem cache"),
     out_json: Path = typer.Option(DEFAULT_PROFILES_JSON, help="Output target profiles JSON"),
 ) -> None:
-    """Separate all 35 pro reference tracks on GPU via BS-RoFormer and build v2 stratified profiles."""
+    """Separate all curated + quality-gated inbox pro reference tracks on GPU via BS-RoFormer and build target profiles."""
     from mix_automation.analysis.reference_extractor import build_all_reference_profiles
 
-    res = build_all_reference_profiles(references_dir, cache_dir, out_json)
-    console.print(f"[green]Built v3 psychoacoustic target profiles from {res['num_reference_songs']} songs -> {out_json}[/green]")
+    extra_roots = [inbox_dir] if inbox_dir.exists() else None
+    res = build_all_reference_profiles(references_dir, cache_dir, out_json, extra_inbox_roots=extra_roots)
+    console.print(f"[green]Built psychoacoustic target profiles from {res['num_reference_songs']} songs -> {out_json}[/green]")
 
 
 @app.command("mix")
@@ -342,8 +344,9 @@ def benchmark_ab(
     table.add_column("Song / Run", style="cyan")
     table.add_column("K-LUFS Err", justify="center")
     table.add_column("No Scoop", justify="center")
+    table.add_column("No Muffling", justify="center")
     table.add_column("No HF Sizzle", justify="center")
-    table.add_column("S1 Zero-JUCE", justify="center")
+    table.add_column("S1 Sync+Presets", justify="center")
     table.add_column("Overall", justify="center")
 
     def _badge(ok: bool, detail: str) -> str:
@@ -357,8 +360,9 @@ def benchmark_ab(
             s["run_id"],
             _badge(bool(hc.get("klufs_error_db")), f"{hm.get('klufs_abs_error_db', 0.0):.2f}dB"),
             _badge(bool(hc.get("no_lower_mid_scoop")), f"{hm.get('achieved_body_warmth', 0.0):.1f}"),
+            _badge(bool(hc.get("no_vocal_muffling", True)), f"sib={hm.get('achieved_sibilance', 0.0):.1f}"),
             _badge(bool(hc.get("no_hf_sizzle")), f"{hm.get('achieved_air_sheen', 0.0):.1f}dB"),
-            _badge(bool(hc.get("studio_one_zero_juce_leak")), f"leak={hm.get('juce_leak_count', '?')}"),
+            _badge(bool(hc.get("studio_one_zero_juce_leak")), f"leak={hm.get('juce_leak_count', '?')},sync={hm.get('song_sync_locked', '?')}"),
             overall,
         )
 

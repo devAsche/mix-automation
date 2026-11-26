@@ -52,9 +52,9 @@ class PreprocessConfig:
     rider_max_boost_db: float = 4.0
     rider_max_cut_db: float = -4.0
     rider_backing_follow: float = 0.35
-    target_deess_sib_gr_db: float = 2.6   # Self-calibrated GR ONLY on 5.6-9.5kHz sibilant bursts!
-    deess_cutoff_hz: float = 5800.0
-    soothe_depth_db: float = 0.6          # Light Stage-1 prep (primary 4-band Soothe2 now runs Post-Comp/Sat!)
+    target_deess_sib_gr_db: float = 1.5   # Gentle peak-only GR on 5.8-9.8kHz sibilant bursts (protects crisp diction!)
+    deess_cutoff_hz: float = 5900.0
+    soothe_depth_db: float = 0.0          # Zero Stage-1 Soothe2 double-dipping (Post-Comp Soothe2 handles polish!)
     target_staged_lufs: float = -18.0
 
 
@@ -226,9 +226,18 @@ def stage_vocal_loudness(mono_vocal: np.ndarray, sr: int, target_lufs: float = -
     staged = mono_vocal * (10.0 ** (gain_db / 20.0))
 
     peak = float(np.max(np.abs(staged)))
-    max_lin = 10.0 ** (-1.5 / 20.0)
+    max_lin = 10.0 ** (-1.2 / 20.0)
     if peak > max_lin:
-        staged *= max_lin / peak
+        # Transparent soft-ceiling knee ONLY above -2.5 dBFS (0.75) so 1-2 rogue plosive samples
+        # never pull the entire vocal down by 4+ LUFS below -18 LUFS calibration!
+        knee = 0.75
+        abs_s = np.abs(staged)
+        over = abs_s > knee
+        if np.any(over):
+            head = max_lin - knee
+            compressed = knee + head * np.tanh((abs_s[over] - knee) / max(head, 1e-4))
+            staged = staged.copy()
+            staged[over] = np.sign(staged[over]) * compressed
     final_lufs = float(meter.integrated_loudness(staged.astype(np.float64)))
     return staged.astype(np.float32), round(final_lufs, 2)
 
@@ -274,17 +283,19 @@ def run_self_calibrating_deess_and_soothe2(
         sib_db = 20.0 * np.log10(sib_f)
         atk_db = 20.0 * np.log10(atk_f)
 
-        # Sibilant frames: top 6% sibilant bursts where 5.6-9.8kHz stands out strongly relative to mid-attack
+        # Sibilant frames: top 6% sibilant bursts where 5.8-9.8kHz genuinely protrudes relative to mid-attack
         sib_thresh_lvl = float(np.percentile(sib_db, 94))
-        sib_mask = (sib_db >= sib_thresh_lvl - 2.0) & ((sib_db - atk_db) > -11.0)
+        sib_vs_atk_p95 = float(np.percentile(sib_db - atk_db, 95))
+        sib_mask = (sib_db >= sib_thresh_lvl - 2.0) & ((sib_db - atk_db) > -7.5)
         atk_mask = atk_db >= (float(np.percentile(atk_db, 92)) - 12.0)
 
-        if np.sum(sib_mask) >= 3:
+        # Only engage Stage-1 RX10 De-ess when raw vocal actually has protruding sibilants (sib_vs_atk_p95 >= -6.2 dB)!
+        if sib_vs_atk_p95 >= -6.2 and np.sum(sib_mask) >= 3:
             deess = load_plugin(str(pmap["rx10_deess"].loadable_path))
             st_probe = np.stack([probe, probe], axis=0).astype(np.float32)
 
-            # 6-step 1D bisection over relative threshold [-20.0 .. -0.2] to hit ~2.4 dB GR ONLY on sibilants!
-            lo_t, hi_t = -20.0, -0.2
+            # 6-step 1D bisection bounded to gentle [-10.5 .. -0.5] dB (NEVER clamps down to -18.8 dB!)
+            lo_t, hi_t = -10.5, -0.5
             best_t = -4.0
             best_err = 999.0
             best_gr = 0.0

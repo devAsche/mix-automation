@@ -349,10 +349,12 @@ _VST3_DUMP_WORKER_SCRIPT = (
     "from pedalboard import load_plugin\n"
     "from mix_automation.dsp.vst3_adapter import (\n"
     "    configure_clean_plate_r2, configure_early_room_phoenix,\n"
+    "    configure_khs_dual_delay_spot, configure_mautopitch_hard_tune,\n"
     "    configure_persistent_q_5band, configure_persistent_q_harmony_hollow,\n"
     "    configure_persistent_q_precision, configure_slick_eq,\n"
     "    configure_softube_saturation, configure_softube_vca,\n"
-    "    configure_soothe2_precision, configure_uad_la2a, configure_uad_pultec,\n"
+    "    configure_soothe2_precision, configure_trash2_vocal_grit,\n"
+    "    configure_uad_la2a, configure_uad_pultec,\n"
     "    configure_vocalsynth2_radio, set_vst3_param_strict\n"
     ")\n"
     "spec = json.loads(sys.argv[1])\n"
@@ -384,6 +386,9 @@ _VST3_DUMP_WORKER_SCRIPT = (
     "elif fn == 'phoenix': configure_early_room_phoenix(p, **kw)\n"
     "elif fn == 'r2': configure_clean_plate_r2(p, **kw)\n"
     "elif fn == 'vs2_radio': configure_vocalsynth2_radio(p, **kw)\n"
+    "elif fn == 'trash2': configure_trash2_vocal_grit(p, **kw)\n"
+    "elif fn == 'mautopitch': configure_mautopitch_hard_tune(p, **kw)\n"
+    "elif fn == 'khs_delay': configure_khs_dual_delay_spot(p, **kw)\n"
     "else:\n"
     "    for k, v in kw.items():\n"
     "        if k in p.parameters: set_vst3_param_strict(p, k, v)\n"
@@ -547,12 +552,12 @@ def export_template_vst3_states(params: VocalChainParams, bpm: float) -> dict[st
         None,
         "vca",
         {
-            "threshold_db": -27.0,
+            "threshold_db": -26.0,
             "ratio": 6.0,
             "attack_norm": 0.25,   # Ultra-fast onset crush ("語頭をつぶす")!
             "release_norm": 3.40,  # Slow smooth release keeping harmony glued behind lead!
             "sc_hpf_hz": 160.0,
-            "output_db": 4.2,
+            "output_db": 1.4,
             "dry_wet": 100.0,
             "output_drive": 0.0,
         },
@@ -707,17 +712,13 @@ def export_stage3_fx_vst3_states(
             s1_specs["izotope_trash2"],
             str(pmap["izotope_trash2"].loadable_path),
             None,
-            None,
+            "trash2",
             {
-                "global_bypass": False,
-                "trash_module_bypass": False,
-                "trash_bypass": False,
-                "trash_stg1_enable": True,
-                "trash_stg1_drive": 3.6,
-                "trash_stg1_filter_enable": True,
-                "trash_stg1_filter_low_freq": 380.0,
-                "trash_stg1_filter_high_freq": 4200.0,
-                "global_mix": 55.0,
+                "drive": 3.4,
+                "style": 0.5,
+                "wet_mix": 48.0,
+                "low_cut_hz": 380.0,
+                "high_cut_hz": 4200.0,
             },
         )
         if t2_pre:
@@ -849,7 +850,7 @@ def build_studio_one_song(
                 continue
             start_beats = _sec_to_beat(s_sec)
             len_beats = max(0.01, _sec_to_beat(e_sec) - start_beats)
-            offset_beats = s_sec / sec_per_beat
+            offset_beats = start_beats
             lin_level = _db_to_s1_fader_gain(float(cg_db))
             ev_name = _safe_xml_attr(str(ev_label))
             main_events_xml.append(
@@ -867,7 +868,7 @@ def build_studio_one_song(
                 continue
             start_beats = _sec_to_beat(s_sec)
             len_beats = max(0.01, _sec_to_beat(e_sec) - start_beats)
-            offset_beats = s_sec / sec_per_beat
+            offset_beats = start_beats
             lin_level = _db_to_s1_fader_gain(sec.clip_gain_db)
             ev_name = _safe_xml_attr(f"main_{sec.label}")
             main_events_xml.append(
@@ -886,6 +887,11 @@ def build_studio_one_song(
             f'\t\t\t\t\t</AudioEvent>'
         )
 
+    audio_tempo_segs_xml = "\n".join(
+        f'\t\t\t\t\t<AudioTempoMapSegment offset="{(0 if idx_t == 0 else f"{b_t:.6f}")}" tempo="{60.0 / bpm_t:.16f}"/>'
+        for idx_t, (b_t, bpm_t) in enumerate(norm_tempo_segs)
+    )
+
     clip_xml_blocks: list[str] = []
     for rec in clip_records:
         use_cnt = max(1, len(main_events_xml)) if rec["key"] == "mainvocal" else 1
@@ -894,7 +900,7 @@ def build_studio_one_song(
             f'\t\t\t\t<Url x:id="path" type="1" url="{rec["url"]}"/>\n'
             f'\t\t\t\t<DateTime x:id="recordTime" time="{now_str}"/>\n'
             f'\t\t\t\t<AudioTempoMap x:id="tempoMap" tempoApproved="1">\n'
-            f'\t\t\t\t\t<AudioTempoMapSegment offset="0" tempo="{sec_per_beat:.16f}"/>\n'
+            f'{audio_tempo_segs_xml}\n'
             f'\t\t\t\t</AudioTempoMap>\n'
             f'\t\t\t\t<Attributes x:id="format" frameCount="{rec["frames"]}" sampleRate="{rec["sr"]}" '
             f'numChannels="{rec["channels"]}" bitDepth="24"/>\n'
@@ -962,6 +968,9 @@ def build_studio_one_song(
     )
 
     song_xml_out = song_xml_str
+    # Lock ALL template MediaTracks (`mainvocal`, `harmvocal`, `harmvocal2`) to `tempoFollow="0"` (Don't Follow)
+    # so Studio One NEVER Elastique time-stretches or warps recorded stems!
+    song_xml_out = song_xml_out.replace('tempoFollow="2"', 'tempoFollow="0"').replace('tempoFollow="1"', 'tempoFollow="0"')
     song_xml_out = song_xml_out.replace('sampleRate="44100"', f'sampleRate="{sr}"')
     song_xml_out = song_xml_out.replace('length="300"', f'length="{max_dur_sec:.2f}"')
     song_xml_out = re.sub(
@@ -1040,7 +1049,7 @@ def build_studio_one_song(
         safe_spec_name = _safe_xml_attr(spec.name)
 
         extra_media_tracks_xml.append(
-            f'\t\t\t<MediaTrack mediaType="Audio" tempoFollow="2" materialMode="0" layersFollow="1" '
+            f'\t\t\t<MediaTrack mediaType="Audio" tempoFollow="0" materialMode="0" layersFollow="1" '
             f'version="1" trackID="{track_uid}" timeFormat="2" name="{safe_spec_name}" color="{spec.color}">\n'
             f'\t\t\t\t<SpeakerSetup x:id="trackFormat" type="{spk_type}"/>\n'
             f'\t\t\t\t<UID x:id="channelID" uid="{chan_uid}"/>\n'
@@ -1274,11 +1283,11 @@ def build_studio_one_song(
         h_lin = _db_to_s1_fader_gain(harmony_fader_db)
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel02" label="harmvocal"',
-            f'<AudioTrackChannel gain="{h_lin}" pan="0.22" name="Channel02" label="harmvocal"',
+            f'<AudioTrackChannel gain="{h_lin}" pan="0.29" name="Channel02" label="harmvocal"',
         )
         mixer_xml_out = mixer_xml_out.replace(
             '<AudioTrackChannel gain="1" pan="0.5" name="Channel03" label="harmvocal2"',
-            f'<AudioTrackChannel gain="{h_lin}" pan="0.78" name="Channel03" label="harmvocal2"',
+            f'<AudioTrackChannel gain="{h_lin}" pan="0.71" name="Channel03" label="harmvocal2"',
         )
         doub_lv = _db_to_s1_fader_gain(chain_params.doubler_send_db)
         dly_lv = _db_to_s1_fader_gain(chain_params.tempo_delay_send_db)

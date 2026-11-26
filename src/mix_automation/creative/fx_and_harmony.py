@@ -24,6 +24,10 @@ Solves every v1 creative flaw identified during listening evaluation:
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,7 +57,6 @@ from mix_automation.dsp.vst3_adapter import (
     configure_khs_dual_delay_spot,
     configure_mautopitch_hard_tune,
     configure_trash2_vocal_grit,
-    configure_vocalsynth2_biovox_gloss,
     configure_vocalsynth2_radio,
 )
 from mix_automation.dsp.vst3_optimizer import SongSection
@@ -323,7 +326,8 @@ def detect_creative_fx_events(
                     )
                 )
 
-        # 2b. Distortion Grit Detection (1.2-4.2 kHz flatness & harmonic saturation ratio jump >= +6.5 dB, non-radio)
+        # 2b. Distortion Grit Detection (requires BOTH inter-harmonic noise/clipping flatness jump AND saturation jump,
+        # preventing clean Vocaloid high-register chorus belts like GUMI/Flower from triggering false distortion!)
         grit_m = (freqs >= 1200.0) & (freqs <= 4200.0)
         fund_m = (freqs >= 180.0) & (freqs <= 650.0)
         if np.any(grit_m) and np.any(fund_m):
@@ -335,18 +339,21 @@ def detect_creative_fx_events(
                 (np.sum(P_ref[grit_m], axis=0) + 1e-12) / (np.sum(P_ref[fund_m], axis=0) + 1e-12)
             )
             grit_score_db = flatness_db + sat_ratio_db
+            med_flat = float(np.median(flatness_db[act_stft]))
             med_sat = float(np.median(sat_ratio_db[act_stft]))
             med_grit = float(np.median(grit_score_db[act_stft]))
             grit_mask = (
                 act_stft
                 & (~radio_mask)
-                & ((sat_ratio_db - med_sat) >= 3.5)
-                & ((grit_score_db - med_grit) >= 6.5)
+                & (flatness_db >= -5.5)
+                & ((flatness_db - med_flat) >= 3.8)
+                & ((sat_ratio_db - med_sat) >= 4.0)
+                & ((grit_score_db - med_grit) >= 8.5)
             )
             g_labels, g_num = ndimage.label(ndimage.binary_closing(grit_mask, structure=np.ones(5)))
             for g_i in range(1, g_num + 1):
                 g_idxs = np.where(g_labels == g_i)[0]
-                if len(g_idxs) * hop_stft >= 0.80:
+                if len(g_idxs) * hop_stft >= 1.00:
                     t0 = round(float(g_idxs[0] * hop_stft), 2)
                     t1 = round(float((g_idxs[-1] + 1) * hop_stft), 2)
                     ev_db = round(float(np.mean(grit_score_db[g_idxs] - med_grit)), 2)
@@ -355,9 +362,9 @@ def detect_creative_fx_events(
                             fx_type="distortion_grit",
                             start_sec=t0,
                             end_sec=t1,
-                            confidence=round(float(np.clip(0.55 + (ev_db - 6.5) * 0.04, 0.60, 0.94)), 2),
+                            confidence=round(float(np.clip(0.55 + (ev_db - 8.5) * 0.04, 0.60, 0.94)), 2),
                             ref_evidence_db=ev_db,
-                            reason=f"本家ボーカルにて 1.2-4.2kHz 倍音歪み/サチュレーション +{ev_db:.1f}dB を検出",
+                            reason=f"本家ボーカルにて 1.2-4.2kHz 非整数倍音歪み/クリッピング +{ev_db:.1f}dB を検出",
                             lyric_snippet=find_lyric_snippet_at_span(lyrics_alignment, t0, t1),
                         )
                     )
@@ -696,21 +703,61 @@ def render_spot_delay_throw_stem(
     return wet_out.astype(np.float32)
 
 
+_VS2_GLOSS_SUBPROCESS_SCRIPT = """
+import json, sys
+import numpy as np
+from pedalboard import load_plugin
+from mix_automation.dsp.vst3_adapter import configure_vocalsynth2_biovox_gloss
+
+cfg = json.loads(sys.argv[1])
+harm = np.load(cfg["in_npy"])
+vs = load_plugin(cfg["vst_path"])
+configure_vocalsynth2_biovox_gloss(vs, wet_mix=float(cfg["wet_mix"]), breath=16.0, clarity=76.0)
+sr = int(cfg["sr"])
+chunk = sr * 30
+n = harm.shape[1]
+out = np.zeros_like(harm, dtype=np.float32)
+for s0 in range(0, n, chunk):
+    s1 = min(n, s0 + chunk)
+    out[:, s0:s1] = vs(harm[:, s0:s1].astype(np.float32), sr, reset=(s0 == 0)).astype(np.float32)[:, : s1 - s0]
+np.save(cfg["out_npy"], out)
+"""
+
+
 def apply_vocalsynth2_harmony_gloss(
     harm_stereo: np.ndarray,
     sr: int,
     wet_mix: float = 12.0,
 ) -> np.ndarray:
-    """Optionally polish synthetic harmonies with licensed iZotope VocalSynth 2 Biovox vocal-tract gloss."""
+    """Polish synthetic harmonies with licensed iZotope VocalSynth 2 Biovox in an isolated subprocess."""
     pmap = get_plugin_map()
     if wet_mix <= 0.5 or "izotope_vocalsynth2" not in pmap or not pmap["izotope_vocalsynth2"].exists:
         return harm_stereo
     try:
-        vs = load_plugin(str(pmap["izotope_vocalsynth2"].loadable_path))
-        configure_vocalsynth2_biovox_gloss(vs, wet_mix=wet_mix, breath=16.0, clarity=76.0)
-        y = vs(harm_stereo.astype(np.float32), sr, reset=True)
-        if float(np.max(np.abs(y))) > 1e-5:
-            return y.astype(np.float32)
+        with tempfile.TemporaryDirectory(prefix="automix_vs2_") as tmp_d:
+            td = Path(tmp_d)
+            in_p = td / "in.npy"
+            out_p = td / "out.npy"
+            np.save(str(in_p), harm_stereo.astype(np.float32))
+            payload = json.dumps(
+                {
+                    "vst_path": str(pmap["izotope_vocalsynth2"].loadable_path),
+                    "in_npy": str(in_p),
+                    "out_npy": str(out_p),
+                    "sr": int(sr),
+                    "wet_mix": float(wet_mix),
+                }
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", "import json\n" + _VS2_GLOSS_SUBPROCESS_SCRIPT, payload],
+                check=False,
+                capture_output=True,
+                timeout=90,
+            )
+            if proc.returncode == 0 and out_p.exists():
+                y = np.load(str(out_p))
+                if float(np.max(np.abs(y))) > 1e-5:
+                    return y.astype(np.float32)
     except Exception:
         pass
     return harm_stereo
@@ -911,69 +958,108 @@ def _compute_sliding_chord_and_scale_profiles(
     return chord_chroma, local_scale
 
 
+_NECTAR3_SUBPROCESS_SCRIPT = """
+import json, sys
+from pathlib import Path
+import numpy as np
+from pedalboard import load_plugin
+
+cfg = json.loads(sys.argv[1])
+lead_mono = np.load(cfg["in_npy"])
+sr = int(cfg["sr"])
+intervals = cfg["intervals"]
+out_dir = Path(cfg["out_dir"])
+
+nectar = load_plugin(cfg["vst_path"])
+for bp_key in (
+    "gate_bypass", "eq_1_bypass", "eq_2_bypass", "comp_1_bypass", "comp_2_bypass",
+    "deesser_bypass", "delay_bypass", "saturation_bypass", "reverb_bypass",
+    "dimension_bypass", "alm_bypass", "limiter_bypass", "unmask_bypass",
+):
+    if bp_key in nectar.parameters:
+        setattr(nectar, bp_key, True)
+
+nectar.global_bypass = False
+nectar.harmony_bypass = False
+nectar.harmony_solo_harmony = True
+nectar.harmony_wet_mix = 100.0
+nectar.pitch_formant_preservation = True
+nectar.pitch_scale = "Chromatic"
+nectar.harmony_pitch_correction = 0.0
+nectar.harmony_time_variation = 12.0
+nectar.harmony_pitch_variation = 8.0
+nectar.harmony_low_shelf_freq = 220.0
+nectar.harmony_low_shelf_gain = -4.0
+nectar.harmony_high_shelf_freq = 5200.0
+nectar.harmony_high_shelf_gain = -2.0
+
+for v_idx in range(1, 9):
+    en_k = f"harmony_v{v_idx}_enable"
+    if en_k in nectar.parameters:
+        setattr(nectar, en_k, v_idx == 1)
+nectar.harmony_v1_mute = False
+nectar.harmony_v1_gain_db = 0.0
+nectar.harmony_v1_pan = 0.0
+nectar.harmony_v1_delay_ms = 5.0
+
+n = len(lead_mono)
+chunk = sr * 30
+for st_int in intervals:
+    nectar.harmony_v1_chrom_int = f"{int(st_int):+d}"
+    buf = np.zeros(n, dtype=np.float32)
+    for s0 in range(0, n, chunk):
+        s1 = min(n, s0 + chunk)
+        seg = lead_mono[s0:s1]
+        if float(np.max(np.abs(seg))) < 1e-5:
+            continue
+        st_seg = np.stack([seg, seg], axis=0).astype(np.float32)
+        y_st = nectar(st_seg, sr, reset=True)
+        buf[s0:s1] = np.mean(y_st, axis=0, dtype=np.float32)[: s1 - s0]
+    np.save(str(out_dir / f"cand_{int(st_int)}.npy"), buf)
+"""
+
+
 def _render_candidate_intervals_via_nectar3(
     lead_mono: np.ndarray,
     sr: int,
     intervals: tuple[int, ...],
     use_vst3: bool = True,
 ) -> tuple[dict[int, np.ndarray], str]:
-    """Render candidate chromatic intervals (`+3`, `+4`, `+5`, `-3`, `-4`, `-5`) via genuine Nectar 3 VST3."""
+    """Render candidate chromatic intervals (`+3`, `+4`, `+5`, `-3`, `-4`, `-5`) via isolated Nectar 3 subprocess."""
+    import json
+
     pmap = get_plugin_map()
     candidates: dict[int, np.ndarray] = {}
 
     if use_vst3 and pmap["izotope_nectar3"].exists and len(lead_mono) >= sr * 2:
         try:
-            nectar = load_plugin(str(pmap["izotope_nectar3"].loadable_path))
-            # Bypass all non-harmony modules so Nectar 3 runs pure Formant-Preserving Solo Harmony
-            for bp_key in (
-                "gate_bypass",
-                "eq_1_bypass",
-                "eq_2_bypass",
-                "comp_1_bypass",
-                "comp_2_bypass",
-                "deesser_bypass",
-                "delay_bypass",
-                "saturation_bypass",
-                "reverb_bypass",
-                "dimension_bypass",
-                "alm_bypass",
-                "limiter_bypass",
-                "unmask_bypass",
-            ):
-                if bp_key in nectar.parameters:
-                    setattr(nectar, bp_key, True)
-
-            nectar.global_bypass = False
-            nectar.harmony_bypass = False
-            nectar.harmony_solo_harmony = True
-            nectar.harmony_wet_mix = 100.0
-            nectar.pitch_formant_preservation = True
-            nectar.pitch_scale = "Chromatic"
-            nectar.harmony_pitch_correction = 0.0
-            nectar.harmony_time_variation = 12.0
-            nectar.harmony_pitch_variation = 8.0
-            nectar.harmony_low_shelf_freq = 220.0
-            nectar.harmony_low_shelf_gain = -4.0
-            nectar.harmony_high_shelf_freq = 5200.0
-            nectar.harmony_high_shelf_gain = -2.0
-
-            for v_idx in range(1, 9):
-                en_k = f"harmony_v{v_idx}_enable"
-                if en_k in nectar.parameters:
-                    setattr(nectar, en_k, v_idx == 1)
-            nectar.harmony_v1_mute = False
-            nectar.harmony_v1_gain_db = 0.0
-            nectar.harmony_v1_pan = 0.0
-            nectar.harmony_v1_delay_ms = 5.0
-
-            st_in = np.stack([lead_mono, lead_mono], axis=0).astype(np.float32)
-            for st_int in intervals:
-                label = f"{st_int:+d}"
-                nectar.harmony_v1_chrom_int = label
-                st_out = nectar(st_in, sr, reset=True)
-                candidates[st_int] = np.mean(st_out, axis=0, dtype=np.float32)[: len(lead_mono)]
-
-            return candidates, "izotope_nectar3_vst3"
+            with tempfile.TemporaryDirectory(prefix="automix_nectar3_") as tmp_d:
+                td = Path(tmp_d)
+                in_p = td / "lead.npy"
+                np.save(str(in_p), lead_mono.astype(np.float32))
+                payload = json.dumps(
+                    {
+                        "vst_path": str(pmap["izotope_nectar3"].loadable_path),
+                        "in_npy": str(in_p),
+                        "out_dir": str(td),
+                        "sr": int(sr),
+                        "intervals": [int(x) for x in intervals],
+                    }
+                )
+                proc = subprocess.run(
+                    [sys.executable, "-c", _NECTAR3_SUBPROCESS_SCRIPT, payload],
+                    check=False,
+                    capture_output=True,
+                    timeout=180,
+                )
+                if proc.returncode == 0:
+                    for st_int in intervals:
+                        cp = td / f"cand_{int(st_int)}.npy"
+                        if cp.exists():
+                            candidates[int(st_int)] = np.load(str(cp)).astype(np.float32)[: len(lead_mono)]
+                    if len(candidates) == len(intervals):
+                        return candidates, "izotope_nectar3_vst3"
+                candidates.clear()
         except Exception:
             candidates.clear()
 

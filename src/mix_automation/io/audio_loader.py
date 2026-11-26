@@ -437,19 +437,20 @@ def consolidate_vocal_stem_folder(
     sub_st = _stage_leveled_stereo_group(role_buckets["sub_octave"], [-0.25, +0.25])
     sup_st = _stage_leveled_stereo_group(role_buckets["super_octave"], [-0.42, +0.42], micro_haas_ms=4.0)
 
-    # Stage Main Harmonies (+3/-3/harm) SEPARATELY from Choirs (choir1..N) so v6 can apply
-    # distinct Pro Hollow-Core + Transient-Crushed Main Harmony processing vs Lush Wide Choir Halo!
+    # Stage Main Harmonies (+3/-3/harm) SEPARATELY from Choirs (choir1..N):
+    # Main harmonies use focused pans (±0.38..0.52) with 0ms Haas so they lock tightly inside the lead vocal
+    # without binaural detachment; Choirs get lush wide ensemble panning (±0.38..0.88) + 8.5ms Haas!
     main_harm_parts: list[np.ndarray] = []
     if role_buckets["upper_harm"]:
-        up_st = _stage_leveled_stereo_group(role_buckets["upper_harm"], [-0.58, +0.58, -0.74, +0.74], micro_haas_ms=7.0)
+        up_st = _stage_leveled_stereo_group(role_buckets["upper_harm"], [-0.40, +0.40, -0.52, +0.52], micro_haas_ms=0.0)
         if up_st is not None:
             main_harm_parts.append(up_st)
     if role_buckets["lower_harm"]:
-        lo_st = _stage_leveled_stereo_group(role_buckets["lower_harm"], [+0.56, -0.56, +0.72, -0.72], micro_haas_ms=7.5)
+        lo_st = _stage_leveled_stereo_group(role_buckets["lower_harm"], [+0.38, -0.38, +0.50, -0.50], micro_haas_ms=0.0)
         if lo_st is not None:
             main_harm_parts.append(lo_st)
     if role_buckets["harmony"]:
-        # If there is only 1 mono harmony stem (e.g. Fall in Love `harm1.wav`), wrap symmetrically L/R via 11ms Haas
+        # If there is only 1 mono harmony stem (e.g. Fall in Love `harm1.wav`), wrap symmetrically L/R via 9ms Haas
         # rather than hard-panning lopsided to one ear!
         if len(role_buckets["harmony"]) == 1 and not role_buckets["harmony"][0]["is_true_stereo"]:
             rec0 = role_buckets["harmony"][0]
@@ -458,10 +459,10 @@ def consolidate_vocal_stem_folder(
             if float(np.max(np.abs(m0))) >= 1e-5:
                 sym = np.zeros((2, max_len), dtype=np.float32)
                 sym[0, :n0] = m0
-                sym[1, :n0] = _delay_samples(m0, int(target_sr * 0.011)) * 0.92
+                sym[1, :n0] = _delay_samples(m0, int(target_sr * 0.009)) * 0.94
                 main_harm_parts.append(sym)
         else:
-            gen_st = _stage_leveled_stereo_group(role_buckets["harmony"], [-0.62, +0.62, -0.78, +0.78], micro_haas_ms=6.5)
+            gen_st = _stage_leveled_stereo_group(role_buckets["harmony"], [-0.42, +0.42, -0.54, +0.54], micro_haas_ms=0.0)
             if gen_st is not None:
                 main_harm_parts.append(gen_st)
 

@@ -255,7 +255,7 @@ def configure_persistent_q_precision(
             set_vst3_param_strict(plug, "band_14_attack", 14.0)
             set_vst3_param_strict(plug, "band_14_release", 135.0)
 
-        # Band 15: Ultra-Fast Dynamic Harsh Consonant Attack & Upper-Mid Bite Tamer (2.8-4.2 kHz)
+        # Band 15: Dynamic Upper-Mid Harsh Belt Tamer (2.8-4.2 kHz, 14ms attack preserves consonant articulation!)
         if dynamic_bite_range_db > 0.2:
             set_vst3_param_strict(plug, "band_15_enabled", True)
             set_vst3_param_strict(plug, "band_15_type", "Peaking")
@@ -265,12 +265,12 @@ def configure_persistent_q_precision(
             set_vst3_param_strict(plug, "band_15_dynamic", True)
             set_vst3_param_strict(plug, "band_15_threshold", float(np.clip(dynamic_bite_thresh_db, -46.0, -8.0)))
             set_vst3_param_strict(plug, "band_15_dynamic_range", float(np.clip(dynamic_bite_range_db, 0.5, 7.0)))
-            set_vst3_param_strict(plug, "band_15_ratio", 3.4)
+            set_vst3_param_strict(plug, "band_15_ratio", 2.4)
             set_vst3_param_strict(plug, "band_15_knee", 8.0)
-            set_vst3_param_strict(plug, "band_15_attack", 1.2)
-            set_vst3_param_strict(plug, "band_15_release", 55.0)
+            set_vst3_param_strict(plug, "band_15_attack", 14.0)
+            set_vst3_param_strict(plug, "band_15_release", 65.0)
 
-        # Band 16: Real-Time Spectral Dynamic HF Sizzle & Sibilance Silkener (6.5-10 kHz)
+        # Band 16: Real-Time Spectral Dynamic HF Silkener (6.5-10 kHz, 8ms attack preserves crisp sibilant onsets!)
         if spectral_hf_range_db > 0.2:
             set_vst3_param_strict(plug, "band_16_enabled", True)
             set_vst3_param_strict(plug, "band_16_type", "Peaking")
@@ -280,10 +280,10 @@ def configure_persistent_q_precision(
             set_vst3_param_strict(plug, "band_16_spectral", True)
             set_vst3_param_strict(plug, "band_16_spectral_threshold", float(np.clip(spectral_hf_thresh_db, -54.0, -10.0)))
             set_vst3_param_strict(plug, "band_16_spectral_range", float(np.clip(spectral_hf_range_db, 0.5, 8.0)))
-            set_vst3_param_strict(plug, "band_16_spectral_ratio", 3.5)
+            set_vst3_param_strict(plug, "band_16_spectral_ratio", 2.5)
             set_vst3_param_strict(plug, "band_16_spectral_density", 65.0)
-            set_vst3_param_strict(plug, "band_16_spectral_attack", 1.5)
-            set_vst3_param_strict(plug, "band_16_spectral_release", 50.0)
+            set_vst3_param_strict(plug, "band_16_spectral_attack", 8.0)
+            set_vst3_param_strict(plug, "band_16_spectral_release", 55.0)
 
 
 def configure_persistent_q_harmony_hollow(
@@ -722,33 +722,33 @@ def configure_khs_dual_delay_spot(
 
 def configure_trash2_vocal_grit(
     plug: Any,
-    drive: float = 3.6,
+    drive: float = 3.4,
     style: float = 0.5,
-    wet_mix: float = 55.0,
+    wet_mix: float = 48.0,
     low_cut_hz: float = 380.0,
     high_cut_hz: float = 4200.0,
 ) -> None:
-    """Configure iZotope Trash 2 strictly band-limited (380-4200 Hz) for zero-sizzle vocal grit."""
+    """Configure iZotope Trash 2 strictly band-limited (380-4200 Hz) with unity-safe studio gain staging."""
     set_vst3_param_strict(plug, "global_bypass", False)
     set_vst3_param_strict(plug, "trash_module_bypass", False)
     set_vst3_param_strict(plug, "trash_bypass", False)
     if "gain_input_lock" in plug.parameters:
         set_vst3_param_strict(plug, "gain_input_lock", True)
-        set_vst3_param_strict(plug, "gain_input_locked_db", float(np.clip(4.0 + drive * 0.8, 2.0, 9.5)))
+        set_vst3_param_strict(plug, "gain_input_locked_db", 0.0)
     set_vst3_param_strict(plug, "trash_stg1_enable", True)
     set_vst3_param_strict(plug, "trash_stg1_shape_enable", True)
-    # Drive `-18 LUFS` studio vocals cleanly into Trash 2's nonlinear knee with compensated post-gain
-    set_vst3_param_strict(plug, "trash_stg1_pre", float(np.clip(12.0 + drive * 1.4, 8.0, 20.0)))
+    # Drive `-18 LUFS` studio vocals cleanly into Trash 2's nonlinear knee with unity output compensation
+    set_vst3_param_strict(plug, "trash_stg1_pre", float(np.clip(4.5 + drive * 1.1, 3.0, 11.0)))
     set_vst3_param_strict(plug, "trash_stg1_drive", float(np.clip(drive, 0.0, 10.0)))
     set_vst3_param_strict(plug, "trash_stg1_style", float(np.clip(style, 0.0, 1.0)))
-    set_vst3_param_strict(plug, "trash_stg1_tension_scale", float(np.clip(32.0 + drive * 5.0, 20.0, 75.0)))
-    set_vst3_param_strict(plug, "trash_stg1_gain", -6.0)
+    set_vst3_param_strict(plug, "trash_stg1_tension_scale", float(np.clip(28.0 + drive * 4.5, 20.0, 70.0)))
+    set_vst3_param_strict(plug, "trash_stg1_gain", -6.5)
     set_vst3_param_strict(plug, "trash_stg1_mix", 100.0)
     set_vst3_param_strict(plug, "trash_stg1_filter_enable", True)
     set_vst3_param_strict(plug, "trash_stg1_filter_low_freq", float(np.clip(low_cut_hz, 120.0, 1200.0)))
     set_vst3_param_strict(plug, "trash_stg1_filter_high_freq", float(np.clip(high_cut_hz, 2000.0, 6500.0)))
     if "gain_output_lock" in plug.parameters:
         set_vst3_param_strict(plug, "gain_output_lock", True)
-        set_vst3_param_strict(plug, "gain_output_locked_db", -3.0)
+        set_vst3_param_strict(plug, "gain_output_locked_db", -4.5)
     set_vst3_param_strict(plug, "global_mix", float(np.clip(wet_mix, 0.0, 100.0)))
     set_vst3_param_strict(plug, "limiter_enable", True)

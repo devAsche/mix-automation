@@ -262,17 +262,72 @@ def build_all_reference_profiles(
     cache_dir: Path,
     output_json_path: Path,
     target_sr: int = 44100,
+    extra_inbox_roots: list[Path] | None = None,
 ) -> dict:
-    """Process all reference covers (`manifest*.json`) into psychoacoustic target profiles."""
+    """Process all reference covers (`manifest*.json` + validated `extra_inbox_roots`) into target profiles."""
     info_dir = references_root / "_info"
     manifest: list[dict] = []
     seen_dirs: set[str] = set()
-    for mp in sorted(info_dir.glob("manifest*.json")):
-        for entry in json.loads(mp.read_text(encoding="utf-8")):
-            d_key = str(entry.get("dir", "")).replace("/", "\\").lower()
-            if d_key and d_key not in seen_dirs:
-                seen_dirs.add(d_key)
-                manifest.append(entry)
+    if info_dir.exists():
+        for mp in sorted(info_dir.glob("manifest*.json")):
+            for entry in json.loads(mp.read_text(encoding="utf-8")):
+                d_key = str(entry.get("dir", "")).replace("/", "\\").lower()
+                if d_key and d_key not in seen_dirs:
+                    seen_dirs.add(d_key)
+                    manifest.append({**entry, "_root": references_root, "_paired_calib_ok": True, "_key_shift_st": 0})
+
+    # Collect known cover video IDs from primary references_root to prevent cross-folder duplicates
+    known_cover_ids: set[str] = set()
+    for item in manifest:
+        s_dir = Path(item["_root"]) / Path(item["dir"])
+        for cf in s_dir.glob("cover_*.*"):
+            if cf.is_file() and cf.suffix.lower() in _AUDIO_EXTS:
+                cid = _extract_cover_id(cf)
+                if cid:
+                    known_cover_ids.add(cid)
+
+    inbox_gate_reports: list[dict] = []
+    if extra_inbox_roots:
+        for inbox_root in extra_inbox_roots:
+            inbox_path = Path(inbox_root)
+            if not inbox_path.exists():
+                continue
+            scan = scan_youtube_references_inbox(
+                inbox_root=inbox_path,
+                existing_cover_ids_override=known_cover_ids,
+                target_sr=target_sr,
+            )
+            inbox_gate_reports.append(
+                {
+                    "inbox_root": str(inbox_path),
+                    "total_candidates": scan["total_candidates"],
+                    "passed_count": scan["passed_count"],
+                    "rejected_count": scan["rejected_count"],
+                    "key_shifted_count": scan["key_shifted_count"],
+                    "paired_calibration_eligible_count": scan["paired_calibration_eligible_count"],
+                }
+            )
+            for cand in scan["candidates"]:
+                if cand.get("cover_id"):
+                    known_cover_ids.add(str(cand["cover_id"]))
+                if not cand.get("passed"):
+                    continue
+                c_dir = Path(cand["song_dir"])
+                rel_c = c_dir.relative_to(inbox_path)
+                m_ent = cand.get("manifest_entry", {})
+                manifest.append(
+                    {
+                        "dir": str(rel_c),
+                        "group": m_ent.get("group") or cand["group"],
+                        "mixer": m_ent.get("mixer", ""),
+                        "vocal": m_ent.get("vocal", ""),
+                        "title": m_ent.get("title") or cand["slug"],
+                        "genre_hint": m_ent.get("genre_hint", ""),
+                        "_root": inbox_path,
+                        "_paired_calib_ok": bool(cand.get("paired_calibration_eligible", False)),
+                        "_key_shift_st": int(cand.get("key_shift_semitones", 0)),
+                    }
+                )
 
     separator = BSRoFormerSeparator(cache_dir=cache_dir)
     meter = pyln.Meter(target_sr)
@@ -283,18 +338,23 @@ def build_all_reference_profiles(
     by_register: dict[str, list[SectionRelativeProfile]] = {}
     all_chorus_profiles: list[SectionRelativeProfile] = []
     offvocal_calibs: list[dict] = []
+    used_slugs: set[str] = set()
 
     for idx, item in enumerate(manifest, start=1):
         rel_dir = Path(item["dir"])
-        song_dir = references_root / rel_dir
-        cover_files = list(song_dir.glob("cover_*.*"))
+        base_root = Path(item.get("_root", references_root))
+        song_dir = base_root / rel_dir
+        cover_files = [p for p in sorted(song_dir.glob("cover_*.*")) if p.is_file() and p.suffix.lower() in _AUDIO_EXTS]
         if not cover_files:
             continue
 
         cover_path = cover_files[0]
-        group = item["group"]
+        group = str(item["group"])
         slug = f"{group}_{rel_dir.name}"
-        print(f"[{idx:02d}/{len(manifest):02d}] v3 Profiling {slug} ({item['title']}) ...", flush=True)
+        if slug.lower() in used_slugs:
+            slug = f"{slug}_{_extract_cover_id(cover_path)[:6]}"
+        used_slugs.add(slug.lower())
+        print(f"[{idx:02d}/{len(manifest):02d}] v7 Profiling {slug} ({item['title']}) ...", flush=True)
 
         v_st, i_st, sr, backend = separator.separate(cover_path, slug=slug, target_sr=target_sr)
         v_mono = np.mean(v_st, axis=0, dtype=np.float32)
@@ -316,7 +376,7 @@ def build_all_reference_profiles(
 
         off_file = _find_primary_official_offvocal(song_dir)
         off_calib = None
-        if off_file is not None:
+        if off_file is not None and bool(item.get("_paired_calib_ok", True)):
             try:
                 off_st, _ = load_audio(off_file, target_sr=sr, mono=False)
                 off_calib = _calibrate_official_offvocal_vs_separated(i_st, off_st, sr=sr, meter=meter)
@@ -347,6 +407,8 @@ def build_all_reference_profiles(
                 "vocal": item.get("vocal", ""),
                 "title": item["title"],
                 "genre_hint": item.get("genre_hint", ""),
+                "source_root": base_root.name,
+                "key_shift_semitones": int(item.get("_key_shift_st", 0)),
                 "separator_backend": backend,
                 "vocal_median_f0_hz": med_f0,
                 "vocal_register": reg_key,
@@ -389,10 +451,17 @@ def build_all_reference_profiles(
             ),
         }
 
+    arch_dist: dict[str, int] = {}
+    for rec in per_song_records:
+        ak = str(rec.get("backing_archetype", "unknown"))
+        arch_dist[ak] = arch_dist.get(ak, 0) + 1
+
     result = {
         "schema_version": "4.0",
         "separator_model": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
         "num_reference_songs": len(per_song_records),
+        "archetype_distribution": arch_dist,
+        "inbox_quality_gate_reports": inbox_gate_reports,
         "official_offvocal_calibration": calib_summary,
         "target_profiles": targets,
         "songs": per_song_records,
@@ -953,12 +1022,13 @@ def scan_youtube_references_inbox(
     inbox_root: Path,
     existing_index_json: Path | None = None,
     target_sr: int = 44100,
+    existing_cover_ids_override: set[str] | None = None,
 ) -> dict:
     """Scan `youtube_references/` inbox and run all 4 quality gates across all candidate folders."""
     inbox_root = Path(inbox_root)
     idx_path = existing_index_json or (inbox_root / "_info" / "existing_44_songs.json")
 
-    known_cover_ids: set[str] = set()
+    known_cover_ids: set[str] = set(existing_cover_ids_override or set())
     if idx_path.exists():
         try:
             idx_data = json.loads(idx_path.read_text(encoding="utf-8"))
