@@ -36,9 +36,18 @@
 | **Stage ③**<br>本家スタイル FX の歌詞・秒単位再現 | **約 78%** | ・本家ボーカル証拠検証＋日英歌詞フレーズ同期による 5 クラス特殊効果検出：`ethereal_reverb_throw`、`radio_voice`（`VocalSynth 2`）、`hard_autotune`（`MAutoPitch` 12 音スケール整合）、`spot_delay_throw`（`kHs Dual Delay`）、`distortion_grit`（`iZotope Trash 2` `380–4200 Hz` 制限）<br>・排他ダッキング付き Studio One ライブ VST3 スポットトラック注入（`シックスフィートアンダー` で 9 イベント・19 個のネイティブ `.vstpreset` 実証） | ・`muse` で大規模収集する「カバー＋オフボ＋本家」3 点セットを用いた演出事前分布の機械学習化はデータ収集待ち |
 | **Stage ④**<br>歌ってみたディレクター協働（ハモリ・対旋律提案＆MIDIガイド） | **約 76%** | ・`iZotope Nectar 3`＋`VocalSynth 2` Biovox のコード整合ハモリ生成（`エバ` で 440 ノート生成・116 箇所コード衝突回避・実録ハモリ不在時の 2mix 自動採用を実証）<br>・休符（`>=0.75s`）への追っかけコール＆レスポンスおよびラスサビのハイノート・オブリガート提案<br>・Studio One 5 へそのままドラッグ＆ドロップできる 4 トラック標準 MIDI ファイル（`*_Director_Harmony_Guide.mid`）自動出力 | ・提案した対旋律・掛け合いコーラスを本人声質（RVC / 歌声合成等）で直接オーディオ仮歌レンダリングする機能は未実装 |
 
+### v7.1（2026-11-26、Claude 引継ぎ）での更新
+
+- Gemini（Antigravity）の利用制限により、ここから Claude（Claude Code）が開発を引き継いだ。経緯・使い方・既知の問題は [HANDOVER_CLAUDE.md](./HANDOVER_CLAUDE.md)。
+- 全 4 曲を最新コードで再レンダー。Do-Not-Regress は **2/4 PASS**（エバ・シックスフィートアンダーは PASS。Fall in Love はボーカルが約 1 dB 小さく暗い、ラブ&デストロイは中低域のこもり判定で FAIL）。上表の Stage ① の「全 4 曲で全項目 PASS」は v7.0 時点の記述で、87 曲プロファイルへの更新後は成り立っていない。
+- 新しく見つかった数値上の懸念: ボーカルバスの Side/Mid がプロ目標（約 −8 dB）より大幅に狭い（エバ −18.9 dB）。監査項目にも入っていない。下の次期方針の 0 番として扱う。
+
 ---
 
 ## 3. 次期 R&D 方針（優先テーマ）
+
+0. **（v7.1 で追加・最優先）4 曲の新マスターの試聴と、ボーカル幅・芯／Fall in Love の音量と明るさの構造的な改善**
+   `docs/HANDOVER_CLAUDE.md` の「既知の問題」1〜3 を試聴で確かめ、一致すれば Side/Mid を目標プロファイル・最適化・Do-Not-Regress 監査に加える。
 
 1. **v7.0 出力 4 曲＋ブラインド A/B コンソールでのユーザー試聴フィードバック反映と `learn-preferences` 実運用**
    `docs/reports/ab_blind_test/index.html` および生成された 4 曲の Studio One `.song` を実際に試聴・微調整し、`mix-auto learn-preferences` でユーザー固有の審美オフセットを蓄積する。
