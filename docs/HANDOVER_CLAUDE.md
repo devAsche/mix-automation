@@ -2,6 +2,8 @@
 
 このドキュメントは、Gemini（Antigravity）で進めていた開発を **Claude（Claude Code）が引き継いだ** 時点の記録と、ユーザーがこのシステムを最低限使うための手順をまとめたものです。
 
+> **以降の開発は v8 への作り直しとして進めています。** 方針と段階は [V8_PLAN.md](./V8_PLAN.md)、ユーザー評価（正解データ）は [evaluations/](./evaluations/README.md) を参照。v7 の状態はタグ `gemini-v7.0` / `gemini-final` と `data/archive/gemini_v7_20261126/` に固定済みです。
+
 ---
 
 ## 1. 引継ぎの経緯
