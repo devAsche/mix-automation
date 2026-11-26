@@ -12,6 +12,7 @@ EVAL_DIR = ROOT / "docs" / "evaluations"
 CATEGORIES = {
     "sibilance", "consonant_attack", "step_change", "buried", "sits_on_top", "thin_light", "muddy",
     "airy_fizzy", "space_excess", "delay_offbeat", "fx_dropout", "harmony_prominent", "distance",
+    "harmony_missing",
 }
 
 
@@ -25,14 +26,21 @@ def _load_parser():
 
 def test_issues_yaml_is_consistent():
     doc = yaml.safe_load((EVAL_DIR / "issues.yaml").read_text(encoding="utf-8"))
-    source = (ROOT / doc["source"]).read_text(encoding="utf-8")
+    sources: dict[str, str] = {}
+
+    def source_of(it: dict) -> str:
+        rel = it.get("source", doc["source"])  # an item may come from another verbatim note file
+        if rel not in sources:
+            sources[rel] = (ROOT / rel).read_text(encoding="utf-8")
+        return sources[rel]
+
     ids = [it["id"] for it in doc["issues"]]
     assert len(ids) == len(set(ids))
     for it in doc["issues"]:
         assert it["category"] in CATEGORIES, it["id"]
         assert ("time_sec" in it) != (it.get("scope") == "global"), it["id"]
         for part in it["quote"].split(" / "):
-            assert part in source, it["id"]  # quotes are the user's words verbatim
+            assert part in source_of(it), it["id"]  # quotes are the user's words verbatim
 
 
 def test_parse_notes_basic():

@@ -125,6 +125,9 @@ C:\MIX_automation\.venv\Scripts\mix-auto.exe benchmark-ab
 9. ステム名の `-3`〜`-5` / `+3`〜`+5` は日付の一部でもハモリと判定される（5.1 参照）。
 10. Gemini の 1 回目の全曲レンダーは VST3 のネイティブクラッシュ（0xC0000005）で落ちていた。Gemini が Nectar 3 / VocalSynth 2 をサブプロセスに分けた後の今回の 4 曲連続レンダーでは再発しなかったが、根本原因は未確認。
 11. GEMINI.md・README の一部の数値（テスト件数「25」「21」、リファレンス「44 曲」）は古い。現在はテスト 29 件、リファレンス 87 曲。
+12. **`<曲>_AutoMIX_VocalBus.wav` は 2mix に入った音量と一致しないことがある**: ピークが 0.89 を超えると書き出し時に正規化される（`pipeline.py` の `vocal_bus_export`）。シックスフィートアンダー（2026-11-26 レンダー）はマスター内より −5.3 dB 小さい（マスターをブロックごとに `a·inst + b·vocalbus` で当てはめた b/a の中央値 1.85）。解析では `scripts/analysis/_v8eval.py` の `vocal_bus_gain` で補正している。v8 では書き出しで正規化しない。
+13. **`Media/02_mainvocal_prepared.wav` は演出区間が抜かれている**: Stage ③ のインライン演出（ラジオボイス・オートチューン等）の区間は Studio One 用に `12_fx_*`／`13_fx_*` へ切り出され、prepared 側はその区間が無音（`inline_duck_mask`）。処理前の声が必要なら prepared ＋ 演出トラックを足し戻す（`_v8eval.true_pre_vocal`）。古いレンダーの `14_fx_distortion_trash2.wav` が残っていることがあるので、mix_report の演出イベントに無い種類は足さない。
+14. **評価用の追加パッケージ**（`pyproject.toml` の `eval` extra、uv.lock も更新済み）: torch を入れ直さないよう `uv pip install --python .venv\Scripts\python.exe --no-deps beat-this einops soxr rotary-embedding-torch tqdm blind_rt60` と `uv pip install --python .venv\Scripts\python.exe matplotlib faster-whisper pystoi` で入れた。faster-whisper は CPU 版 `onnxruntime` を引き込み、既存の `onnxruntime-gpu` と同じフォルダを共有する。GPU の ONNX 推論がおかしくなったら `uv pip install --python .venv\Scripts\python.exe --reinstall onnxruntime-gpu==1.32.0` で入れ直す。なお uv.lock の torch（2.15.0）と .venv の torch（2.11.0+cu128）は以前から一致していない（`uv sync` すると torch が入れ替わるので注意）。
 
 ### 次にやるとよいこと（優先順）
 

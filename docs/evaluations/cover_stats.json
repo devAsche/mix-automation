@@ -1,0 +1,2062 @@
+{
+ "schema_version": 1,
+ "description": "Phase 2c: human pro covers (YouTube webm, BS-RoFormer separated, aligned to the v7 off-vocal). scripts/analysis/cover_refs.py stats",
+ "criteria": {
+  "corr_same": 0.5,
+  "corr_unrelated": 0.3,
+  "drift_ms_per_min": 10.0,
+  "edit_s": 0.2,
+  "min_coverage": 0.8
+ },
+ "identity": {
+  "Eva__cover_Chogakusei_vh": {
+   "song": "エバ",
+   "kind": "cover",
+   "name": "Chogakusei_vh",
+   "status": "exclude",
+   "why": "テンポずれ +13 ms/分",
+   "offset_s": -0.05,
+   "env_corr": 0.9574,
+   "coverage": 0.9998,
+   "len_s": 231.7654,
+   "offvocal_len_s": 231.4893,
+   "drift_ms_per_min": 13.0909,
+   "edits": 0,
+   "n_windows": 21,
+   "local_corr_median": 0.8299,
+   "key_shift": 0,
+   "chroma_best": 0.9791,
+   "chroma_zero": 0.9791
+  },
+  "Eva__cover_Ivudotto": {
+   "song": "エバ",
+   "kind": "cover",
+   "name": "Ivudotto",
+   "status": "use",
+   "why": "",
+   "offset_s": -0.04,
+   "env_corr": 0.9755,
+   "coverage": 0.9852,
+   "len_s": 228.0664,
+   "offvocal_len_s": 231.4893,
+   "drift_ms_per_min": -0.0,
+   "edits": 0,
+   "n_windows": 20,
+   "local_corr_median": 0.9561,
+   "key_shift": 0,
+   "chroma_best": 0.9891,
+   "chroma_zero": 0.9891
+  },
+  "Eva__cover_Junichi": {
+   "song": "エバ",
+   "kind": "cover",
+   "name": "Junichi",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.03,
+   "env_corr": 0.9712,
+   "coverage": 0.9935,
+   "len_s": 230.016,
+   "offvocal_len_s": 231.4893,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 20,
+   "local_corr_median": 0.9153,
+   "key_shift": 0,
+   "chroma_best": 0.9876,
+   "chroma_zero": 0.9876
+  },
+  "Eva__cover_KaguraNana": {
+   "song": "エバ",
+   "kind": "cover",
+   "name": "KaguraNana",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.39,
+   "env_corr": 0.9743,
+   "coverage": 0.9919,
+   "len_s": 230.0053,
+   "offvocal_len_s": 231.4893,
+   "drift_ms_per_min": 0.7013,
+   "edits": 0,
+   "n_windows": 21,
+   "local_corr_median": 0.89,
+   "key_shift": 0,
+   "chroma_best": 0.9874,
+   "chroma_zero": 0.9874
+  },
+  "Eva__cover_Ryushen": {
+   "song": "エバ",
+   "kind": "cover",
+   "name": "Ryushen",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.15,
+   "env_corr": 0.9802,
+   "coverage": 0.9929,
+   "len_s": 229.9821,
+   "offvocal_len_s": 231.4893,
+   "drift_ms_per_min": 0.7792,
+   "edits": 0,
+   "n_windows": 21,
+   "local_corr_median": 0.9133,
+   "key_shift": 0,
+   "chroma_best": 0.9878,
+   "chroma_zero": 0.9878
+  },
+  "FallInLove__cover_Chiya": {
+   "song": "Fall in Love",
+   "kind": "cover",
+   "name": "Chiya",
+   "status": "flag",
+   "why": "移調 +3",
+   "offset_s": -0.16,
+   "env_corr": 0.9438,
+   "coverage": 0.992,
+   "len_s": 169.8773,
+   "offvocal_len_s": 171.2433,
+   "drift_ms_per_min": -1.0549,
+   "edits": 0,
+   "n_windows": 14,
+   "local_corr_median": 0.7684,
+   "key_shift": 3,
+   "chroma_best": 0.9329,
+   "chroma_zero": -0.1677
+  },
+  "FallInLove__cover_FemmeFatale_j6yGx-r": {
+   "song": "Fall in Love",
+   "kind": "cover",
+   "name": "FemmeFatale_j6yGx-r",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.02,
+   "env_corr": 0.9937,
+   "coverage": 1.0,
+   "len_s": 172.0483,
+   "offvocal_len_s": 171.2433,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 15,
+   "local_corr_median": 0.9556,
+   "key_shift": 0,
+   "chroma_best": 0.9982,
+   "chroma_zero": 0.9982
+  },
+  "FallInLove__cover_FuraKanato": {
+   "song": "Fall in Love",
+   "kind": "cover",
+   "name": "FuraKanato",
+   "status": "exclude",
+   "why": "v7 の時間軸の 34% のみ（58 s）; 相関 0.47",
+   "offset_s": -29.37,
+   "env_corr": 0.4748,
+   "coverage": 0.3358,
+   "len_s": 57.5159,
+   "offvocal_len_s": 171.2433,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.9043,
+   "key_shift": 0,
+   "chroma_best": 0.99,
+   "chroma_zero": 0.99
+  },
+  "FallInLove__cover_Hikari": {
+   "song": "Fall in Love",
+   "kind": "cover",
+   "name": "Hikari",
+   "status": "flag",
+   "why": "移調 +3",
+   "offset_s": -0.22,
+   "env_corr": 0.9574,
+   "coverage": 0.9936,
+   "len_s": 170.1442,
+   "offvocal_len_s": 171.2433,
+   "drift_ms_per_min": 3.8571,
+   "edits": 0,
+   "n_windows": 15,
+   "local_corr_median": 0.8046,
+   "key_shift": 3,
+   "chroma_best": 0.9448,
+   "chroma_zero": -0.1617
+  },
+  "FallInLove__cover_HonamiKanon": {
+   "song": "Fall in Love",
+   "kind": "cover",
+   "name": "HonamiKanon",
+   "status": "use",
+   "why": "",
+   "offset_s": -0.14,
+   "env_corr": 0.9725,
+   "coverage": 0.9989,
+   "len_s": 171.0507,
+   "offvocal_len_s": 171.2433,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 15,
+   "local_corr_median": 0.8471,
+   "key_shift": 0,
+   "chroma_best": 0.9267,
+   "chroma_zero": 0.9267
+  },
+  "FallInLove__original_original": {
+   "song": "Fall in Love",
+   "kind": "original",
+   "name": "original",
+   "status": "use",
+   "why": "",
+   "offset_s": -0.2,
+   "env_corr": 0.9784,
+   "coverage": 0.992,
+   "len_s": 169.8772,
+   "offvocal_len_s": 171.2433,
+   "drift_ms_per_min": -0.0,
+   "edits": 0,
+   "n_windows": 14,
+   "local_corr_median": 0.9256,
+   "key_shift": 0,
+   "chroma_best": 0.9935,
+   "chroma_zero": 0.9935
+  },
+  "LoveAndDestroy__cover_Ado": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Ado",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.0,
+   "env_corr": 0.9738,
+   "coverage": 1.0,
+   "len_s": 212.4742,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.9458,
+   "key_shift": 0,
+   "chroma_best": 0.9857,
+   "chroma_zero": 0.9857
+  },
+  "LoveAndDestroy__cover_Azsagawa": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Azsagawa",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.1,
+   "env_corr": 0.9715,
+   "coverage": 1.0,
+   "len_s": 211.9518,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": -0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.9339,
+   "key_shift": 0,
+   "chroma_best": 0.9772,
+   "chroma_zero": 0.9772
+  },
+  "LoveAndDestroy__cover_Eve": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Eve",
+   "status": "exclude",
+   "why": "テンポずれ +24 ms/分",
+   "offset_s": 0.06,
+   "env_corr": 0.9116,
+   "coverage": 1.0,
+   "len_s": 212.4742,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": 24.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.8123,
+   "key_shift": 0,
+   "chroma_best": 0.973,
+   "chroma_zero": 0.973
+  },
+  "LoveAndDestroy__cover_Meychan": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Meychan",
+   "status": "exclude",
+   "why": "移調 +4, テンポずれ +180 ms/分",
+   "offset_s": 0.15,
+   "env_corr": 0.9267,
+   "coverage": 1.0,
+   "len_s": 212.6019,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": 180.0,
+   "edits": 0,
+   "n_windows": 5,
+   "local_corr_median": 0.84,
+   "key_shift": 4,
+   "chroma_best": 0.7992,
+   "chroma_zero": -0.1297
+  },
+  "LoveAndDestroy__cover_Tongari": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Tongari",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.13,
+   "env_corr": 0.7165,
+   "coverage": 1.0,
+   "len_s": 213.4495,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": -0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.5749,
+   "key_shift": 0,
+   "chroma_best": 0.4701,
+   "chroma_zero": 0.4701
+  },
+  "LoveAndDestroy__cover_WolpisCarter_gVT-": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "WolpisCarter_gVT-",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.11,
+   "env_corr": 0.9319,
+   "coverage": 1.0,
+   "len_s": 212.544,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": -0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.8844,
+   "key_shift": 0,
+   "chroma_best": 0.9769,
+   "chroma_zero": 0.9769
+  },
+  "LoveAndDestroy__cover_Xea": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Xea",
+   "status": "exclude",
+   "why": "テンポずれ +18 ms/分",
+   "offset_s": 0.09,
+   "env_corr": 0.894,
+   "coverage": 1.0,
+   "len_s": 214.6453,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": 18.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.8072,
+   "key_shift": 0,
+   "chroma_best": 0.9694,
+   "chroma_zero": 0.9694
+  },
+  "LoveAndDestroy__cover_Yoei": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Yoei",
+   "status": "use",
+   "why": "",
+   "offset_s": -0.01,
+   "env_corr": 0.9521,
+   "coverage": 0.9998,
+   "len_s": 212.4858,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.9098,
+   "key_shift": 0,
+   "chroma_best": 0.986,
+   "chroma_zero": 0.986
+  },
+  "LoveAndDestroy__cover_YuukiAoi": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "YuukiAoi",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.09,
+   "env_corr": 0.9212,
+   "coverage": 1.0,
+   "len_s": 212.48,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": -0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.8072,
+   "key_shift": 0,
+   "chroma_best": 0.9657,
+   "chroma_zero": 0.9657
+  },
+  "SixFeetUnder__cover_AokumoRin": {
+   "song": "シックスフィートアンダー",
+   "kind": "cover",
+   "name": "AokumoRin",
+   "status": "flag",
+   "why": "移調 -3",
+   "offset_s": 0.02,
+   "env_corr": 0.9676,
+   "coverage": 1.0,
+   "len_s": 218.6391,
+   "offvocal_len_s": 217.2632,
+   "drift_ms_per_min": -0.0,
+   "edits": 0,
+   "n_windows": 19,
+   "local_corr_median": 0.8429,
+   "key_shift": -3,
+   "chroma_best": 0.9224,
+   "chroma_zero": -0.1801
+  },
+  "SixFeetUnder__cover_MegateraZero": {
+   "song": "シックスフィートアンダー",
+   "kind": "cover",
+   "name": "MegateraZero",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.1,
+   "env_corr": 0.9172,
+   "coverage": 0.9911,
+   "len_s": 215.4232,
+   "offvocal_len_s": 217.2632,
+   "drift_ms_per_min": 0.9474,
+   "edits": 0,
+   "n_windows": 19,
+   "local_corr_median": 0.879,
+   "key_shift": 0,
+   "chroma_best": 0.9841,
+   "chroma_zero": 0.9841
+  },
+  "SixFeetUnder__cover_Motoya": {
+   "song": "シックスフィートアンダー",
+   "kind": "cover",
+   "name": "Motoya",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.05,
+   "env_corr": 0.9507,
+   "coverage": 0.9913,
+   "len_s": 215.4115,
+   "offvocal_len_s": 217.2632,
+   "drift_ms_per_min": -0.1053,
+   "edits": 0,
+   "n_windows": 19,
+   "local_corr_median": 0.9246,
+   "key_shift": 0,
+   "chroma_best": 0.9928,
+   "chroma_zero": 0.9928
+  },
+  "SixFeetUnder__cover_Yukimi": {
+   "song": "シックスフィートアンダー",
+   "kind": "cover",
+   "name": "Yukimi",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.28,
+   "env_corr": 0.9664,
+   "coverage": 0.9914,
+   "len_s": 215.68,
+   "offvocal_len_s": 217.2632,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 20,
+   "local_corr_median": 0.9466,
+   "key_shift": 0,
+   "chroma_best": 0.9927,
+   "chroma_zero": 0.9927
+  },
+  "SixFeetUnder__cover_Yuunagiki": {
+   "song": "シックスフィートアンダー",
+   "kind": "cover",
+   "name": "Yuunagiki",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.06,
+   "env_corr": 0.9236,
+   "coverage": 1.0,
+   "len_s": 224.256,
+   "offvocal_len_s": 217.2632,
+   "drift_ms_per_min": 4.6309,
+   "edits": 0,
+   "n_windows": 19,
+   "local_corr_median": 0.765,
+   "key_shift": 0,
+   "chroma_best": 0.6324,
+   "chroma_zero": 0.6324
+  }
+ },
+ "songs": {
+  "エバ": {
+   "v7_sep": {
+    "loss_median": -8.8969,
+    "vi1k4k_median": 5.3417,
+    "body_rel": -2.3025,
+    "air_rel": -3.3762,
+    "bright_rel": 0.0997,
+    "tilt": -2.286,
+    "hf_rel_abs": -13.7243,
+    "decay_t60": 0.4675,
+    "tail_ratio": -53.779,
+    "inst_rt60_blind": 5.5549,
+    "decay_over_inst_rt": 0.0842,
+    "side_mid": -19.5213
+   },
+   "v7_phrases": [
+    [
+     11.3023,
+     11.5113
+    ],
+    [
+     14.4138,
+     14.8201
+    ],
+    [
+     16.0972,
+     16.5732
+    ],
+    [
+     20.9966,
+     26.314
+    ],
+    [
+     27.8814,
+     33.1407
+    ],
+    [
+     36.3799,
+     41.6856
+    ],
+    [
+     43.1253,
+     77.3747
+    ],
+    [
+     82.3438,
+     84.213
+    ],
+    [
+     90.761,
+     96.1248
+    ],
+    [
+     97.6457,
+     135.3781
+    ],
+    [
+     160.6298,
+     177.3946
+    ],
+    [
+     177.4295,
+     206.7795
+    ],
+    [
+     218.5172,
+     220.3864
+    ]
+   ],
+   "v7_phrase_loss": [
+    -61.3182,
+    -28.9987,
+    -40.794,
+    -9.4691,
+    -8.5365,
+    -9.8979,
+    -8.6545,
+    -7.659,
+    -8.6997,
+    -9.2006,
+    -8.1478,
+    -8.5852,
+    -9.6136
+   ],
+   "refs": {
+    "Eva__cover_Chogakusei_vh": {
+     "kind": "cover",
+     "status": "exclude",
+     "scalars": {
+      "loss_median": -9.328,
+      "vi1k4k_median": 3.4038,
+      "body_rel": 1.3552,
+      "air_rel": 2.6194,
+      "bright_rel": 0.879,
+      "tilt": -1.6265,
+      "hf_rel_abs": -11.3872,
+      "decay_t60": 0.5262,
+      "tail_ratio": -26.1413,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -7.1157
+     },
+     "phrase_loss": [
+      -64.1267,
+      -29.59,
+      -35.3983,
+      -8.044,
+      -8.3345,
+      -8.2784,
+      -8.5043,
+      -6.8033,
+      -11.9372,
+      -9.2424,
+      -9.1114,
+      -8.5918,
+      -11.0513
+     ]
+    },
+    "Eva__cover_Ivudotto": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -8.2451,
+      "vi1k4k_median": 5.943,
+      "body_rel": -1.2275,
+      "air_rel": -2.0924,
+      "bright_rel": -0.5727,
+      "tilt": -1.5995,
+      "hf_rel_abs": -8.0421,
+      "decay_t60": 0.2248,
+      "tail_ratio": -32.0283,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -8.8442
+     },
+     "phrase_loss": [
+      -61.726,
+      -29.6856,
+      -40.2443,
+      -8.795,
+      -8.0451,
+      -8.6508,
+      -7.9794,
+      -6.0317,
+      -8.8552,
+      -8.8625,
+      -7.1133,
+      -7.0072,
+      -9.062
+     ]
+    },
+    "Eva__cover_Junichi": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -10.1019,
+      "vi1k4k_median": 2.4151,
+      "body_rel": 1.1131,
+      "air_rel": -17.9644,
+      "bright_rel": -13.9945,
+      "tilt": -3.2526,
+      "hf_rel_abs": -27.6312,
+      "decay_t60": 0.4794,
+      "tail_ratio": -27.9096,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -11.7835
+     },
+     "phrase_loss": [
+      null,
+      -37.1409,
+      -34.7551,
+      -9.9406,
+      -9.9113,
+      -10.0116,
+      -9.6289,
+      -10.2673,
+      -10.8259,
+      -10.4852,
+      -11.0674,
+      -8.4036,
+      -22.2663
+     ]
+    },
+    "Eva__cover_KaguraNana": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -6.971,
+      "vi1k4k_median": 4.809,
+      "body_rel": -0.5734,
+      "air_rel": 1.5023,
+      "bright_rel": 1.4321,
+      "tilt": -2.083,
+      "hf_rel_abs": -10.3491,
+      "decay_t60": 0.4489,
+      "tail_ratio": -21.3499,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -12.8363
+     },
+     "phrase_loss": [
+      null,
+      null,
+      null,
+      -6.1614,
+      -6.6798,
+      -6.8725,
+      -6.8523,
+      -3.855,
+      -5.7392,
+      -7.1167,
+      -5.4466,
+      -7.2083,
+      -4.93
+     ]
+    },
+    "Eva__cover_Ryushen": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -9.4207,
+      "vi1k4k_median": 2.4279,
+      "body_rel": -0.9602,
+      "air_rel": -5.2483,
+      "bright_rel": -3.2083,
+      "tilt": -2.8381,
+      "hf_rel_abs": -15.4976,
+      "decay_t60": 0.8488,
+      "tail_ratio": -44.5404,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -13.6949
+     },
+     "phrase_loss": [
+      null,
+      -29.3456,
+      null,
+      -8.7874,
+      -9.0889,
+      -8.8911,
+      -9.4856,
+      -8.1858,
+      -9.4467,
+      -9.8757,
+      -9.0004,
+      -8.1483,
+      -9.2596
+     ]
+    }
+   },
+   "step_times": {
+    "eva-g4@22.8": 22.75,
+    "eva-g4@34.2": 34.25,
+    "eva-g4@50.0": 50.0,
+    "eva-g4@60.2": 60.25,
+    "eva-g4@73.8": 73.75,
+    "eva-g4@104.2": 104.25,
+    "eva-g4@119.5": 119.5,
+    "eva-g4@133.8": 133.75,
+    "eva-g4@161.5": 161.5,
+    "eva-g4@203.0": 203.0,
+    "eva-g4@219.5": 219.5
+   },
+   "steps": {
+    "v7": [
+     {
+      "t": 22.75,
+      "d_level": -1.171,
+      "d_bright": -1.2346
+     },
+     {
+      "t": 34.25,
+      "d_level": 6.8531,
+      "d_bright": 7.8888
+     },
+     {
+      "t": 50.0,
+      "d_level": -1.0304,
+      "d_bright": 2.0107
+     },
+     {
+      "t": 60.25,
+      "d_level": 5.4937,
+      "d_bright": 1.7566
+     },
+     {
+      "t": 73.75,
+      "d_level": 2.5934,
+      "d_bright": -0.3141
+     },
+     {
+      "t": 104.25,
+      "d_level": -3.0219,
+      "d_bright": -0.6912
+     },
+     {
+      "t": 119.5,
+      "d_level": 0.5062,
+      "d_bright": 1.6686
+     },
+     {
+      "t": 133.75,
+      "d_level": -1.092,
+      "d_bright": -2.5684
+     },
+     {
+      "t": 161.5,
+      "d_level": -0.3686,
+      "d_bright": -3.7556
+     },
+     {
+      "t": 203.0,
+      "d_level": 6.7669,
+      "d_bright": -5.0471
+     },
+     {
+      "t": 219.5,
+      "d_level": -13.7807,
+      "d_bright": -14.9939
+     }
+    ],
+    "Eva__cover_Ivudotto": [
+     {
+      "t": 22.75,
+      "d_level": -3.1869,
+      "d_bright": -3.9741
+     },
+     {
+      "t": 34.25,
+      "d_level": 8.3328,
+      "d_bright": 6.7317
+     },
+     {
+      "t": 50.0,
+      "d_level": -4.825,
+      "d_bright": 10.1886
+     },
+     {
+      "t": 60.25,
+      "d_level": 8.9972,
+      "d_bright": -7.2945
+     },
+     {
+      "t": 73.75,
+      "d_level": 7.3463,
+      "d_bright": 0.0582
+     },
+     {
+      "t": 104.25,
+      "d_level": -0.8618,
+      "d_bright": 5.2922
+     },
+     {
+      "t": 119.5,
+      "d_level": 3.5682,
+      "d_bright": -4.7203
+     },
+     {
+      "t": 133.75,
+      "d_level": -1.3918,
+      "d_bright": -3.154
+     },
+     {
+      "t": 161.5,
+      "d_level": -3.6634,
+      "d_bright": 7.0875
+     },
+     {
+      "t": 203.0,
+      "d_level": 13.6707,
+      "d_bright": -0.1378
+     },
+     {
+      "t": 219.5,
+      "d_level": -12.844,
+      "d_bright": -17.9806
+     }
+    ],
+    "Eva__cover_Junichi": [
+     {
+      "t": 22.75,
+      "d_level": -3.4092,
+      "d_bright": -6.6189
+     },
+     {
+      "t": 34.25,
+      "d_level": 7.4996,
+      "d_bright": 6.7614
+     },
+     {
+      "t": 50.0,
+      "d_level": -7.2903,
+      "d_bright": 2.1245
+     },
+     {
+      "t": 60.25,
+      "d_level": 13.8415,
+      "d_bright": 9.8658
+     },
+     {
+      "t": 73.75,
+      "d_level": 8.2261,
+      "d_bright": -0.0813
+     },
+     {
+      "t": 104.25,
+      "d_level": 4.6134,
+      "d_bright": 0.2501
+     },
+     {
+      "t": 119.5,
+      "d_level": 5.4104,
+      "d_bright": 3.3284
+     },
+     {
+      "t": 133.75,
+      "d_level": -1.813,
+      "d_bright": -3.9151
+     },
+     {
+      "t": 161.5,
+      "d_level": -3.9522,
+      "d_bright": -4.0494
+     },
+     {
+      "t": 203.0,
+      "d_level": 12.1871,
+      "d_bright": -1.0998
+     },
+     {
+      "t": 219.5,
+      "d_level": -11.7255,
+      "d_bright": -8.4447
+     }
+    ],
+    "Eva__cover_KaguraNana": [
+     {
+      "t": 22.75,
+      "d_level": -2.8361,
+      "d_bright": -1.456
+     },
+     {
+      "t": 34.25,
+      "d_level": 3.3101,
+      "d_bright": 15.0963
+     },
+     {
+      "t": 50.0,
+      "d_level": 2.1556,
+      "d_bright": -4.2315
+     },
+     {
+      "t": 60.25,
+      "d_level": 0.7575,
+      "d_bright": 4.5587
+     },
+     {
+      "t": 73.75,
+      "d_level": 8.9347,
+      "d_bright": 2.1278
+     },
+     {
+      "t": 104.25,
+      "d_level": -0.5359,
+      "d_bright": 3.2956
+     },
+     {
+      "t": 119.5,
+      "d_level": -0.1033,
+      "d_bright": 0.157
+     },
+     {
+      "t": 133.75,
+      "d_level": -1.5442,
+      "d_bright": -11.5551
+     },
+     {
+      "t": 161.5,
+      "d_level": 2.7939,
+      "d_bright": -6.0881
+     },
+     {
+      "t": 203.0,
+      "d_level": 14.2568,
+      "d_bright": -0.1954
+     },
+     {
+      "t": 219.5,
+      "d_level": -8.9556,
+      "d_bright": -6.6552
+     }
+    ],
+    "Eva__cover_Ryushen": [
+     {
+      "t": 22.75,
+      "d_level": -1.6954,
+      "d_bright": -0.5573
+     },
+     {
+      "t": 34.25,
+      "d_level": 6.1552,
+      "d_bright": 18.6978
+     },
+     {
+      "t": 50.0,
+      "d_level": -10.847,
+      "d_bright": 4.2156
+     },
+     {
+      "t": 60.25,
+      "d_level": 11.8285,
+      "d_bright": 7.7851
+     },
+     {
+      "t": 73.75,
+      "d_level": 7.0149,
+      "d_bright": -2.0561
+     },
+     {
+      "t": 104.25,
+      "d_level": -1.2257,
+      "d_bright": 4.2706
+     },
+     {
+      "t": 119.5,
+      "d_level": 3.4992,
+      "d_bright": 0.8899
+     },
+     {
+      "t": 133.75,
+      "d_level": 1.5447,
+      "d_bright": -4.8753
+     },
+     {
+      "t": 161.5,
+      "d_level": -3.7736,
+      "d_bright": -0.3653
+     },
+     {
+      "t": 203.0,
+      "d_level": 14.192,
+      "d_bright": 4.9828
+     },
+     {
+      "t": 219.5,
+      "d_level": -13.2398,
+      "d_bright": -12.7057
+     }
+    ]
+   }
+  },
+  "Fall in Love": {
+   "v7_sep": {
+    "loss_median": -8.5294,
+    "vi1k4k_median": 7.0778,
+    "body_rel": -0.6992,
+    "air_rel": -3.106,
+    "bright_rel": -1.6039,
+    "tilt": -2.5352,
+    "hf_rel_abs": -11.3159,
+    "decay_t60": 0.7051,
+    "tail_ratio": -46.2762,
+    "inst_rt60_blind": 3.2268,
+    "decay_over_inst_rt": 0.2185,
+    "side_mid": -14.1918
+   },
+   "v7_phrases": [
+    [
+     1.4454,
+     16.7358
+    ],
+    [
+     16.759,
+     17.1305
+    ],
+    [
+     17.1886,
+     48.164
+    ],
+    [
+     48.7213,
+     84.2014
+    ],
+    [
+     111.6473,
+     149.2637
+    ],
+    [
+     149.4378,
+     149.9603
+    ],
+    [
+     149.9719,
+     157.9131
+    ],
+    [
+     164.1941,
+     165.715
+    ]
+   ],
+   "v7_phrase_loss": [
+    -8.3378,
+    -12.5517,
+    -7.9022,
+    -8.8683,
+    -8.7714,
+    -12.0608,
+    -9.0688,
+    -40.9135
+   ],
+   "refs": {
+    "FallInLove__cover_Chiya": {
+     "kind": "cover",
+     "status": "flag",
+     "scalars": {
+      "loss_median": -7.4416,
+      "vi1k4k_median": 3.546,
+      "body_rel": 3.3684,
+      "air_rel": -8.5606,
+      "bright_rel": -10.9953,
+      "tilt": -4.2637,
+      "hf_rel_abs": -16.8954,
+      "decay_t60": 0.4381,
+      "tail_ratio": -58.1234,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -15.9398
+     },
+     "phrase_loss": [
+      -6.9808,
+      null,
+      -6.6125,
+      -7.8052,
+      -7.2708,
+      -9.3156,
+      null,
+      null
+     ]
+    },
+    "FallInLove__cover_FemmeFatale_j6yGx-r": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -9.6205,
+      "vi1k4k_median": 5.0387,
+      "body_rel": -2.7473,
+      "air_rel": -9.2137,
+      "bright_rel": -4.8566,
+      "tilt": -2.8878,
+      "hf_rel_abs": -17.4778,
+      "decay_t60": 0.2985,
+      "tail_ratio": -41.9482,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -20.6405
+     },
+     "phrase_loss": [
+      -9.2945,
+      -7.2991,
+      -7.0966,
+      -10.5262,
+      -10.1826,
+      -19.878,
+      -13.3009,
+      -64.1178
+     ]
+    },
+    "FallInLove__cover_FuraKanato": {
+     "kind": "cover",
+     "status": "exclude",
+     "scalars": {
+      "loss_median": -10.1282,
+      "vi1k4k_median": 4.2857,
+      "body_rel": 0.4677,
+      "air_rel": -7.3746,
+      "bright_rel": -6.2257,
+      "tilt": -2.2638,
+      "hf_rel_abs": -15.9672,
+      "decay_t60": 0.1512,
+      "tail_ratio": -30.4869,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -15.7004
+     },
+     "phrase_loss": [
+      null,
+      null,
+      -9.3687,
+      -10.4573,
+      null,
+      null,
+      null,
+      null
+     ]
+    },
+    "FallInLove__cover_Hikari": {
+     "kind": "cover",
+     "status": "flag",
+     "scalars": {
+      "loss_median": -7.2211,
+      "vi1k4k_median": 7.9445,
+      "body_rel": -0.767,
+      "air_rel": -3.4012,
+      "bright_rel": -1.9486,
+      "tilt": -2.3554,
+      "hf_rel_abs": -13.2192,
+      "decay_t60": 0.187,
+      "tail_ratio": -27.4062,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -21.2988
+     },
+     "phrase_loss": [
+      -6.7238,
+      null,
+      -6.6522,
+      -8.1771,
+      -7.2939,
+      null,
+      null,
+      -43.6394
+     ]
+    },
+    "FallInLove__cover_HonamiKanon": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -9.9644,
+      "vi1k4k_median": 2.7526,
+      "body_rel": -1.0108,
+      "air_rel": -4.0983,
+      "bright_rel": -2.7422,
+      "tilt": -2.2521,
+      "hf_rel_abs": -12.7423,
+      "decay_t60": 0.4237,
+      "tail_ratio": -26.2284,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -11.9351
+     },
+     "phrase_loss": [
+      -9.4014,
+      null,
+      -8.4152,
+      -10.6386,
+      -10.1387,
+      null,
+      null,
+      -94.5447
+     ]
+    },
+    "FallInLove__original_original": {
+     "kind": "original",
+     "status": "use",
+     "scalars": {
+      "loss_median": -11.3031,
+      "vi1k4k_median": 1.9713,
+      "body_rel": 2.8466,
+      "air_rel": -1.331,
+      "bright_rel": -5.1284,
+      "tilt": -2.6383,
+      "hf_rel_abs": -7.2627,
+      "decay_t60": 0.4934,
+      "tail_ratio": -25.6813,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -20.1592
+     },
+     "phrase_loss": [
+      -10.1137,
+      -9.5467,
+      -9.9301,
+      -12.1445,
+      -11.7261,
+      null,
+      null,
+      null
+     ]
+    }
+   },
+   "step_times": {
+    "six-3": 57.5,
+    "six-8": 162.0
+   },
+   "steps": {
+    "v7": [
+     {
+      "t": 57.5,
+      "d_level": -2.311,
+      "d_bright": 1.7364
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "FallInLove__cover_Chiya": [
+     {
+      "t": 57.5,
+      "d_level": -2.6824,
+      "d_bright": -4.4179
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "FallInLove__cover_FemmeFatale_j6yGx-r": [
+     {
+      "t": 57.5,
+      "d_level": -1.5765,
+      "d_bright": -0.5976
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "FallInLove__cover_Hikari": [
+     {
+      "t": 57.5,
+      "d_level": -5.0786,
+      "d_bright": -4.0759
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "FallInLove__cover_HonamiKanon": [
+     {
+      "t": 57.5,
+      "d_level": -0.072,
+      "d_bright": -2.6689
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ]
+   }
+  },
+  "ラブ&デストロイ": {
+   "v7_sep": {
+    "loss_median": -11.2072,
+    "vi1k4k_median": 2.5804,
+    "body_rel": 3.2109,
+    "air_rel": -6.4757,
+    "bright_rel": -8.0133,
+    "tilt": -2.4547,
+    "hf_rel_abs": -12.2498,
+    "decay_t60": 0.5386,
+    "tail_ratio": -52.1397,
+    "inst_rt60_blind": 2.6901,
+    "decay_over_inst_rt": 0.2002,
+    "side_mid": -15.7607
+   },
+   "v7_phrases": [
+    [
+     9.0268,
+     63.6285
+    ]
+   ],
+   "v7_phrase_loss": [
+    -10.6635
+   ],
+   "refs": {
+    "LoveAndDestroy__cover_Ado": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -12.3922,
+      "vi1k4k_median": -0.8651,
+      "body_rel": 4.038,
+      "air_rel": -9.3754,
+      "bright_rel": -11.2889,
+      "tilt": -2.6889,
+      "hf_rel_abs": -17.618,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -14.1512
+     },
+     "phrase_loss": [
+      -11.6697
+     ]
+    },
+    "LoveAndDestroy__cover_Azsagawa": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -13.2043,
+      "vi1k4k_median": -0.8414,
+      "body_rel": 4.8874,
+      "air_rel": -5.4985,
+      "bright_rel": -9.7571,
+      "tilt": -2.7547,
+      "hf_rel_abs": -10.8189,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -6.0361
+     },
+     "phrase_loss": [
+      -12.0934
+     ]
+    },
+    "LoveAndDestroy__cover_Eve": {
+     "kind": "cover",
+     "status": "exclude",
+     "scalars": {
+      "loss_median": -10.8454,
+      "vi1k4k_median": 5.9428,
+      "body_rel": 0.777,
+      "air_rel": -5.9505,
+      "bright_rel": -6.1122,
+      "tilt": -1.6631,
+      "hf_rel_abs": -10.3104,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -5.5339
+     },
+     "phrase_loss": [
+      -10.1223
+     ]
+    },
+    "LoveAndDestroy__cover_Meychan": {
+     "kind": "cover",
+     "status": "exclude",
+     "scalars": {
+      "loss_median": -11.4214,
+      "vi1k4k_median": 1.6748,
+      "body_rel": -0.0634,
+      "air_rel": -7.4982,
+      "bright_rel": -4.5842,
+      "tilt": -1.0377,
+      "hf_rel_abs": -11.1655,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -9.3838
+     },
+     "phrase_loss": [
+      -10.7652
+     ]
+    },
+    "LoveAndDestroy__cover_Tongari": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -11.8514,
+      "vi1k4k_median": -0.7654,
+      "body_rel": 8.1833,
+      "air_rel": -4.2992,
+      "bright_rel": -12.2563,
+      "tilt": -2.8654,
+      "hf_rel_abs": -11.2098,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -10.0164
+     },
+     "phrase_loss": [
+      -11.1799
+     ]
+    },
+    "LoveAndDestroy__cover_WolpisCarter_gVT-": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -13.2909,
+      "vi1k4k_median": 0.0715,
+      "body_rel": 5.0195,
+      "air_rel": -6.4927,
+      "bright_rel": -10.0031,
+      "tilt": -2.6495,
+      "hf_rel_abs": -13.4388,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -12.0781
+     },
+     "phrase_loss": [
+      -12.2372
+     ]
+    },
+    "LoveAndDestroy__cover_Xea": {
+     "kind": "cover",
+     "status": "exclude",
+     "scalars": {
+      "loss_median": -9.4347,
+      "vi1k4k_median": 3.3458,
+      "body_rel": 6.5512,
+      "air_rel": -3.2006,
+      "bright_rel": -10.0387,
+      "tilt": -2.7547,
+      "hf_rel_abs": -12.296,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -10.8139
+     },
+     "phrase_loss": [
+      -9.0193
+     ]
+    },
+    "LoveAndDestroy__cover_Yoei": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -9.0368,
+      "vi1k4k_median": 5.6223,
+      "body_rel": -1.1035,
+      "air_rel": -6.2407,
+      "bright_rel": -3.9994,
+      "tilt": -1.1592,
+      "hf_rel_abs": -11.0146,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -9.4684
+     },
+     "phrase_loss": [
+      -8.9617
+     ]
+    },
+    "LoveAndDestroy__cover_YuukiAoi": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -8.3393,
+      "vi1k4k_median": 8.0795,
+      "body_rel": -3.1309,
+      "air_rel": -6.6004,
+      "bright_rel": -0.9218,
+      "tilt": -1.1923,
+      "hf_rel_abs": -12.7371,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -8.2316
+     },
+     "phrase_loss": [
+      -8.2594
+     ]
+    }
+   },
+   "step_times": {
+    "six-3": 57.5,
+    "six-8": 162.0
+   },
+   "steps": {
+    "v7": [
+     {
+      "t": 57.5,
+      "d_level": 0.6786,
+      "d_bright": 1.9481
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_Ado": [
+     {
+      "t": 57.5,
+      "d_level": -0.4201,
+      "d_bright": -2.2458
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_Azsagawa": [
+     {
+      "t": 57.5,
+      "d_level": 0.497,
+      "d_bright": -1.1007
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_Tongari": [
+     {
+      "t": 57.5,
+      "d_level": -1.565,
+      "d_bright": -0.1227
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_WolpisCarter_gVT-": [
+     {
+      "t": 57.5,
+      "d_level": 1.9225,
+      "d_bright": 0.1996
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_Yoei": [
+     {
+      "t": 57.5,
+      "d_level": 0.1649,
+      "d_bright": -0.018
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_YuukiAoi": [
+     {
+      "t": 57.5,
+      "d_level": 1.3351,
+      "d_bright": -0.5115
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ]
+   }
+  },
+  "シックスフィートアンダー": {
+   "v7_sep": {
+    "loss_median": -11.9903,
+    "vi1k4k_median": 0.8869,
+    "body_rel": 1.0884,
+    "air_rel": -4.0019,
+    "bright_rel": -3.7093,
+    "tilt": -2.5969,
+    "hf_rel_abs": -12.0816,
+    "decay_t60": 0.2214,
+    "tail_ratio": -27.4785,
+    "inst_rt60_blind": 3.6407,
+    "decay_over_inst_rt": 0.0608,
+    "side_mid": -11.9628
+   },
+   "v7_phrases": [
+    [
+     22.7614,
+     43.6245
+    ],
+    [
+     43.9031,
+     48.3962
+    ],
+    [
+     48.6052,
+     52.4597
+    ],
+    [
+     52.5874,
+     74.4954
+    ],
+    [
+     75.2036,
+     76.086
+    ],
+    [
+     77.1773,
+     78.5589
+    ],
+    [
+     80.2888,
+     80.6023
+    ],
+    [
+     83.1332,
+     83.4351
+    ],
+    [
+     83.4815,
+     91.2486
+    ],
+    [
+     91.2602,
+     104.2054
+    ],
+    [
+     104.542,
+     108.9887
+    ],
+    [
+     109.2557,
+     113.0754
+    ],
+    [
+     113.2379,
+     137.259
+    ],
+    [
+     137.5608,
+     139.7435
+    ],
+    [
+     140.0221,
+     147.5454
+    ],
+    [
+     147.6499,
+     149.5191
+    ],
+    [
+     149.67,
+     154.8365
+    ],
+    [
+     157.5764,
+     159.9565
+    ],
+    [
+     163.7529,
+     209.6007
+    ]
+   ],
+   "v7_phrase_loss": [
+    -10.6143,
+    -10.6329,
+    -8.6889,
+    -13.199,
+    -14.2179,
+    -32.2995,
+    -99.2033,
+    -45.493,
+    -10.4515,
+    -11.182,
+    -10.401,
+    -8.9389,
+    -12.839,
+    -11.6697,
+    -10.5852,
+    -13.2866,
+    -10.2656,
+    -8.2173,
+    -13.3452
+   ],
+   "refs": {
+    "SixFeetUnder__cover_AokumoRin": {
+     "kind": "cover",
+     "status": "flag",
+     "scalars": {
+      "loss_median": -9.8553,
+      "vi1k4k_median": 1.2251,
+      "body_rel": 1.4762,
+      "air_rel": -1.6943,
+      "bright_rel": -2.189,
+      "tilt": -2.1445,
+      "hf_rel_abs": -13.1153,
+      "decay_t60": 1.6002,
+      "tail_ratio": -36.2982,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -11.5204
+     },
+     "phrase_loss": [
+      -10.1207,
+      -9.0402,
+      -6.4193,
+      -9.8799,
+      -19.2582,
+      -28.6417,
+      -23.1737,
+      null,
+      -7.2701,
+      -10.2997,
+      -7.8747,
+      -6.6775,
+      -10.0625,
+      -8.6883,
+      -9.5078,
+      -9.0697,
+      -9.7846,
+      -8.2804,
+      -10.2166
+     ]
+    },
+    "SixFeetUnder__cover_MegateraZero": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -10.3805,
+      "vi1k4k_median": 2.8406,
+      "body_rel": -0.4581,
+      "air_rel": -4.9746,
+      "bright_rel": -3.4415,
+      "tilt": -1.5643,
+      "hf_rel_abs": -14.7898,
+      "decay_t60": 0.1882,
+      "tail_ratio": -37.4418,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -12.9407
+     },
+     "phrase_loss": [
+      -11.0467,
+      -10.7608,
+      -10.8695,
+      -8.6007,
+      -14.3694,
+      -21.0978,
+      -22.5903,
+      -55.2481,
+      -10.6621,
+      -11.3364,
+      -10.009,
+      -8.8744,
+      -8.831,
+      -8.727,
+      -11.6924,
+      -9.9618,
+      -11.5808,
+      -11.4256,
+      -9.0411
+     ]
+    },
+    "SixFeetUnder__cover_Motoya": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -14.1935,
+      "vi1k4k_median": -3.4467,
+      "body_rel": 5.1517,
+      "air_rel": 1.4331,
+      "bright_rel": -4.5042,
+      "tilt": -2.7211,
+      "hf_rel_abs": -8.2244,
+      "decay_t60": 0.3144,
+      "tail_ratio": -18.0143,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -10.1067
+     },
+     "phrase_loss": [
+      -12.5958,
+      -13.9396,
+      -11.3013,
+      -14.099,
+      -17.377,
+      -36.75,
+      null,
+      null,
+      -11.5279,
+      -12.876,
+      -12.6803,
+      -11.6631,
+      -14.2982,
+      -12.0925,
+      -13.8354,
+      -14.4268,
+      -14.1031,
+      -8.1876,
+      -14.8614
+     ]
+    },
+    "SixFeetUnder__cover_Yukimi": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -13.9971,
+      "vi1k4k_median": -1.0574,
+      "body_rel": 3.2498,
+      "air_rel": -4.3948,
+      "bright_rel": -5.7914,
+      "tilt": -2.7397,
+      "hf_rel_abs": -12.5179,
+      "decay_t60": 0.636,
+      "tail_ratio": -34.6679,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -13.0538
+     },
+     "phrase_loss": [
+      -12.9734,
+      -11.5149,
+      -9.305,
+      -14.6592,
+      -14.9827,
+      -69.4664,
+      -55.1083,
+      -46.1022,
+      -12.1467,
+      -13.4589,
+      -10.7713,
+      -9.2646,
+      -14.2563,
+      -17.3303,
+      -13.9695,
+      -12.4767,
+      -14.6623,
+      -9.1199,
+      -14.7102
+     ]
+    },
+    "SixFeetUnder__cover_Yuunagiki": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -9.0805,
+      "vi1k4k_median": 3.7175,
+      "body_rel": -2.4698,
+      "air_rel": -1.3695,
+      "bright_rel": 2.7785,
+      "tilt": -0.2327,
+      "hf_rel_abs": -9.8233,
+      "decay_t60": 2.1014,
+      "tail_ratio": -14.7306,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -11.0746
+     },
+     "phrase_loss": [
+      -8.0111,
+      -7.4405,
+      -6.6455,
+      -9.6971,
+      -52.5104,
+      null,
+      null,
+      null,
+      -6.646,
+      -8.3502,
+      -7.8829,
+      -6.9581,
+      -10.0092,
+      -8.1313,
+      -7.1306,
+      -8.2402,
+      -7.8674,
+      -5.187,
+      -10.431
+     ]
+    }
+   },
+   "step_times": {
+    "six-3": 57.5,
+    "six-8": 162.0
+   },
+   "steps": {
+    "v7": [
+     {
+      "t": 57.5,
+      "d_level": 2.9263,
+      "d_bright": -2.8215
+     },
+     {
+      "t": 162.0,
+      "d_level": 17.2239,
+      "d_bright": -3.7794
+     }
+    ],
+    "SixFeetUnder__cover_AokumoRin": [
+     {
+      "t": 57.5,
+      "d_level": 2.7066,
+      "d_bright": 0.9286
+     },
+     {
+      "t": 162.0,
+      "d_level": 17.8377,
+      "d_bright": 6.9428
+     }
+    ],
+    "SixFeetUnder__cover_MegateraZero": [
+     {
+      "t": 57.5,
+      "d_level": 3.8737,
+      "d_bright": 2.3875
+     },
+     {
+      "t": 162.0,
+      "d_level": 6.4121,
+      "d_bright": 21.1914
+     }
+    ],
+    "SixFeetUnder__cover_Motoya": [
+     {
+      "t": 57.5,
+      "d_level": 0.0239,
+      "d_bright": -1.5607
+     },
+     {
+      "t": 162.0,
+      "d_level": 16.1783,
+      "d_bright": 6.0133
+     }
+    ],
+    "SixFeetUnder__cover_Yukimi": [
+     {
+      "t": 57.5,
+      "d_level": 2.828,
+      "d_bright": -0.1865
+     },
+     {
+      "t": 162.0,
+      "d_level": 26.9964,
+      "d_bright": 2.5509
+     }
+    ],
+    "SixFeetUnder__cover_Yuunagiki": [
+     {
+      "t": 57.5,
+      "d_level": 0.9314,
+      "d_bright": 0.6072
+     },
+     {
+      "t": 162.0,
+      "d_level": 9.311,
+      "d_bright": 6.7421
+     }
+    ]
+   }
+  }
+ },
+ "issues_used": [
+  "fil-g1",
+  "fil-g2",
+  "fil-1",
+  "eva-g1",
+  "eva-g2",
+  "eva-g3",
+  "eva-1",
+  "eva-2",
+  "eva-3",
+  "eva-4",
+  "six-g1",
+  "six-g2",
+  "six-1",
+  "six-2",
+  "six-3",
+  "six-4",
+  "six-5",
+  "six-6",
+  "six-7",
+  "six-8",
+  "six-9",
+  "lad-g1",
+  "lad-1",
+  "eva-g4",
+  "eva-g5",
+  "eva-g6"
+ ]
+}

@@ -33,6 +33,19 @@ ml = [
     "audioread>=3.0.0",
     "omegaconf>=2.3.0",
 ]
+# v8 Phase 2 evaluation (scripts/analysis/evaluate_issues.py, build_reference_stats.py).
+# Versions as installed and verified on 2026-11-26.
+eval = [
+    "beat-this==1.1.0",
+    "einops==0.8.2",
+    "soxr==1.1.0",
+    "rotary-embedding-torch==0.6.5",
+    "tqdm==4.70.1",
+    "blind-rt60==0.1.1",
+    "matplotlib==3.11.2",
+    "faster-whisper==1.2.1",
+    "pystoi==0.4.1",
+]
 dev = [
     "pytest>=8.3.0",
     "ruff>=0.7.0",
