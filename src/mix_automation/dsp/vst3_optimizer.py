@@ -400,30 +400,30 @@ def _solve_section_4band_delta(
     pres_margin_err = anchor_prof.band_margins_db["core_presence"] - sec_prof.band_margins_db["core_presence"]
 
     if regime == "Quiet_Breakdown":
-        raw_220 = 0.45 * body_err + (0.45 + 0.55 * intimacy) + 0.70 * dens_drop
-        raw_2600 = 0.35 * pres_intr_err + 0.30 * float(np.clip(pres_margin_err, -4.0, 1.5)) - 0.25 * min(pres_drop, 8.0) - 0.35
-        regime_silk = -0.55
+        raw_220 = 0.35 * body_err + (0.20 + 0.30 * intimacy) + 0.35 * dens_drop
+        raw_2600 = 0.40 * pres_intr_err + 0.30 * float(np.clip(pres_margin_err, -3.5, 1.8)) - 0.15 * min(pres_drop, 6.0)
+        regime_silk = -0.18
     elif regime == "Verse_PreChorus":
-        raw_220 = 0.45 * body_err + (0.25 + 0.40 * intimacy) + 0.45 * dens_drop
-        raw_2600 = 0.45 * pres_intr_err + 0.30 * float(np.clip(pres_margin_err, -3.5, 2.0)) - 0.18 * min(pres_drop, 8.0)
-        regime_silk = -0.25
+        raw_220 = 0.35 * body_err + (0.12 + 0.25 * intimacy) + 0.25 * dens_drop
+        raw_2600 = 0.45 * pres_intr_err + 0.30 * float(np.clip(pres_margin_err, -3.0, 2.0)) - 0.10 * min(pres_drop, 6.0)
+        regime_silk = -0.08
     else:  # Other_Chorus (e.g., modulated / denser final chorus)
         body_back_diff = anchor_prof.inst_band_levels_db["body_warmth"] - sec_prof.inst_band_levels_db["body_warmth"]
-        raw_220 = 0.50 * body_err + 0.15 * float(np.clip(body_back_diff, -3.0, 3.0))
+        raw_220 = 0.40 * body_err + 0.12 * float(np.clip(body_back_diff, -2.5, 2.5))
         raw_2600 = 0.50 * pres_intr_err + 0.55 * float(np.clip(pres_margin_err, -2.5, 3.5)) + 0.25 * min(pres_jump, 4.0)
         regime_silk = 0.0
 
-    g_220 = round(float(np.clip(raw_220, -2.2, 1.8)), 2)
-    raw_520 = -0.55 * mud_excess - 0.22 * max(0.0, g_220)
-    g_520 = round(float(np.clip(raw_520, -2.2, 0.4)), 2)
-    g_2600 = round(float(np.clip(raw_2600, -2.2, 1.8)), 2)
+    g_220 = round(float(np.clip(raw_220, -1.8, 0.9)), 2)
+    raw_520 = -0.60 * mud_excess - 0.25 * max(0.0, g_220)
+    g_520 = round(float(np.clip(raw_520, -2.2, 0.1)), 2)
+    g_2600 = round(float(np.clip(raw_2600, -1.6, 1.8)), 2)
 
-    sib_tgt_cap = min(float(target_profile.vocal_intrinsic_bands_db["sibilance"]), -18.8)
+    sib_tgt_cap = float(np.clip(target_profile.vocal_intrinsic_bands_db["sibilance"], -19.2, -16.0))
     sib_excess = max(0.0, sec_prof.vocal_intrinsic_bands_db["sibilance"] - sib_tgt_cap)
-    sib_vs_anchor = max(0.0, sec_prof.vocal_intrinsic_bands_db["sibilance"] - anchor_prof.vocal_intrinsic_bands_db["sibilance"])
-    raw_6500 = regime_silk - 0.45 * sib_excess - 0.35 * sib_vs_anchor - 0.08 * min(sib_drop, 8.0)
-    # Zero HF sizzle boost: top_edge_6500 is strictly <= 0.0 dB!
-    g_6500 = round(float(np.clip(raw_6500, -2.2, 0.0)), 2)
+    sib_vs_anchor = max(0.0, sec_prof.vocal_intrinsic_bands_db["sibilance"] - (anchor_prof.vocal_intrinsic_bands_db["sibilance"] + 0.6))
+    raw_6500 = regime_silk - 0.30 * sib_excess - 0.25 * sib_vs_anchor - 0.04 * min(sib_drop, 6.0)
+    # Zero HF sizzle boost while preventing dull muffling: top_edge_6500 is gently bounded to [-0.9, 0.0] dB!
+    g_6500 = round(float(np.clip(raw_6500, -0.9, 0.0)), 2)
 
     return {
         "low_warmth_220": g_220,
@@ -806,7 +806,7 @@ def estimate_continuous_tempo_map(inst_mono: np.ndarray, sr: int) -> dict:
     dp_std = float(np.std(dp_bpms)) if len(dp_bpms) >= 2 else 0.0
     effective_std = max(local_std, dp_std)
 
-    if effective_std < 1.2:
+    if effective_std < 2.6:
         if dp_bpms:
             refined_global = round(float(np.median(dp_bpms)), 1)
             if abs(refined_global - global_bpm) <= 3.0:
@@ -817,14 +817,14 @@ def estimate_continuous_tempo_map(inst_mono: np.ndarray, sr: int) -> dict:
             "tempo_segments": [(0.0, global_bpm)],
         }
 
-    # Segment genuine tempo changes whenever smoothed local tempo shifts >= 2.2 BPM over >= 3.5s
-    min_seg_f = max(int(round(3.5 * fps)), 16)
+    # Segment genuine tempo changes ONLY when smoothed local tempo shifts >= 4.5 BPM sustained over >= 5.5s
+    min_seg_f = max(int(round(5.5 * fps)), 16)
     seg_bounds_f: list[int] = [0]
     ref_b = float(np.median(local_smooth[: min(n_on, min_seg_f)]))
     for f_i in range(min_seg_f, n_on - min_seg_f):
-        if abs(float(local_smooth[f_i]) - ref_b) >= 2.2 and (f_i - seg_bounds_f[-1]) >= min_seg_f:
+        if abs(float(local_smooth[f_i]) - ref_b) >= 4.5 and (f_i - seg_bounds_f[-1]) >= min_seg_f:
             look_ahead = local_smooth[f_i : min(n_on, f_i + min_seg_f // 2)]
-            if abs(float(np.median(look_ahead)) - ref_b) >= 2.0:
+            if abs(float(np.median(look_ahead)) - ref_b) >= 4.0:
                 seg_bounds_f.append(f_i)
                 ref_b = float(np.median(look_ahead))
     seg_bounds_f.append(n_on)
@@ -833,7 +833,7 @@ def estimate_continuous_tempo_map(inst_mono: np.ndarray, sr: int) -> dict:
     for f0, f1 in zip(seg_bounds_f[:-1], seg_bounds_f[1:]):
         seg_med = float(np.median(local_smooth[f0:f1]))
         seg_bpm = seg_med
-        if f1 - f0 >= int(round(3.5 * fps)):
+        if f1 - f0 >= int(round(4.5 * fps)):
             _, b_seg = librosa.beat.beat_track(
                 onset_envelope=onset_env[f0:f1],
                 sr=sr,
@@ -848,17 +848,14 @@ def estimate_continuous_tempo_map(inst_mono: np.ndarray, sr: int) -> dict:
                     seg_bpm = cand_bpm
         raw_segs.append((f0, f1, round(seg_bpm, 1)))
 
-    # Reject false metric-modulation jumps (1/2, 2/3, 3/4, 4/3, 3/2, 2x syncopation/half-time)
-    # when the underlying global_bpm pulse still maintains strong onset autocorrelation energy!
-    harmonic_ratios = (0.5, 2.0 / 3.0, 0.75, 4.0 / 3.0, 1.5, 2.0)
+    # Reject ALL false polyrhythm / syncopation / half-time jumps (including 4/5 = 0.80 synth breaks!)
+    # whenever the song's global_bpm pulse still maintains >= 35% onset autocorrelation energy!
     stabilized_segs: list[tuple[int, int, float]] = []
     for f0, f1, bpm_s in raw_segs:
-        if abs(bpm_s - global_bpm) < 2.2:
+        if abs(bpm_s - global_bpm) < 4.5:
             stabilized_segs.append((f0, f1, global_bpm))
             continue
-        ratio = bpm_s / max(global_bpm, 1.0)
-        is_metric_harmonic = any(abs(ratio - hr) / hr <= 0.035 for hr in harmonic_ratios)
-        if is_metric_harmonic and (f1 - f0) >= 24:
+        if (f1 - f0) >= 24:
             seg_env = onset_env[f0:f1].astype(np.float64)
             seg_centered = seg_env - float(np.mean(seg_env))
             ac = librosa.autocorrelate(seg_centered, max_size=min(len(seg_centered), int(fps * 2.0)))
@@ -867,14 +864,14 @@ def estimate_continuous_tempo_map(inst_mono: np.ndarray, sr: int) -> dict:
             if 2 <= lag_g < len(ac) - 2 and 2 <= lag_s < len(ac) - 2:
                 ac_g = float(np.max(ac[lag_g - 2 : lag_g + 3]))
                 ac_s = float(np.max(ac[lag_s - 2 : lag_s + 3])) + 1e-9
-                if ac_g >= 0.42 * ac_s:
+                if ac_g >= 0.35 * ac_s:
                     bpm_s = global_bpm
         stabilized_segs.append((f0, f1, bpm_s))
 
-    # Merge adjacent segments with near-identical BPM (< 1.8 BPM)
+    # Merge adjacent segments with near-identical BPM (< 3.5 BPM)
     merged: list[tuple[int, int, float]] = []
     for f0, f1, bpm_s in stabilized_segs:
-        if merged and abs(bpm_s - merged[-1][2]) < 1.8:
+        if merged and abs(bpm_s - merged[-1][2]) < 3.5:
             p0, _, p_bpm = merged[-1]
             dur_p = merged[-1][1] - p0
             dur_c = f1 - f0
@@ -1062,11 +1059,11 @@ def _solve_precision_10band_eq_on_device(
         dim=0,
     )
 
-    # Smooth HF targets capped gently toward Azusagawa / silky commercial range so home-mic hiss is never blasted
+    # True Pro k-NN HF targets (two-sided: prevents BOTH >-17.5dB sizzle AND <-22dB muffled suffocation!)
     rolloff_delta = float(np.clip(inst_high_rolloff_db - target_profile.inst_high_rolloff_db, -6.0, 6.0))
     tgt_intrinsic = dict(target_profile.vocal_intrinsic_bands_db)
-    tgt_intrinsic["sibilance"] = min(float(tgt_intrinsic["sibilance"]), -18.8)
-    tgt_intrinsic["air_sheen"] = min(float(tgt_intrinsic["air_sheen"]) + 0.30 * rolloff_delta, -19.2)
+    tgt_intrinsic["sibilance"] = float(np.clip(tgt_intrinsic["sibilance"], -19.2, -15.8))
+    tgt_intrinsic["air_sheen"] = float(np.clip(tgt_intrinsic["air_sheen"] + 0.22 * rolloff_delta, -20.0, -17.9))
     tgt_intr_t = torch.tensor([float(tgt_intrinsic[b]) for b in band_names], dtype=dtype, device=device)
 
     # Level-invariant backing-relative target margins (relative to core vocal-zone margin!)
@@ -1097,12 +1094,13 @@ def _solve_precision_10band_eq_on_device(
     raw_g = torch.zeros(len(PRECISION_EQ_BAND_SPECS), dtype=dtype, device=device, requires_grad=True)
     opt = torch.optim.Adam([raw_g], lr=0.075)
 
-    intrinsic_w_t = torch.tensor([2.4, 2.6, 2.5, 3.0, 2.0, 1.6], dtype=dtype, device=device)
-    backing_rel_w_t = torch.tensor([0.45, 0.40, 0.55, 1.15, 1.20, 1.35], dtype=dtype, device=device)
+    intrinsic_w_t = torch.tensor([2.2, 3.2, 2.6, 3.4, 2.4, 2.2], dtype=dtype, device=device)
+    backing_rel_w_t = torch.tensor([0.45, 0.55, 0.65, 1.35, 1.05, 1.10], dtype=dtype, device=device)
 
-    # Per-band smooth (lo, hi) bounds
-    lo_t = torch.tensor([-2.8, -2.8, -3.6, -3.6, -2.8, -2.8, -3.0, -3.2, -3.6, -3.6], dtype=dtype, device=device)
-    hi_t = torch.tensor([+2.6, +2.8, +1.8, +1.6, +2.6, +2.6, +2.8, +2.6, +1.0, +1.8], dtype=dtype, device=device)
+    # Per-band smooth (lo, hi) bounds: strictly block artificial mud/boxiness boosts (+0.2 dB ceiling on 420/680 Hz!)
+    # while protecting core intelligibility (1.05-3.6 kHz) from deep scooping!
+    lo_t = torch.tensor([-2.6, -2.4, -4.0, -3.8, -2.0, -1.6, -2.0, -2.0, -2.6, -2.6], dtype=dtype, device=device)
+    hi_t = torch.tensor([+1.4, +1.5, +0.2, +0.2, +2.6, +2.8, +3.2, +3.0, +1.8, +2.0], dtype=dtype, device=device)
     mid_t = 0.5 * (lo_t + hi_t)
     half_t = 0.5 * (hi_t - lo_t)
     denom_t = torch.clamp(half_t, min=0.5)
@@ -1440,11 +1438,11 @@ class RealVST3CharacterRig:
 
         in_act_rms_db = float(20.0 * np.log10(np.sqrt(np.mean(eq_vocal_mono[nz] ** 2)) + 1e-12))
 
-        # Fast-attack VCA catches piercing consonant peaks cleanly (0.52-0.72, output_drive=0.1!)
-        vca_atk = 0.52 if self.archetype == "dense_rock_edm" else (0.58 if self.archetype == "groovy_mid_pop" else 0.72)
-        vca_rel = 0.62 if self.archetype == "dense_rock_edm" else 0.68
-        vca_ratio = 3.5 if self.archetype == "dense_rock_edm" else 3.0
-        target_vca_gr = 2.8 if self.archetype == "dense_rock_edm" else (2.4 if self.archetype == "groovy_mid_pop" else 1.8)
+        # Natural-articulation VCA (0.88-1.10) preserves crisp consonant attacks without slow-attack expansion!
+        vca_atk = 0.88 if self.archetype == "dense_rock_edm" else (0.96 if self.archetype == "groovy_mid_pop" else 1.10)
+        vca_rel = 0.64 if self.archetype == "dense_rock_edm" else 0.70
+        vca_ratio = 3.2 if self.archetype == "dense_rock_edm" else 2.8
+        target_vca_gr = 2.2 if self.archetype == "dense_rock_edm" else (1.9 if self.archetype == "groovy_mid_pop" else 1.5)
 
         lo_t, hi_t = -42.0, -8.0
         best_vca_t = -22.0
@@ -1497,7 +1495,7 @@ class RealVST3CharacterRig:
         ref_la2a = np.mean(self.la2a(st_vca, sr, reset=True), axis=0)
         ref_la2a_rms_db = float(20.0 * np.log10(np.sqrt(np.mean(ref_la2a[nz] ** 2)) + 1e-12))
 
-        target_la2a_gr = 3.6 if self.archetype == "dense_rock_edm" else (2.8 if self.archetype == "groovy_mid_pop" else 2.0)
+        target_la2a_gr = 2.8 if self.archetype == "dense_rock_edm" else (2.2 if self.archetype == "groovy_mid_pop" else 1.7)
         lo_p, hi_p = 18.0, 78.0
         best_c2 = 44.0
         best_c2_gr = target_la2a_gr
@@ -1738,24 +1736,80 @@ def _level_stereo_bus_to_lead_klufs(
     lead_final_dry: np.ndarray,
     sr: int,
     target_rel_db: float,
+    dry_activity_ref: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Match a stereo harmony/choir bus to exact TRUE stereo K-weighted active loudness relative to lead."""
+    """Match a stereo harmony/choir bus to exact CO-ACTIVE stereo K-weighted loudness relative to lead.
+
+    Measures lead loudness strictly over the exact frames where the harmony/choir is singing (`co_mask`),
+    and detects activity on `dry_activity_ref` BEFORE reverb tails so sparse chorus choirs are never
+    under-leveled against quiet verses or diluted by reverb decay tails!
+    """
     n = min(wide.shape[1], len(lead_final_dry))
     lk = _apply_k_weighting_mono(lead_final_dry[:n].astype(np.float64), sr)
     hk_l = _apply_k_weighting_mono(wide[0, :n].astype(np.float64), sr)
     hk_r = _apply_k_weighting_mono(wide[1, :n].astype(np.float64), sr)
 
-    l_mask = np.abs(lead_final_dry[:n]) > 1e-3
-    h_mask = (np.abs(wide[0, :n]) + np.abs(wide[1, :n])) > 2e-4
-    if np.sum(l_mask) > 512 and np.sum(h_mask) > 512:
-        l_k_rms = float(np.sqrt(np.mean(lk[l_mask] ** 2) + 1e-12))
-        h_k_rms = float(np.sqrt(0.5 * (np.mean(hk_l[h_mask] ** 2) + np.mean(hk_r[h_mask] ** 2)) + 1e-12))
+    l_pk = float(np.percentile(np.abs(lead_final_dry[:n]), 98)) if n > 0 else 0.0
+    l_mask = np.abs(lead_final_dry[:n]) > max(1e-3, l_pk * 0.06)
+
+    act_src = dry_activity_ref[:, :n] if (dry_activity_ref is not None and dry_activity_ref.shape[1] >= n) else wide[:, :n]
+    h_sum = np.abs(act_src[0]) + np.abs(act_src[1])
+    h_pk = float(np.percentile(h_sum, 99)) if n > 0 else 0.0
+    h_mask = h_sum > max(4e-4, h_pk * 0.08)
+
+    co_mask = l_mask & h_mask
+    ref_l_mask = co_mask if np.sum(co_mask) >= 512 else l_mask
+    ref_h_mask = co_mask if np.sum(co_mask) >= 512 else h_mask
+
+    if np.sum(ref_l_mask) > 256 and np.sum(ref_h_mask) > 256:
+        l_k_rms = float(np.sqrt(np.mean(lk[ref_l_mask] ** 2) + 1e-12))
+        h_k_rms = float(np.sqrt(0.5 * (np.mean(hk_l[ref_h_mask] ** 2) + np.mean(hk_r[ref_h_mask] ** 2)) + 1e-12))
         target_rms = l_k_rms * float(10.0 ** (target_rel_db / 20.0))
-        gain = float(np.clip(target_rms / h_k_rms, 0.04, 16.0))
+        gain = float(np.clip(target_rms / h_k_rms, 0.04, 18.0))
         wide = (wide * gain).astype(np.float32)
 
     out = np.zeros((2, len(lead_final_dry)), dtype=np.float32)
     out[:, :n] = wide[:, :n]
+    return out
+
+
+def _apply_lead_contour_pocket(
+    wide: np.ndarray,
+    lead_final_dry: np.ndarray,
+    sr: int,
+    target_rel_db: float,
+    headroom_db: float = 2.4,
+) -> np.ndarray:
+    """Smoothly bound harmony envelope to follow lead vocal dynamics so harmonies never poke out on soft syllables."""
+    n = min(wide.shape[1], len(lead_final_dry))
+    if n < 1024:
+        return wide
+    hop = max(int(sr * 0.04), 256)
+    n_f = n // hop
+    if n_f < 4:
+        return wide
+
+    l_sq = lead_final_dry[: n_f * hop].astype(np.float64).reshape(n_f, hop) ** 2
+    h_sq = 0.5 * (
+        wide[0, : n_f * hop].astype(np.float64).reshape(n_f, hop) ** 2
+        + wide[1, : n_f * hop].astype(np.float64).reshape(n_f, hop) ** 2
+    )
+    l_env = ndimage.gaussian_filter1d(np.sqrt(np.mean(l_sq, axis=1) + 1e-12), sigma=1.8)
+    h_env = ndimage.gaussian_filter1d(np.sqrt(np.mean(h_sq, axis=1) + 1e-12), sigma=1.8)
+
+    l_floor = float(np.percentile(l_env, 92)) * 0.14
+    eff_l = np.maximum(l_env, l_floor)
+    ceil_env = eff_l * float(10.0 ** ((target_rel_db + headroom_db) / 20.0))
+    atten_f = np.where(h_env > ceil_env, np.clip(ceil_env / (h_env + 1e-12), 0.32, 1.0), 1.0)
+    atten_smooth = ndimage.gaussian_filter1d(atten_f, sigma=1.5)
+
+    sample_g = np.interp(
+        np.arange(n, dtype=np.float64),
+        np.arange(n_f, dtype=np.float64) * hop + hop * 0.5,
+        atten_smooth,
+    ).astype(np.float32)
+    out = wide.copy()
+    out[:, :n] *= sample_g[np.newaxis, :]
     return out
 
 
@@ -1764,23 +1818,12 @@ def process_main_harmony_bus(
     lead_final_dry: np.ndarray,
     sr: int,
     lead_core_hz: float = 1550.0,
-    target_rel_db: float = -8.6,
-    side_boost_db: float = 1.6,
+    target_rel_db: float = -11.2,
+    side_boost_db: float = 0.6,
     plate_plugin=None,
     room_plugin=None,
 ) -> np.ndarray:
-    """Pro Hollow-Core + Transient-Crushed + Depth-Pushed Main Harmony Processor (`+3/-3/harm`).
-
-    Inspired by pro Japanese Utattemita harmony engineering:
-      1. Lead-Formant-Adaptive Hollow-Core EQ (`-4.4 dB @ lead_core_hz`, `-3.8 dB @ 2.85 kHz`,
-         warm chord richness `+1.0 dB @ 420 Hz`, `HPF 240 Hz`, `LPF 8.5 kHz`) removes vocal "core"
-         so harmonies support the chords richly without competing with the lead's center presence.
-      2. Ultra-Fast Attack (`0.8 ms`) + Slow Release (`340 ms`) `6.5:1` Transient-Crushing Compression
-         ("語頭をつぶす") flattens syllable onset edges so harmonies glide behind the lead smoothly.
-      3. Dynamic Sibilance Melt (`4.6 kHz+`) + Short-Predelay (`5 ms`) Depth-Pushing Room/Plate +
-         Diffused Stereo Micro-Delay (`19ms L / 29ms R`) pushes harmonies back on the Z-axis.
-      4. Because core/onset/depth separation is clean, Main Harmonies sit audibly & richly at `-8.6 dB`!
-    """
+    """Pro Hollow-Core + Transient-Crushed + Lead-Following Main Harmony Processor (`+3/-3/harm`)."""
     n = min(harm_stereo.shape[1], len(lead_final_dry))
     h = harm_stereo[:, :n].astype(np.float32)
     if np.sum(np.abs(h) > 1e-4) < 1000:
@@ -1788,40 +1831,40 @@ def process_main_harmony_bus(
 
     core_f = float(np.clip(lead_core_hz, 1100.0, 2150.0))
 
-    # 1. Hollow-Core EQ + Ultra-Fast-Attack / Slow-Release Onset-Crushing Compression
+    # 1. Hollow-Core EQ (zero 420Hz mud boost!) + Ultra-Fast-Attack / Slow-Release Onset-Crushing Compression
     h_board = Pedalboard(
         [
-            HighpassFilter(cutoff_frequency_hz=240.0),
-            PeakFilter(cutoff_frequency_hz=420.0, gain_db=+1.0, q=1.1),
-            PeakFilter(cutoff_frequency_hz=core_f, gain_db=-4.4, q=1.05),
-            PeakFilter(cutoff_frequency_hz=2850.0, gain_db=-3.8, q=1.10),
-            LowpassFilter(cutoff_frequency_hz=8500.0),
-            Compressor(threshold_db=-27.0, ratio=6.5, attack_ms=0.8, release_ms=340.0),
+            HighpassFilter(cutoff_frequency_hz=250.0),
+            PeakFilter(cutoff_frequency_hz=core_f, gain_db=-4.8, q=1.05),
+            PeakFilter(cutoff_frequency_hz=2850.0, gain_db=-4.2, q=1.10),
+            LowpassFilter(cutoff_frequency_hz=7800.0),
+            Compressor(threshold_db=-26.0, ratio=6.5, attack_ms=0.8, release_ms=340.0),
         ]
     )
-    proc = _soften_harmony_sibilants(h_board(h, sr), sr=sr, cutoff_hz=4600.0, max_depth=0.56)
+    proc = _soften_harmony_sibilants(h_board(h, sr), sr=sr, cutoff_hz=4400.0, max_depth=0.62)
 
-    # 2. Controlled Stereo Frame Width
+    # 2. Cohesive Stereo Frame Width (kept focused around lead rather than over-widened)
     mid = 0.5 * (proc[0] + proc[1])
     side = 0.5 * (proc[0] - proc[1]) * float(10.0 ** (side_boost_db / 20.0))
-    wide = np.stack([mid + side, mid - side], axis=0).astype(np.float32)
+    dry_ref = np.stack([mid + side, mid - side], axis=0).astype(np.float32)
+    wide = dry_ref.copy()
 
-    # 3. Diffused Wide Stereo Micro-Delay (19ms L / 29ms R) adds lush horizontal glue behind the lead
-    dly_l = Pedalboard([HighpassFilter(460.0), LowpassFilter(4200.0), Delay(0.019, feedback=0.10, mix=1.0)])(
+    # 3. Subtle Stereo Micro-Diffusion (19ms L / 29ms R) adds gentle horizontal glue behind the lead
+    dly_l = Pedalboard([HighpassFilter(460.0), LowpassFilter(3800.0), Delay(0.019, feedback=0.08, mix=1.0)])(
         wide[0:1], sr
     )[0]
-    dly_r = Pedalboard([HighpassFilter(460.0), LowpassFilter(4200.0), Delay(0.029, feedback=0.10, mix=1.0)])(
+    dly_r = Pedalboard([HighpassFilter(460.0), LowpassFilter(3800.0), Delay(0.029, feedback=0.08, mix=1.0)])(
         wide[1:2], sr
     )[0]
-    wide = (wide + np.stack([dly_l, dly_r], axis=0) * 0.17).astype(np.float32)
+    wide = (wide + np.stack([dly_l, dly_r], axis=0) * 0.12).astype(np.float32)
 
     # 4. Short-Predelay (5ms!) Room + Plate pushes Main Harmonies physically BEHIND the lead on Z-axis!
     if room_plugin is not None:
         try:
             orig_pd = getattr(room_plugin, "predelay", None)
             configure_early_room_phoenix(room_plugin, size_m=8.0, rvb_time=0.46, predelay_ms=5.0)
-            er = room_plugin(Pedalboard([HighpassFilter(320.0), LowpassFilter(5000.0)])(wide, sr), sr, reset=True)
-            wide = (wide + er * 0.22).astype(np.float32)
+            er = room_plugin(Pedalboard([HighpassFilter(320.0), LowpassFilter(4800.0)])(wide, sr), sr, reset=True)
+            wide = (wide + er * 0.24).astype(np.float32)
             if orig_pd is not None:
                 set_vst3_param_strict(room_plugin, "predelay", orig_pd)
         except Exception:
@@ -1830,60 +1873,67 @@ def process_main_harmony_bus(
         try:
             orig_pd2 = getattr(plate_plugin, "predelay", None)
             set_vst3_param_strict(plate_plugin, "predelay", 6.0)
-            wet = plate_plugin(Pedalboard([HighpassFilter(420.0), LowpassFilter(4800.0)])(wide, sr), sr, reset=True)
-            wide = (wide + wet * 0.26).astype(np.float32)
+            wet = plate_plugin(Pedalboard([HighpassFilter(420.0), LowpassFilter(4600.0)])(wide, sr), sr, reset=True)
+            wide = (wide + wet * 0.28).astype(np.float32)
             if orig_pd2 is not None:
                 set_vst3_param_strict(plate_plugin, "predelay", orig_pd2)
         except Exception:
             pass
 
-    return _level_stereo_bus_to_lead_klufs(wide, lead_final_dry, sr=sr, target_rel_db=target_rel_db)
+    leveled = _level_stereo_bus_to_lead_klufs(
+        wide, lead_final_dry, sr=sr, target_rel_db=target_rel_db, dry_activity_ref=dry_ref
+    )
+    return _apply_lead_contour_pocket(leveled, lead_final_dry, sr=sr, target_rel_db=target_rel_db, headroom_db=2.2)
 
 
 def process_choir_bus(
     choir_stereo: np.ndarray,
     lead_final_dry: np.ndarray,
     sr: int,
-    target_rel_db: float = -11.2,
-    side_boost_db: float = 1.8,
+    target_rel_db: float = -7.8,
+    side_boost_db: float = 2.0,
     plate_plugin=None,
     room_plugin=None,
 ) -> np.ndarray:
-    """Lush Wide Ensemble Choir Halo Processor (`choir1..N`), separated cleanly from Main Harmonies."""
+    """Lush Wide Audible Ensemble Choir Halo Processor (`choir1..N`), leveled co-actively to Chorus Lead!"""
     n = min(choir_stereo.shape[1], len(lead_final_dry))
     h = choir_stereo[:, :n].astype(np.float32)
     if np.sum(np.abs(h) > 1e-4) < 1000:
         return np.zeros((2, len(lead_final_dry)), dtype=np.float32)
 
+    # Preserve ensemble midrange presence & airy 10.8 kHz shimmer so choirs cut audibly above dense guitars!
     c_board = Pedalboard(
         [
-            HighpassFilter(cutoff_frequency_hz=260.0),
-            PeakFilter(cutoff_frequency_hz=520.0, gain_db=-2.5, q=1.15),
-            PeakFilter(cutoff_frequency_hz=2550.0, gain_db=-4.5, q=1.0),
-            LowpassFilter(cutoff_frequency_hz=7200.0),
-            Compressor(threshold_db=-25.5, ratio=5.5, attack_ms=2.2, release_ms=220.0),
+            HighpassFilter(cutoff_frequency_hz=220.0),
+            PeakFilter(cutoff_frequency_hz=480.0, gain_db=-1.2, q=1.15),
+            PeakFilter(cutoff_frequency_hz=2600.0, gain_db=-1.6, q=1.0),
+            LowpassFilter(cutoff_frequency_hz=10800.0),
+            Compressor(threshold_db=-24.0, ratio=4.5, attack_ms=4.5, release_ms=200.0),
         ]
     )
-    proc = _soften_harmony_sibilants(c_board(h, sr), sr=sr, cutoff_hz=4500.0, max_depth=0.58)
+    proc = _soften_harmony_sibilants(c_board(h, sr), sr=sr, cutoff_hz=5200.0, max_depth=0.45)
 
     mid = 0.5 * (proc[0] + proc[1])
     side = 0.5 * (proc[0] - proc[1]) * float(10.0 ** (side_boost_db / 20.0))
-    wide = np.stack([mid + side, mid - side], axis=0).astype(np.float32)
+    dry_ref = np.stack([mid + side, mid - side], axis=0).astype(np.float32)
+    wide = dry_ref.copy()
 
     if room_plugin is not None:
         try:
-            er = room_plugin(Pedalboard([HighpassFilter(340.0), LowpassFilter(4800.0)])(wide, sr), sr, reset=True)
-            wide = (wide + er * 0.24).astype(np.float32)
+            er = room_plugin(Pedalboard([HighpassFilter(320.0), LowpassFilter(5600.0)])(wide, sr), sr, reset=True)
+            wide = (wide + er * 0.22).astype(np.float32)
         except Exception:
             pass
     if plate_plugin is not None:
         try:
-            wet = plate_plugin(Pedalboard([HighpassFilter(440.0), LowpassFilter(4600.0)])(wide, sr), sr, reset=True)
-            wide = (wide + wet * 0.28).astype(np.float32)
+            wet = plate_plugin(Pedalboard([HighpassFilter(400.0), LowpassFilter(5400.0)])(wide, sr), sr, reset=True)
+            wide = (wide + wet * 0.26).astype(np.float32)
         except Exception:
             pass
 
-    return _level_stereo_bus_to_lead_klufs(wide, lead_final_dry, sr=sr, target_rel_db=target_rel_db)
+    return _level_stereo_bus_to_lead_klufs(
+        wide, lead_final_dry, sr=sr, target_rel_db=target_rel_db, dry_activity_ref=dry_ref
+    )
 
 
 def process_dedicated_harmony_bus(
@@ -2081,7 +2131,7 @@ def optimize_real_vst3_chain(
 
     rig = RealVST3CharacterRig(archetype=archetype, bpm=bpm)
 
-    eval_len = min(len(anchor_vocal_mono), sr * 12)
+    eval_len = min(len(anchor_vocal_mono), sr * 20)
     v_eval = anchor_vocal_mono[:eval_len]
     i_eval_st = anchor_inst_stereo[:, :eval_len]
 
@@ -2100,18 +2150,19 @@ def optimize_real_vst3_chain(
     lead_core_hz = measure_lead_core_formant_hz(anchor_vocal_mono, sr=sr)
 
     # Calibrate Persistent Q Dynamic/Spectral thresholds relative to staged anchor vocal active RMS
+    # (gentle peak-only engagement — NEVER permanently pegging Band 15/16 on normal diction!)
     nz = np.abs(v_eval) > 1e-3
     v_act_rms_db = float(20.0 * np.log10(np.sqrt(np.mean(v_eval[nz] ** 2)) + 1e-12)) if np.any(nz) else -18.0
-    dyn_mud_th = round(float(np.clip(v_act_rms_db - 6.5, -36.0, -14.0)), 1)
-    dyn_bite_th = round(float(np.clip(v_act_rms_db - 5.5, -34.0, -14.0)), 1)
-    spec_hf_th = round(float(np.clip(v_act_rms_db - 11.5, -42.0, -18.0)), 1)
+    dyn_mud_th = round(float(np.clip(v_act_rms_db - 4.5, -34.0, -13.0)), 1)
+    dyn_bite_th = round(float(np.clip(v_act_rms_db - 1.5, -30.0, -11.0)), 1)
+    spec_hf_th = round(float(np.clip(v_act_rms_db - 4.0, -34.0, -14.0)), 1)
 
-    # Measure raw 2-6kHz consonant attack spikiness across the anchor vocal to adapt dynamic bite & Bark tamer!
+    # Only engage Bark consonant transient tamer on genuinely piercing outlier recordings (atk26 > 15.2 dB)!
     raw_atk26 = _measure_atk26_crest_db(anchor_vocal_mono, sr=sr)
-    bite_excess = max(0.0, raw_atk26 - 13.4)
-    dyn_bite_range = round(float(np.clip(1.8 + bite_excess * 1.4, 1.8, 4.2)), 2)
-    s2_bite_sens = round(float(np.clip(1.4 + bite_excess * 1.6, 1.2, 4.6)), 2)
-    bark_tame = round(float(np.clip(0.14 + bite_excess * 0.24, 0.14, 0.50)), 2)
+    bite_excess = max(0.0, raw_atk26 - 15.2)
+    dyn_bite_range = round(float(np.clip(0.9 + bite_excess * 1.1, 0.9, 2.4)), 2)
+    s2_bite_sens = round(float(np.clip(0.8 + bite_excess * 1.2, 0.8, 2.8)), 2)
+    bark_tame = round(float(np.clip(bite_excess * 0.18, 0.0, 0.28)), 2)
 
     configure_persistent_q_precision(
         rig.pq,
@@ -2119,13 +2170,13 @@ def optimize_real_vst3_chain(
         band_gains_db=base_gains,
         surgical_notches=[(float(x[0]), float(x[1]), float(x[2])) for x in notches],
         dynamic_mud_thresh_db=dyn_mud_th,
-        dynamic_mud_range_db=2.8,
+        dynamic_mud_range_db=2.6,
         dynamic_bite_hz=3250.0,
         dynamic_bite_thresh_db=dyn_bite_th,
         dynamic_bite_range_db=dyn_bite_range,
         spectral_hf_hz=7800.0,
         spectral_hf_thresh_db=spec_hf_th,
-        spectral_hf_range_db=4.2,
+        spectral_hf_range_db=1.8,
         enable_dynamic_bands=True,
     )
     eq_preview = np.mean(rig.pq(np.stack([v_eval, v_eval], axis=0).astype(np.float32), sr, reset=True), axis=0)
@@ -2169,19 +2220,20 @@ def optimize_real_vst3_chain(
 
     def _decode(z: np.ndarray) -> VocalChainParams:
         zc = np.clip(z, 0.0, 1.0)
-        body_d = (zc[0] - 0.5) * 2.6
+        body_d = (zc[0] - 0.5) * 2.0
         pres_d = (zc[1] - 0.5) * 3.4
-        hf_d = (zc[2] - 0.5) * 3.2
+        hf_d = (zc[2] - 0.5) * 3.8
         space_off = -3.0 + zc[3] * 6.5  # [-3.0 .. +3.5 dB]
-        s2_depth = round(float(1.8 + zc[4] * 2.6), 2)  # [1.8 .. 4.4 dB]
+        s2_depth = round(float(0.8 + zc[4] * 1.4), 2)  # [0.8 .. 2.2 dB] gentle polish — never crushes sibilants!
 
         tuned_gains = dict(base_gains)
-        tuned_gains["low_chest"] = round(float(np.clip(base_gains["low_chest"] + body_d * 0.85, -3.2, 3.0)), 2)
-        tuned_gains["warm_body"] = round(float(np.clip(base_gains["warm_body"] + body_d, -3.2, 3.2)), 2)
-        tuned_gains["vocal_bite"] = round(float(np.clip(base_gains["vocal_bite"] + pres_d, -3.0, 3.2)), 2)
-        tuned_gains["clarity_pres"] = round(float(np.clip(base_gains["clarity_pres"] + pres_d * 0.9, -3.0, 3.0)), 2)
-        tuned_gains["sibilant_sheen"] = round(float(np.clip(base_gains["sibilant_sheen"] + hf_d * 0.75, -4.0, 1.0)), 2)
-        tuned_gains["air_shelf"] = round(float(np.clip(base_gains["air_shelf"] + hf_d, -3.8, 1.8)), 2)
+        tuned_gains["low_chest"] = round(float(np.clip(base_gains["low_chest"] + body_d * 0.80, -3.0, 1.6)), 2)
+        tuned_gains["warm_body"] = round(float(np.clip(base_gains["warm_body"] + body_d, -3.0, 1.8)), 2)
+        tuned_gains["low_box"] = round(float(np.clip(base_gains["low_box"] - max(0.0, body_d) * 0.35, -4.2, 0.2)), 2)
+        tuned_gains["vocal_bite"] = round(float(np.clip(base_gains["vocal_bite"] + pres_d, -2.2, 3.4)), 2)
+        tuned_gains["clarity_pres"] = round(float(np.clip(base_gains["clarity_pres"] + pres_d * 0.9, -2.2, 3.2)), 2)
+        tuned_gains["sibilant_sheen"] = round(float(np.clip(base_gains["sibilant_sheen"] + hf_d * 0.85, -2.8, 2.4)), 2)
+        tuned_gains["air_shelf"] = round(float(np.clip(base_gains["air_shelf"] + hf_d, -2.8, 2.2)), 2)
 
         return VocalChainParams(
             archetype_chain=archetype,
@@ -2208,36 +2260,36 @@ def optimize_real_vst3_chain(
             precision_eq_gains_db=tuned_gains,
             surgical_notches=notches,
             dynamic_mud_thresh_db=dyn_mud_th,
-            dynamic_mud_range_db=2.8,
+            dynamic_mud_range_db=2.6,
             dynamic_bite_hz=3250.0,
             dynamic_bite_thresh_db=dyn_bite_th,
             dynamic_bite_range_db=dyn_bite_range,
             spectral_hf_hz=7800.0,
             spectral_hf_thresh_db=spec_hf_th,
-            spectral_hf_range_db=4.2,
+            spectral_hf_range_db=1.8,
             vca_attack_norm=vca_atk,
             vca_release_norm=vca_rel,
-            vca_output_drive=0.1,
+            vca_output_drive=0.08,
             soothe2_depth=s2_depth,
             soothe2_bite_sens=s2_bite_sens,
-            soothe2_sib_sens=5.8,
-            soothe2_hf_sens=5.0,
+            soothe2_sib_sens=3.2,
+            soothe2_hf_sens=2.6,
             bark_transient_tame_amt=bark_tame,
             lead_core_formant_hz=lead_core_hz,
             la2a_gain_knob=la2a_gain,
         )
 
     intrinsic_w = {
-        "body_warmth": 2.4,
-        "boxiness_mud": 2.2,
-        "core_mid": 2.4,
-        "core_presence": 3.0,
-        "sibilance": 2.8,
-        "air_sheen": 2.4,
+        "body_warmth": 2.2,
+        "boxiness_mud": 3.0,
+        "core_mid": 2.6,
+        "core_presence": 3.4,
+        "sibilance": 3.0,
+        "air_sheen": 2.8,
     }
     rolloff_delta = float(np.clip(init_prof.inst_high_rolloff_db - target_profile.inst_high_rolloff_db, -6.0, 6.0))
-    tgt_sib_smooth = min(target_profile.vocal_intrinsic_bands_db["sibilance"], -18.8)
-    tgt_air_smooth = min(target_profile.vocal_intrinsic_bands_db["air_sheen"] + 0.30 * rolloff_delta, -19.2)
+    tgt_sib_smooth = float(np.clip(target_profile.vocal_intrinsic_bands_db["sibilance"], -19.2, -16.0))
+    tgt_air_smooth = float(np.clip(target_profile.vocal_intrinsic_bands_db["air_sheen"] + 0.22 * rolloff_delta, -20.0, -17.9))
 
     def _loss(z: np.ndarray) -> float:
         p = _decode(z)
@@ -2246,12 +2298,12 @@ def optimize_real_vst3_chain(
         bus_st = np.stack([dry_v, dry_v], axis=0) + wet_st
         prof = compute_section_relative_profile(bus_st, i_eval_unmasked, sr=sr)
 
-        # 1. Perceptual Level Blend against ALREADY-UNMASKED backing (eliminates floating overshoot!)
-        err_k = ((prof.k_lufs_vi_ratio_db - target_profile.k_lufs_vi_ratio_db) ** 2) * 5.0
-        err_mk = ((prof.mid_k_lufs_vi_ratio_db - target_profile.mid_k_lufs_vi_ratio_db) ** 2) * 4.5
-        err_pl = ((prof.partial_loudness_margin_db - target_profile.partial_loudness_margin_db) ** 2) * 3.0
+        # 1. Perceptual Level Blend against ALREADY-UNMASKED backing (eliminates floating overshoot & burial!)
+        err_k = ((prof.k_lufs_vi_ratio_db - target_profile.k_lufs_vi_ratio_db) ** 2) * 5.5
+        err_mk = ((prof.mid_k_lufs_vi_ratio_db - target_profile.mid_k_lufs_vi_ratio_db) ** 2) * 5.0
+        err_pl = ((prof.partial_loudness_margin_db - target_profile.partial_loudness_margin_db) ** 2) * 3.5
 
-        # 2. Intrinsic Vocal Tone Shape (with asymmetric sizzle penalty!)
+        # 2. Two-Sided Intrinsic Vocal Tone Shape (prevents BOTH > -17.5dB sizzle AND muffled/muddy collapse!)
         err_tone = 0.0
         for b, wt in intrinsic_w.items():
             if b == "sibilance":
@@ -2261,8 +2313,12 @@ def optimize_real_vst3_chain(
             else:
                 tgt_val = target_profile.vocal_intrinsic_bands_db[b]
             diff = prof.vocal_intrinsic_bands_db[b] - tgt_val
-            if b in ("sibilance", "air_sheen") and diff > 0.0:
-                err_tone += wt * (diff**2) * 2.2  # Strong anti-sizzle barrier!
+            if b == "air_sheen" and prof.vocal_intrinsic_bands_db[b] > -17.6:
+                err_tone += wt * (diff**2) * 3.0 + ((prof.vocal_intrinsic_bands_db[b] + 17.6) ** 2) * 8.0
+            elif b in ("sibilance", "air_sheen") and diff < -1.0:
+                err_tone += wt * (diff**2) * 1.8  # Anti-muffling / anti-crushed-sibilance recovery!
+            elif b == "boxiness_mud" and diff > 0.3:
+                err_tone += wt * (diff**2) * 2.2  # Strong anti-mud / anti-boxy barrier!
             else:
                 err_tone += wt * (diff**2)
 

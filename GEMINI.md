@@ -1,5 +1,7 @@
 # MIX Automation (`C:\MIX_automation`) — Antigravity プロジェクト憲法・開発ガイド
 
+> **2026-11-26 引継ぎ**: Gemini の利用制限により、v7.1 以降は Claude（Claude Code）が開発を引き継いだ。Claude 側の入口は `CLAUDE.md`、引継ぎの経緯・中断時点の状態・使い方・既知の問題は `docs/HANDOVER_CLAUDE.md` にある。本ファイルの不変条件は引き続き両者共通のルールとする。
+
 本ファイルは Antigravity のプロジェクト **MIX_automation** で開かれるすべての新規会話に自動ロードされる中核コンテキストである。詳細な履歴・数値・仕様は `docs/` および `.agents/skills/` に分離しているため、必要に応じて該当ファイルを参照すること。
 
 ## 1. プロジェクト概要と実行環境

@@ -1,4 +1,7 @@
-# MIX Automation v6 (`mix-automation`)
+# MIX Automation v7 (`mix-automation`)
+
+> **開発体制の変更（2026-11-26）**: Gemini（Antigravity）の利用制限により、v7.1 以降の開発は **Claude（Claude Code）が引き継いでいます**。
+> 引継ぎの経緯・中断時点の状態・**ユーザー向けの使い方**・既知の問題は [docs/HANDOVER_CLAUDE.md](./docs/HANDOVER_CLAUDE.md) を参照してください。
 
 歌ってみた制作における**「どの楽曲・声域・編成でも破綻せずオケの内側へ溶け込む上級者クオリティ」**と**「Studio One 5.5 での真正 Steinberg `.vstpreset` 1対1再現・緻密な音作り支援」**を両立する自動ボーカルMIXエンジン（v6.0）です。
 

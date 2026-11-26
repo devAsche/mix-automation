@@ -56,6 +56,7 @@ from mix_automation.dsp.vst3_optimizer import (
     detect_song_sections,
     detect_vocal_surgical_notches,
     estimate_continuous_tempo_map,
+    process_choir_bus,
     process_dedicated_harmony_bus,
     process_main_harmony_bus,
     solve_differentiable_intrinsic_eq_gpu,
@@ -72,7 +73,7 @@ from mix_automation.io.song_builder import (
     write_pcm24_wav,
 )
 from mix_automation.io.studio_one import write_vstpreset
-from mix_automation.pipeline import discover_song_assets
+from mix_automation.pipeline import discover_song_assets, resolve_writable_output_dir
 
 
 def test_relative_profile_and_anchor_propagation() -> None:
@@ -1051,3 +1052,127 @@ def test_v7_multisection_sculpting_tempo_map_preference_learner_and_ref_gate(tmp
     assert ks_res["key_shifted"]
     assert abs(ks_res["key_shift_semitones"]) == 2
     assert not ks_res["paired_calibration_eligible"]
+
+
+def test_v7_1_studio_one_sync_lock_coactive_choir_and_smart_asset_discovery(tmp_path: Path) -> None:
+    sr = 22050
+    dur = 8.0
+    n = int(sr * dur)
+    t = np.linspace(0.0, dur, n, endpoint=False)
+
+    # 1. Smart asset discovery: prefers `(修正版)` healthy off-vocal over -38dBFS unmastered stem & ignores Mixdown.wav!
+    raw_dir = tmp_path / "eva_like"
+    raw_dir.mkdir()
+    lead_sig = (0.20 * np.sin(2.0 * np.pi * 330.0 * t)).astype(np.float32)
+    quiet_off = np.stack([lead_sig * 0.02, lead_sig * 0.02], axis=0)
+    fixed_off = np.stack([lead_sig * 0.90, lead_sig * 0.90], axis=0)
+    write_pcm24_wav(raw_dir / "song - main1.wav", lead_sig, sr)
+    write_pcm24_wav(raw_dir / "song - offvocal.wav", quiet_off, sr)
+    write_pcm24_wav(raw_dir / "song - offvocal(修正版).wav", fixed_off, sr)
+    write_pcm24_wav(raw_dir / "20261126Mixdown.wav", fixed_off, sr)
+
+    assets = discover_song_assets(raw_dir)
+    assert assets["inst"] is not None and "修正版" in assets["inst"].name
+    assert assets["original"] is None  # Diagnostic Mixdown.wav must NEVER be mistaken for original reference!
+
+    # 2. Co-active Choir vs Main Harmony leveling:
+    # Lead is quiet (-22 dBFS) in first 4s verse and loud (-10 dBFS) in last 4s chorus; Choir ONLY sings in chorus!
+    lead_dyn = np.concatenate([lead_sig[: n // 2] * 0.25, lead_sig[n // 2 :] * 1.4]).astype(np.float32)
+    choir_sparse = np.zeros((2, n), dtype=np.float32)
+    choir_sparse[0, n // 2 :] = 0.08 * np.sin(2.0 * np.pi * 523.25 * t[n // 2 :])
+    choir_sparse[1, n // 2 :] = 0.08 * np.sin(2.0 * np.pi * 659.25 * t[n // 2 :])
+
+    choir_out = process_choir_bus(choir_sparse, lead_dyn, sr=sr, target_rel_db=-7.8)
+    chorus_lead_rms = float(np.sqrt(np.mean(lead_dyn[n // 2 :] ** 2)))
+    chorus_choir_rms = float(np.sqrt(0.5 * (np.mean(choir_out[0, n // 2 :] ** 2) + np.mean(choir_out[1, n // 2 :] ** 2))))
+    choir_rel_chorus_db = 20.0 * np.log10((chorus_choir_rms + 1e-12) / (chorus_lead_rms + 1e-12))
+    assert -10.5 <= choir_rel_chorus_db <= -5.5  # Audible in chorus, NOT dragged down by quiet verse!
+
+    # Main harmony sings constant amplitude across BOTH quiet verse and loud chorus -> lead contour pocket tucks verse down!
+    harm_const = np.stack(
+        [0.15 * np.sin(2.0 * np.pi * 415.3 * t), 0.15 * np.sin(2.0 * np.pi * 415.3 * t)],
+        axis=0,
+    ).astype(np.float32)
+    harm_out = process_main_harmony_bus(harm_const, lead_dyn, sr=sr, target_rel_db=-11.2)
+    verse_h_rms = float(np.sqrt(0.5 * (np.mean(harm_out[0, sr : 3 * sr] ** 2) + np.mean(harm_out[1, sr : 3 * sr] ** 2))))
+    chorus_h_rms = float(np.sqrt(0.5 * (np.mean(harm_out[0, 5 * sr : 7 * sr] ** 2) + np.mean(harm_out[1, 5 * sr : 7 * sr] ** 2))))
+    assert verse_h_rms < chorus_h_rms * 0.55
+
+    # 3. Studio One .song variable tempo segments MUST lock `tempoFollow="0"` and `start == offset` (zero vocal slip!)
+    template_path = Path(r"C:\MIX_automation\data\templates\test20261124\test20261124.song")
+    if template_path.exists():
+        s1_dir = tmp_path / "s1_sync"
+        s1_dir.mkdir()
+        mv_wav = s1_dir / "mv.wav"
+        write_pcm24_wav(mv_wav, lead_dyn, sr)
+        out_song = build_studio_one_song(
+            template_song_path=template_path,
+            output_song_dir=s1_dir,
+            song_name="SyncLockTest",
+            bpm=140.0,
+            sr=sr,
+            main_vocal_wav=mv_wav,
+            sections=[],
+            extra_tracks=[TrackMediaSpec(name="offvocal_unmasked", wav_path=mv_wav, stereo=False)],
+            fine_main_events=[(0.0, 2.5, 0.0, "ev1"), (2.5, 5.5, -0.5, "ev2"), (5.5, 8.0, +0.4, "ev3")],
+            tempo_segments=[(0.0, 140.0), (4.0, 112.0), (8.0, 140.0)],
+        )
+        with zipfile.ZipFile(out_song, "r") as zf:
+            s_xml = zf.read("Song/song.xml").decode("utf-8").lstrip("\ufeff")
+        s_root = ET.fromstring(s_xml.replace("<Song ", '<Song xmlns:x="http://www.presonus.com/xml" ', 1))
+        for mtrk in s_root.iter("MediaTrack"):
+            if mtrk.attrib.get("mediaType") == "Audio":
+                assert mtrk.attrib.get("tempoFollow") == "0"
+            for aev in mtrk.iter("AudioEvent"):
+                if "start" in aev.attrib and "offset" in aev.attrib:
+                    assert abs(float(aev.attrib["start"]) - float(aev.attrib["offset"])) < 1e-6
+
+
+def test_v7_1_locked_output_dir_falls_back_to_timestamped_sibling(tmp_path: Path, monkeypatch) -> None:
+    """Studio One holding Media WAVs of an open project must not crash a re-render (Claude handover fix)."""
+    from datetime import datetime
+
+    import mix_automation.pipeline as pl
+
+    base = tmp_path / "Song_auto"
+    assert resolve_writable_output_dir(base) == base  # fresh folder: used as-is
+
+    (base / "Media").mkdir(parents=True)
+    locked_wav = base / "Media" / "00_offvocal_raw_backup.wav"
+    locked_wav.write_bytes(b"RIFF")
+    assert resolve_writable_output_dir(base) == base  # unlocked previous render: overwrite in place
+
+    monkeypatch.setattr(pl, "_is_file_write_locked", lambda p: p.name == locked_wav.name)
+    alt = resolve_writable_output_dir(base, now=datetime(2026, 11, 26, 14, 5, 9))
+    assert alt == tmp_path / "Song_auto_20261126-140509"
+    assert locked_wav.exists()  # the user's open session is never touched
+
+
+def test_v7_1_asset_discovery_reports_offvocal_candidates(tmp_path: Path) -> None:
+    sr = 22050
+    sig = (0.2 * np.sin(2.0 * np.pi * 330.0 * np.linspace(0.0, 2.0, sr * 2, endpoint=False))).astype(np.float32)
+    write_pcm24_wav(tmp_path / "x - main1.wav", sig, sr)
+    write_pcm24_wav(tmp_path / "x - offvocal.wav", np.stack([sig, sig]), sr)
+    write_pcm24_wav(tmp_path / "x - offvocal(修正版).wav", np.stack([sig, sig]), sr)
+    write_pcm24_wav(tmp_path / "x - 自mix.wav", np.stack([sig, sig]), sr)
+    write_pcm24_wav(tmp_path / "202611260841Mixdown.wav", np.stack([sig, sig]), sr)
+    assets = discover_song_assets(tmp_path)
+    assert sorted(p.name for p in assets["inst_candidates"]) == ["x - offvocal(修正版).wav", "x - offvocal.wav"]
+    assert assets["self_mix"] is not None and assets["self_mix"].name == "x - 自mix.wav"
+    assert assets["original"] is None
+
+
+def test_v7_1_benchmark_ab_audits_only_latest_render_per_song(tmp_path: Path) -> None:
+    import json
+    import os
+
+    from mix_automation.analysis.ab_harness import _latest_report_per_song
+
+    for i, folder in enumerate(["Song_consensus", "Song_auto", "Song_auto_20261126-140509", "Other_auto"]):
+        d = tmp_path / folder
+        d.mkdir()
+        rp = d / "mix_report.json"
+        rp.write_text(json.dumps({"song_name": "Other" if folder.startswith("Other") else "Song"}), encoding="utf-8")
+        os.utime(rp, (1_000_000 + i, 1_000_000 + i))
+    picked = {r["song_name"]: d.name for d, r in _latest_report_per_song(tmp_path)}
+    assert picked == {"Song": "Song_auto_20261126-140509", "Other": "Other_auto"}

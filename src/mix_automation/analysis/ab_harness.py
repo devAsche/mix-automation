@@ -157,6 +157,25 @@ def _find_self_mix_path(song_dir: Path, raw_root: Path | None, song_name: str) -
     return None
 
 
+def _latest_report_per_song(outputs_root: Path) -> list[tuple[Path, dict]]:
+    """Pick only the newest render per song.
+
+    Old `_consensus` renders and timestamped fallback folders (written while Studio One locks
+    `<song>_auto`) would otherwise be audited side by side with the current render.
+    """
+    newest: dict[str, tuple[float, Path, dict]] = {}
+    for song_dir in sorted(p for p in outputs_root.iterdir() if p.is_dir()):
+        report_path = song_dir / "mix_report.json"
+        if not report_path.exists():
+            continue
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        key = str(report.get("song_name", song_dir.name))
+        mtime = report_path.stat().st_mtime
+        if key not in newest or mtime > newest[key][0]:
+            newest[key] = (mtime, song_dir, report)
+    return [(d, r) for _, d, r in sorted(newest.values(), key=lambda v: str(v[1]))]
+
+
 def _resolve_song_artifacts(song_dir: Path, report: dict) -> tuple[Path | None, Path | None, Path | None, Path | None]:
     master_wav = Path(report["master_wav"]) if report.get("master_wav") else None
     if master_wav is None or not master_wav.exists():
@@ -177,13 +196,14 @@ def _resolve_song_artifacts(song_dir: Path, report: dict) -> tuple[Path | None, 
     return master_wav, vocal_bus_wav, inst_wav, song_file
 
 
-def _verify_studio_one_song_integrity(song_file: Path | None) -> tuple[bool, int, bool]:
-    """Verify `.song` ZIP has 0 `<VST3PluginState>` occurrences across all entries and valid core XMLs."""
+def _verify_studio_one_song_integrity(song_file: Path | None) -> tuple[bool, int, bool, bool]:
+    """Verify `.song` ZIP has 0 `<VST3PluginState>` leaks, valid XMLs, `tempoFollow=0` & `start == offset` sync."""
     if song_file is None or not song_file.exists():
-        return False, -1, False
+        return False, -1, False, False
 
     juce_leak_count = 0
     xml_valid = True
+    sync_locked = True
     try:
         with zipfile.ZipFile(song_file, "r") as zf:
             names = set(zf.namelist())
@@ -204,11 +224,19 @@ def _verify_studio_one_song_integrity(song_file: Path | None) -> tuple[bool, int
                         txt,
                         count=1,
                     )
-                ET.fromstring(txt)
+                root_el = ET.fromstring(txt)
+                if core_xml == "Song/song.xml":
+                    for mtrk in root_el.iter("MediaTrack"):
+                        if mtrk.attrib.get("mediaType") == "Audio" and mtrk.attrib.get("tempoFollow", "0") != "0":
+                            sync_locked = False
+                        for aev in mtrk.iter("AudioEvent"):
+                            if "start" in aev.attrib and "offset" in aev.attrib:
+                                if abs(float(aev.attrib["start"]) - float(aev.attrib["offset"])) > 1e-3:
+                                    sync_locked = False
     except Exception:
-        return False, juce_leak_count, False
+        return False, juce_leak_count, False, False
 
-    return (juce_leak_count == 0 and xml_valid), juce_leak_count, xml_valid
+    return (juce_leak_count == 0 and xml_valid and sync_locked), juce_leak_count, xml_valid, sync_locked
 
 
 def _window_around_span(
@@ -338,16 +366,27 @@ def _evaluate_health_checks(
     tgt_intr = tgt.get("vocal_intrinsic_bands_db", {})
     achieved_body = float(bus_intr.get("body_warmth", -7.0))
     target_body = float(tgt_intr.get("body_warmth", achieved_body))
+    achieved_mud = float(bus_intr.get("boxiness_mud", -4.2))
+    target_mud = float(tgt_intr.get("boxiness_mud", achieved_mud))
     achieved_air = float(bus_intr.get("air_sheen", -20.0))
+    target_air = float(tgt_intr.get("air_sheen", -19.0))
     achieved_sib = float(bus_intr.get("sibilance", -19.0))
+    target_sib = float(tgt_intr.get("sibilance", -18.0))
     achieved_pres = float(bus_intr.get("core_presence", -10.0))
 
-    s1_ok, juce_leak_count, xml_valid = _verify_studio_one_song_integrity(song_file)
+    s1_ok, juce_leak_count, xml_valid, sync_locked = _verify_studio_one_song_integrity(song_file)
+
+    no_muffling = (
+        achieved_air >= max(target_air - 3.2, -22.5)
+        and achieved_sib >= max(target_sib - 3.2, -21.0)
+        and achieved_mud <= target_mud + 1.15
+    )
 
     checks = {
         "klufs_error_db": bool(klufs_abs_err <= 0.85),
         "no_lower_mid_scoop": bool(achieved_body >= target_body - 1.8),
         "no_hf_sizzle": bool(achieved_air <= -17.5),
+        "no_vocal_muffling": bool(no_muffling),
         "studio_one_zero_juce_leak": bool(s1_ok),
     }
     metrics: dict[str, object] = {
@@ -359,14 +398,19 @@ def _evaluate_health_checks(
         "partial_loudness_margin_db": round(float(bus.get("partial_loudness_margin_db", 0.0)), 3),
         "achieved_body_warmth": round(achieved_body, 3),
         "target_body_warmth": round(target_body, 3),
+        "achieved_boxiness_mud": round(achieved_mud, 3),
+        "target_boxiness_mud": round(target_mud, 3),
         "achieved_core_presence": round(achieved_pres, 3),
         "target_core_presence": round(float(tgt_intr.get("core_presence", achieved_pres)), 3),
         "achieved_sibilance": round(achieved_sib, 3),
+        "target_sibilance": round(target_sib, 3),
         "achieved_air_sheen": round(achieved_air, 3),
+        "target_air_sheen": round(target_air, 3),
         "achieved_wet_tail_db": round(float(bus.get("wet_tail_ratio_db", -22.0)), 2),
         "achieved_side_mid_db": round(float(bus.get("vocal_side_mid_db", -10.0)), 2),
         "juce_leak_count": int(juce_leak_count),
         "song_xml_valid": bool(xml_valid),
+        "song_sync_locked": bool(sync_locked),
         "studio_one_song": str(song_file) if song_file is not None else None,
     }
     return checks, metrics
@@ -401,11 +445,7 @@ def extract_loudness_normalized_ab_clips(
             "songs": [],
         }
 
-    for song_dir in sorted(p for p in outputs_root.iterdir() if p.is_dir()):
-        report_path = song_dir / "mix_report.json"
-        if not report_path.exists():
-            continue
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+    for song_dir, report in _latest_report_per_song(outputs_root):
         master_wav, vocal_bus_wav, inst_wav, song_file = _resolve_song_artifacts(song_dir, report)
         if master_wav is None or not master_wav.exists() or vocal_bus_wav is None or not vocal_bus_wav.exists():
             continue
@@ -691,8 +731,9 @@ def generate_ab_blind_console_html(summary: dict, html_path: Path) -> Path:
               <th>Archetype / BPM</th>
               <th>K-LUFS Err (&le;0.85)</th>
               <th>No Scoop (Body)</th>
+              <th>No Muffling (Sib/Mud)</th>
               <th>No HF Sizzle (&le;-17.5)</th>
-              <th>S1 Zero JUCE Leak</th>
+              <th>S1 Sync &amp; Zero JUCE</th>
               <th>Presence / WetTail / Side-Mid</th>
             </tr>
           </thead>
@@ -877,8 +918,9 @@ def generate_ab_blind_console_html(summary: dict, html_path: Path) -> Path:
             <td class="mono">${{s.archetype}}<div class="sub">${{s.bpm}} BPM &middot; ${{s.detected_key}}</div></td>
             <td>${{badge(hc.klufs_error_db, (hm.klufs_abs_error_db ?? 0).toFixed(2) + "dB")}}</td>
             <td>${{badge(hc.no_lower_mid_scoop, (hm.achieved_body_warmth ?? 0).toFixed(1) + " vs " + (hm.target_body_warmth ?? 0).toFixed(1))}}</td>
+            <td>${{badge(hc.no_vocal_muffling !== false, "sib=" + (hm.achieved_sibilance ?? 0).toFixed(1) + " mud=" + (hm.achieved_boxiness_mud ?? 0).toFixed(1))}}</td>
             <td>${{badge(hc.no_hf_sizzle, (hm.achieved_air_sheen ?? 0).toFixed(1) + "dB")}}</td>
-            <td>${{badge(hc.studio_one_zero_juce_leak, "leak=" + (hm.juce_leak_count ?? "?"))}}</td>
+            <td>${{badge(hc.studio_one_zero_juce_leak, "leak=" + (hm.juce_leak_count ?? "?") + " sync=" + String(hm.song_sync_locked ?? true))}}</td>
             <td class="mono">${{(hm.achieved_core_presence ?? 0).toFixed(1)}} / ${{(hm.achieved_wet_tail_db ?? 0).toFixed(1)}} / ${{(hm.achieved_side_mid_db ?? 0).toFixed(1)}} dB</td>
           </tr>
         `;

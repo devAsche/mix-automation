@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +29,6 @@ from mix_automation.creative.fx_and_harmony import (
     apply_verified_inline_fx_chain,
     apply_vocalsynth2_harmony_gloss,
     detect_creative_fx_events,
-    generate_counter_melody_and_export_midi,
     generate_nectar3_harmonies_and_plan,
     render_ethereal_throw_stem,
     render_spot_delay_throw_stem,
@@ -146,7 +146,7 @@ def load_target_profile(
             taste_weight=taste_weight if taste_prof is not None else 0.0,
             offvocal_calibration=data.get("official_offvocal_calibration"),
         )
-        label = f"knn_44_{backing_archetype}"
+        label = f"knn_{len(songs)}_{backing_archetype}"
         if taste_prof is not None and taste_weight > 0.01:
             label += f"+{ts_clean}({int(taste_weight * 100)}%)"
         knn_prof, label = _apply_prefs(knn_prof, label)
@@ -183,11 +183,13 @@ def discover_song_assets(song_folder: Path) -> dict[str, Path | list[Path] | Non
     stems_dir = song_folder / "stems"
     stem_files = sorted(stems_dir.glob("*.wav")) if stems_dir.exists() else []
 
-    inst_file: Path | None = None
+    inst_candidates: list[Path] = []
     orig_file: Path | None = None
     self_mix_file: Path | None = None
     lyrics_file: Path | None = None
     flat_stem_candidates: list[Path] = []
+
+    ignore_diag_tokens = ("mixdown", "automix", "_master", "_vocalbus", "オケなし")
 
     for f in sorted(song_folder.iterdir()):
         if f.is_dir():
@@ -198,12 +200,37 @@ def discover_song_assets(song_folder: Path) -> dict[str, Path | list[Path] | Non
             lyrics_file = f
         elif "自mix" in low and "オケなし" not in low:
             self_mix_file = f
+        elif any(tok in low for tok in ignore_diag_tokens):
+            continue
         elif any(k in low for k in ("inst", "off vocal", "offvocal", "off_vocal", "オケ")) and "自mix" not in low:
-            inst_file = f
+            inst_candidates.append(f)
         elif suf == ".wav" and _classify_filename_role(f.stem) is not None:
             flat_stem_candidates.append(f)
         elif suf in {".mp3", ".wav", ".webm", ".flac", ".m4a"} and "自mix" not in low:
             orig_file = f
+
+    inst_file: Path | None = None
+    if len(inst_candidates) == 1:
+        inst_file = inst_candidates[0]
+    elif len(inst_candidates) > 1:
+        # Prefer explicitly fixed/revised off-vocals (e.g. `(修正版)`) and healthy studio RMS (-24..-8 dBFS)
+        # over unmastered -36 LUFS stems when both exist in the same folder!
+        def _score_inst(p: Path) -> tuple[int, int, int]:
+            nm = p.name.lower()
+            is_revised = 1 if any(k in nm for k in ("修正", "fixed", "rev", "master")) else 0
+            healthy_rms = 0
+            try:
+                probe_st, _ = load_audio(p, target_sr=22050, mono=True)
+                if probe_st.size > 0:
+                    rms_db = float(20.0 * np.log10(np.sqrt(np.mean(probe_st**2)) + 1e-12))
+                    if -25.5 <= rms_db <= -7.5:
+                        healthy_rms = 1
+            except Exception:
+                pass
+            is_wav = 1 if p.suffix.lower() in {".wav", ".flac"} else 0
+            return (is_revised, healthy_rms, is_wav)
+
+        inst_file = max(inst_candidates, key=_score_inst)
 
     if not stem_files and flat_stem_candidates:
         stem_files = flat_stem_candidates
@@ -216,6 +243,7 @@ def discover_song_assets(song_folder: Path) -> dict[str, Path | list[Path] | Non
     return {
         "stems": stem_files,
         "inst": inst_file,
+        "inst_candidates": inst_candidates,
         "original": orig_file,
         "self_mix": self_mix_file,
         "lyrics": lyrics_file,
@@ -273,6 +301,53 @@ def _smooth_envelope(raw_env: np.ndarray, sr: int, smooth_sec: float = 0.25) -> 
     return signal.fftconvolve(raw_env.astype(np.float32), xf_win, mode="same").astype(np.float32)
 
 
+def _is_file_write_locked(path: Path) -> bool:
+    """True when another process (e.g. Studio One holding an open project's Media) blocks writing `path`."""
+    try:
+        with open(path, "r+b"):
+            return False
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def resolve_writable_output_dir(base_out_dir: Path, now: datetime | None = None) -> Path:
+    """Return `base_out_dir`, or a timestamped sibling when its previous outputs are locked.
+
+    Studio One keeps the Media WAVs of an open project locked; re-rendering into the same folder
+    then fails inside libsndfile ("System error") and would also clobber a session the user is editing.
+    Instead of failing, render into `<name>_YYYYMMDD-HHMMSS` and leave the open session untouched.
+    """
+    if not base_out_dir.exists():
+        return base_out_dir
+    candidates = [p for p in base_out_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".wav", ".song"}]
+    locked = [p for p in candidates if _is_file_write_locked(p)]
+    if not locked:
+        return base_out_dir
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    alt = base_out_dir.with_name(f"{base_out_dir.name}_{stamp}")
+    print(
+        f"[WARN] {len(locked)} file(s) in '{base_out_dir}' are locked by another process "
+        f"(e.g. '{locked[0].name}' open in Studio One). Writing this render to '{alt}' instead.",
+        flush=True,
+    )
+    return alt
+
+
+def _measure_file_lufs(path: Path, sr: int = 44100) -> float | None:
+    """Integrated LUFS of an input file for the report (None when silent/unreadable)."""
+    import pyloudnorm as pyln
+
+    try:
+        audio, _ = load_audio(path, target_sr=sr, mono=False)
+        data = audio.T.astype(np.float64) if audio.ndim == 2 else audio.astype(np.float64)
+        val = float(pyln.Meter(sr).integrated_loudness(data))
+    except Exception:  # noqa: BLE001 - diagnostics only, must never break a render
+        return None
+    return round(val, 2) if np.isfinite(val) else None
+
+
 def run_full_automix_for_song(
     song_folder: Path,
     template_song_path: Path,
@@ -293,7 +368,7 @@ def run_full_automix_for_song(
     eff_taste = None if ts_norm in {"", "none", "off", "false"} else ts_norm
     eff_tw = taste_weight if eff_taste else 0.0
 
-    out_dir = output_root / f"{safe_slug}_{style}"
+    out_dir = resolve_writable_output_dir(output_root / f"{safe_slug}_{style}")
     media_dir = out_dir / "Media"
     media_dir.mkdir(parents=True, exist_ok=True)
 
@@ -524,10 +599,10 @@ def run_full_automix_for_song(
 
     section_envelope = _smooth_envelope(section_envelope, target_sr, 0.16)
     combined_gain_env = (section_envelope * dist_envs["gain_env"]).astype(np.float32)
-    # Apply BOTH section clip-gain envelope AND continuous distance gain + upper-mid softening on quiet drops!
+    # Apply BOTH section clip-gain envelope AND gentle continuous distance gain on quiet drops!
     lead_final_dry = (lead_adapted * combined_gain_env).astype(np.float32)
     lead_final_dry = apply_dynamic_distance_tone_soften(
-        lead_final_dry, sr=target_sr, soften_env=dist_envs["soften_env"], max_cut_db=1.6
+        lead_final_dry, sr=target_sr, soften_env=dist_envs["soften_env"], max_cut_db=0.45
     )
     fine_events = build_fine_distance_sub_events(
         lead_prepared, combined_gain_env, raw_spans, sr=target_sr
@@ -548,6 +623,7 @@ def run_full_automix_for_song(
     fx_throw_stereo = render_ethereal_throw_stem(lead_final_dry, sr=target_sr, events=fx_events, bpm=bpm)
     fx_spot_delay_stereo = render_spot_delay_throw_stem(lead_final_dry, sr=target_sr, events=fx_events, bpm=bpm)
 
+    midi_guide_target = out_dir / f"{safe_slug}_Director_Harmony_Guide.mid"
     harmony_res = generate_nectar3_harmonies_and_plan(
         lead_prepared,
         inst_mono,
@@ -556,15 +632,11 @@ def run_full_automix_for_song(
         existing_user_harmonies=(
             [consolidated.harmonies_stereo_bus] if consolidated.harmonies_stereo_bus is not None else None
         ),
-    )
-    midi_guide_file, counter_notes = generate_counter_melody_and_export_midi(
-        out_dir / f"{safe_slug}_Director_Harmony_Guide.mid",
+        out_midi_path=midi_guide_target,
         bpm=bpm,
-        lead_vocal_mono=lead_prepared,
-        inst_mono=inst_mono,
-        sections=song_sections,
-        sr=target_sr,
     )
+    midi_guide_file = Path(harmony_res.midi_guide_path) if harmony_res.midi_guide_path else midi_guide_target
+    counter_notes = harmony_res.counter_melody_notes
     print(
         f"Verified FX Cues: {len(fx_events)} | Harmony Engine: {harmony_res.engine_used} "
         f"({harmony_res.total_harmony_notes} notes, {harmony_res.chord_clash_notes_rescued} chord clashes rescued, "
@@ -626,8 +698,10 @@ def run_full_automix_for_song(
         if sup_oc_bal is not None:
             aux_layers_stereo += sup_oc_bal
 
-    harmony_target_rel_db = -8.6
-    choir_target_rel_db = -11.2
+    # Main Harmonies (+3/-3/harm) tuck tightly inside lead (-11.2 dB co-active, modest width);
+    # Choirs (choir1..N) bloom audibly & lushly on chorus climaxes (-7.8 dB co-active, wide ensemble)!
+    harmony_target_rel_db = -11.2
+    choir_target_rel_db = -7.8
     main_harm_processed = np.zeros((2, common_len), dtype=np.float32)
     choir_processed: np.ndarray | None = None
 
@@ -638,7 +712,7 @@ def run_full_automix_for_song(
             sr=target_sr,
             lead_core_hz=chain_params.lead_core_formant_hz,
             target_rel_db=harmony_target_rel_db,
-            side_boost_db=1.6,
+            side_boost_db=0.6,
             plate_plugin=rig.r2,
             room_plugin=rig.phoenix,
         )
@@ -650,26 +724,50 @@ def run_full_automix_for_song(
             lead_final_dry,
             sr=target_sr,
             target_rel_db=choir_target_rel_db,
-            side_boost_db=1.8,
+            side_boost_db=2.0,
             plate_plugin=rig.r2,
             room_plugin=rig.phoenix,
         )
         harm_bus_processed = (harm_bus_processed + choir_processed).astype(np.float32)
 
     if consolidated.harmonies_stereo_bus is not None:
-        # Stage Studio One harmvocal / harmvocal2 mono stems cleanly to -18 LUFS matching mainvocal!
+        # Stage Studio One harmvocal / harmvocal2 mono stems by co-active RMS relative to lead_prepared
+        # so sparse chorus-only harmonies never get over-boosted by full-song integrated LUFS!
+        def _stage_s1_harm_coactive(h_mono: np.ndarray) -> np.ndarray:
+            h_pad = np.pad(h_mono, (0, max(0, common_len - len(h_mono))))[:common_len].astype(np.float32)
+            co_m = (np.abs(h_pad) > 2e-4) & (np.abs(lead_prepared) > 1e-3)
+            if np.sum(co_m) >= 512:
+                l_r = float(np.sqrt(np.mean(lead_prepared[co_m] ** 2) + 1e-12))
+                h_r = float(np.sqrt(np.mean(h_pad[co_m] ** 2) + 1e-12))
+                g = float(np.clip(l_r / h_r, 0.1, 12.0))
+                out = h_pad * g
+                pk = float(np.max(np.abs(out))) + 1e-9
+                if pk > 0.86:
+                    out *= 0.86 / pk
+                return out.astype(np.float32)
+            staged_h, _ = stage_vocal_loudness(h_pad, sr=target_sr, target_lufs=-18.0)
+            return staged_h
+
         if consolidated.harm1_mono is not None:
-            h1_pad = np.pad(consolidated.harm1_mono, (0, max(0, common_len - len(consolidated.harm1_mono))))[:common_len]
-            harm1_mono_for_s1, _ = stage_vocal_loudness(h1_pad, sr=target_sr, target_lufs=-18.0)
+            harm1_mono_for_s1 = _stage_s1_harm_coactive(consolidated.harm1_mono)
         if consolidated.harm2_mono is not None:
-            h2_pad = np.pad(consolidated.harm2_mono, (0, max(0, common_len - len(consolidated.harm2_mono))))[:common_len]
-            harm2_mono_for_s1, _ = stage_vocal_loudness(h2_pad, sr=target_sr, target_lufs=-18.0)
+            harm2_mono_for_s1 = _stage_s1_harm_coactive(consolidated.harm2_mono)
 
     # Real-Harmony Priority: ONLY blend Nectar 3 (+ subtle VocalSynth 2 Biovox gloss) when user has ZERO harmonies!
     use_nectar_in_2mix = (not consolidated.has_user_harmonies) or enable_nectar_in_mix
     if use_nectar_in_2mix:
         nectar_polished = apply_vocalsynth2_harmony_gloss(harmony_res.auto_mix_harmony_stereo, sr=target_sr, wet_mix=12.0)
-        harm_bus_processed = (harm_bus_processed + nectar_polished * 0.78).astype(np.float32)
+        nectar_leveled = process_main_harmony_bus(
+            nectar_polished,
+            lead_final_dry,
+            sr=target_sr,
+            lead_core_hz=chain_params.lead_core_formant_hz,
+            target_rel_db=-12.5,
+            side_boost_db=0.5,
+            plate_plugin=rig.r2,
+            room_plugin=rig.phoenix,
+        )
+        harm_bus_processed = (harm_bus_processed + nectar_leveled).astype(np.float32)
 
     # Gentle 14-Band Bark Adaptive Spectral Mid-Channel Unmasking (pre-matched during Stage D CMA-ES!)
     inst_unmasked = apply_dynamic_instrumental_unmasking(
@@ -724,16 +822,55 @@ def run_full_automix_for_song(
                 vocal_bus_stereo[:, s0:s1], inst_unmasked[:, s0:s1], sr=target_sr
             )
 
-    # 3. Final Anti-Float Perceptual Level Lock (K-LUFS + Mid K-LUFS + Partial Loudness)
-    perceptual_overshoot_db = (
-        0.40 * (pre_qa_anchor.k_lufs_vi_ratio_db - target_prof.k_lufs_vi_ratio_db)
-        + 0.35 * (pre_qa_anchor.mid_k_lufs_vi_ratio_db - target_prof.mid_k_lufs_vi_ratio_db)
-        + 0.25 * (pre_qa_anchor.partial_loudness_margin_db - target_prof.partial_loudness_margin_db)
+    # 3. Lead-First Anti-Burial & Anti-Float Perceptual Level Lock:
+    # Lock the LEAD vocal (+ wet space) directly to target K-LUFS / Mid K-LUFS / Partial Loudness FIRST
+    # so adding harmonies/choirs NEVER pushes the lead vocal down into burial!
+    lead_wet_anchor = compute_section_relative_profile(
+        (lead_stereo + wet_total)[:, s0:s1], inst_unmasked[:, s0:s1], sr=target_sr
+    )
+    lead_target_offset_db = -0.22 if float(np.max(np.abs(harm_bus_processed + aux_layers_stereo))) > 1e-4 else 0.0
+    lead_overshoot_db = (
+        0.40 * (lead_wet_anchor.k_lufs_vi_ratio_db - (target_prof.k_lufs_vi_ratio_db + lead_target_offset_db))
+        + 0.35 * (lead_wet_anchor.mid_k_lufs_vi_ratio_db - (target_prof.mid_k_lufs_vi_ratio_db + lead_target_offset_db))
+        + 0.25 * (lead_wet_anchor.partial_loudness_margin_db - (target_prof.partial_loudness_margin_db + lead_target_offset_db))
     )
     closed_loop_trim_db = 0.0
-    if abs(perceptual_overshoot_db) > 0.25:
-        closed_loop_trim_db = round(float(np.clip(-perceptual_overshoot_db * 0.92, -6.5, 5.0)), 2)
-        vocal_bus_stereo = (vocal_bus_stereo * float(10.0 ** (closed_loop_trim_db / 20.0))).astype(np.float32)
+    if abs(lead_overshoot_db) > 0.20:
+        closed_loop_trim_db = round(float(np.clip(-lead_overshoot_db * 0.92, -6.5, 5.5)), 2)
+        lead_gain = float(10.0 ** (closed_loop_trim_db / 20.0))
+        lead_stereo = (lead_stereo * lead_gain).astype(np.float32)
+        wet_total = (wet_total * lead_gain).astype(np.float32)
+        harm_bus_processed = (harm_bus_processed * lead_gain).astype(np.float32)
+        aux_layers_stereo = (aux_layers_stereo * lead_gain).astype(np.float32)
+        if dbl_bal is not None:
+            dbl_bal = (dbl_bal * lead_gain).astype(np.float32)
+        if sub_oc_bal is not None:
+            sub_oc_bal = (sub_oc_bal * lead_gain).astype(np.float32)
+        if sup_oc_bal is not None:
+            sup_oc_bal = (sup_oc_bal * lead_gain).astype(np.float32)
+        if choir_processed is not None:
+            choir_processed = (choir_processed * lead_gain).astype(np.float32)
+
+    vocal_bus_stereo = lead_stereo + aux_layers_stereo + harm_bus_processed + wet_total
+    post_lead_anchor = compute_section_relative_profile(
+        vocal_bus_stereo[:, s0:s1], inst_unmasked[:, s0:s1], sr=target_sr
+    )
+    # If heavy multi-track aux/harmony summation still pushes total vocal bus > +0.65 dB over K-LUFS target,
+    # gently trim ONLY the auxiliary/harmony layers (protecting lead vocal clarity & presence 100%!)
+    bus_klufs_excess = post_lead_anchor.k_lufs_vi_ratio_db - target_prof.k_lufs_vi_ratio_db
+    if bus_klufs_excess > 0.60 and float(np.max(np.abs(harm_bus_processed + aux_layers_stereo))) > 1e-4:
+        aux_trim_db = round(-float(np.clip(bus_klufs_excess * 1.35, 0.4, 4.0)), 2)
+        aux_g = float(10.0 ** (aux_trim_db / 20.0))
+        harm_bus_processed = (harm_bus_processed * aux_g).astype(np.float32)
+        aux_layers_stereo = (aux_layers_stereo * aux_g).astype(np.float32)
+        harm_qa_trim_db = round(harm_qa_trim_db + aux_trim_db, 2)
+        if dbl_bal is not None:
+            dbl_bal = (dbl_bal * aux_g).astype(np.float32)
+        if sub_oc_bal is not None:
+            sub_oc_bal = (sub_oc_bal * aux_g).astype(np.float32)
+        if sup_oc_bal is not None:
+            sup_oc_bal = (sup_oc_bal * aux_g).astype(np.float32)
+        vocal_bus_stereo = lead_stereo + aux_layers_stereo + harm_bus_processed + wet_total
 
     final_master_2mix = apply_2mix_bus_glue_and_safe_master(
         inst_unmasked, vocal_bus_stereo, sr=target_sr, target_lufs=-9.0
@@ -774,8 +911,16 @@ def run_full_automix_for_song(
     s1_chain_params = type(chain_params)(
         **{**chain_params.to_dict(), "vocal_fader_db": round(chain_params.vocal_fader_db + closed_loop_trim_db, 2)}
     )
+    two_ch_harm_offset_db = -3.0 if (harm1_mono_for_s1 is not None and harm2_mono_for_s1 is not None) else 0.0
     s1_harm_fader_db = round(
-        float(np.clip(harmony_target_rel_db + harm_qa_trim_db + s1_chain_params.vocal_fader_db, -18.0, -6.0)), 2
+        float(
+            np.clip(
+                harmony_target_rel_db + two_ch_harm_offset_db + harm_qa_trim_db + s1_chain_params.vocal_fader_db,
+                -22.0,
+                -7.5,
+            )
+        ),
+        2,
     )
 
     patched_presets = export_template_vst3_states(chain_params, bpm=bpm)
@@ -936,13 +1081,19 @@ def run_full_automix_for_song(
         fx_wav_path = media_dir / wav_fname
         write_pcm24_wav(fx_wav_path, np.stack([slice_mono, slice_mono], axis=0), target_sr)
         slots = (slot_pair,) if slot_pair[1] in patched_presets else ()
+        # Calibrate Stage 3 spot-FX channel fader against processed 2mix spot stem so live VST3 never jumps in level!
+        fx_fader_db = float(s1_chain_params.vocal_fader_db)
+        if fx_type == "distortion_grit":
+            fx_fader_db = round(float(np.clip(s1_chain_params.vocal_fader_db - 2.5, -18.0, 2.0)), 2)
+        elif fx_type == "radio_voice":
+            fx_fader_db = round(float(np.clip(s1_chain_params.vocal_fader_db - 1.5, -18.0, 2.5)), 2)
         extra_tracks.append(
             TrackMediaSpec(
                 name=trk_name,
                 wav_path=fx_wav_path,
                 stereo=True,
                 color=trk_color,
-                gain_db=s1_chain_params.vocal_fader_db,
+                gain_db=fx_fader_db,
                 mute=False,
                 insert_slots=slots,
             )
@@ -1059,6 +1210,21 @@ def run_full_automix_for_song(
         "closed_loop_bus_trim_db": closed_loop_trim_db,
         "harmony_qa_trim_db": harm_qa_trim_db,
         "nectar_mixed_into_2mix": use_nectar_in_2mix,
+        "input_assets": {
+            "song_folder": str(song_folder),
+            "offvocal_file": Path(assets["inst"]).name,  # type: ignore[arg-type]
+            "offvocal_raw_lufs": round(raw_inst_lufs, 2) if np.isfinite(raw_inst_lufs) else None,
+            "offvocal_stage_gain_db": inst_stage_gain_db,
+            "offvocal_candidates": [Path(p).name for p in assets.get("inst_candidates", [])],  # type: ignore[union-attr]
+            "original_file": Path(assets["original"]).name if assets["original"] else None,  # type: ignore[arg-type]
+            "self_mix_file": Path(assets["self_mix"]).name if assets["self_mix"] else None,  # type: ignore[arg-type]
+            "lyrics_file": Path(assets["lyrics"]).name if assets["lyrics"] else None,  # type: ignore[arg-type]
+            "vocal_stems": [
+                {"file": Path(p).name, "lufs": _measure_file_lufs(Path(p), sr=target_sr)}
+                for p in assets["stems"]  # type: ignore[union-attr]
+            ],
+            "output_dir": str(out_dir),
+        },
         "stem_consolidation": {
             "roles": consolidated.stem_roles_summary,
             "deduplicated_skipped": consolidated.deduplicated_files,
@@ -1144,6 +1310,16 @@ def _write_director_markdown_report(md_path: Path, report: dict) -> None:
         f"- **生成済みStudio One 5 プロジェクト**: `{report['studio_one_song']}` （注入済み真正 `.vstpreset`: `{len(report.get('studio_one_injected_presets', []))} 本` / 精密距離クリップイベント: `{report.get('fine_s1_events_count', 0)} 個`）",
         f"- **Stage 4 ディレクターMIDIガイド**: `{report.get('director_midi_guide', '-')}` （カウンターメロディ提案 `{report.get('counter_melody_notes_count', 0)} 音`）",
         f"- **完成マスタリング音源**: `{report['master_wav']}`",
+        (
+            f"- **使用オフボーカル**: `{report.get('input_assets', {}).get('offvocal_file')}` "
+            f"(元 `{report.get('input_assets', {}).get('offvocal_raw_lufs')} LUFS`, ステージング "
+            f"`{report.get('input_assets', {}).get('offvocal_stage_gain_db')} dB`, 候補: "
+            f"{report.get('input_assets', {}).get('offvocal_candidates')})"
+        ),
+        "- **使用ボーカルステム**: "
+        + ", ".join(
+            f"`{s['file']}` ({s['lufs']} LUFS)" for s in report.get("input_assets", {}).get("vocal_stems", [])
+        ),
         "",
     ]
 
