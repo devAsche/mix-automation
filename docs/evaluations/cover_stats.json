@@ -218,6 +218,25 @@
    "chroma_best": 0.9935,
    "chroma_zero": 0.9935
   },
+  "LoveAndDestroy__cover_Ado": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Ado",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.0,
+   "env_corr": 0.9738,
+   "coverage": 1.0,
+   "len_s": 212.4742,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.9458,
+   "key_shift": 0,
+   "chroma_best": 0.9857,
+   "chroma_zero": 0.9857
+  },
   "LoveAndDestroy__cover_Azsagawa": {
    "song": "ラブ&デストロイ",
    "kind": "cover",
@@ -312,6 +331,63 @@
    "key_shift": 0,
    "chroma_best": 0.9769,
    "chroma_zero": 0.9769
+  },
+  "LoveAndDestroy__cover_Xea": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Xea",
+   "status": "exclude",
+   "why": "テンポずれ +18 ms/分",
+   "offset_s": 0.09,
+   "env_corr": 0.894,
+   "coverage": 1.0,
+   "len_s": 214.6453,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": 18.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.8072,
+   "key_shift": 0,
+   "chroma_best": 0.9694,
+   "chroma_zero": 0.9694
+  },
+  "LoveAndDestroy__cover_Yoei": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "Yoei",
+   "status": "use",
+   "why": "",
+   "offset_s": -0.01,
+   "env_corr": 0.9521,
+   "coverage": 0.9998,
+   "len_s": 212.4858,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": 0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.9098,
+   "key_shift": 0,
+   "chroma_best": 0.986,
+   "chroma_zero": 0.986
+  },
+  "LoveAndDestroy__cover_YuukiAoi": {
+   "song": "ラブ&デストロイ",
+   "kind": "cover",
+   "name": "YuukiAoi",
+   "status": "use",
+   "why": "",
+   "offset_s": 0.09,
+   "env_corr": 0.9212,
+   "coverage": 1.0,
+   "len_s": 212.48,
+   "offvocal_len_s": 66.3378,
+   "drift_ms_per_min": -0.0,
+   "edits": 0,
+   "n_windows": 4,
+   "local_corr_median": 0.8072,
+   "key_shift": 0,
+   "chroma_best": 0.9657,
+   "chroma_zero": 0.9657
   },
   "SixFeetUnder__cover_AokumoRin": {
    "song": "シックスフィートアンダー",
@@ -1283,6 +1359,27 @@
     -10.6635
    ],
    "refs": {
+    "LoveAndDestroy__cover_Ado": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -12.3922,
+      "vi1k4k_median": -0.8651,
+      "body_rel": 4.038,
+      "air_rel": -9.3754,
+      "bright_rel": -11.2889,
+      "tilt": -2.6889,
+      "hf_rel_abs": -17.618,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -14.1512
+     },
+     "phrase_loss": [
+      -11.6697
+     ]
+    },
     "LoveAndDestroy__cover_Azsagawa": {
      "kind": "cover",
      "status": "use",
@@ -1387,6 +1484,69 @@
      "phrase_loss": [
       -12.2372
      ]
+    },
+    "LoveAndDestroy__cover_Xea": {
+     "kind": "cover",
+     "status": "exclude",
+     "scalars": {
+      "loss_median": -9.4347,
+      "vi1k4k_median": 3.3458,
+      "body_rel": 6.5512,
+      "air_rel": -3.2006,
+      "bright_rel": -10.0387,
+      "tilt": -2.7547,
+      "hf_rel_abs": -12.296,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -10.8139
+     },
+     "phrase_loss": [
+      -9.0193
+     ]
+    },
+    "LoveAndDestroy__cover_Yoei": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -9.0368,
+      "vi1k4k_median": 5.6223,
+      "body_rel": -1.1035,
+      "air_rel": -6.2407,
+      "bright_rel": -3.9994,
+      "tilt": -1.1592,
+      "hf_rel_abs": -11.0146,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -9.4684
+     },
+     "phrase_loss": [
+      -8.9617
+     ]
+    },
+    "LoveAndDestroy__cover_YuukiAoi": {
+     "kind": "cover",
+     "status": "use",
+     "scalars": {
+      "loss_median": -8.3393,
+      "vi1k4k_median": 8.0795,
+      "body_rel": -3.1309,
+      "air_rel": -6.6004,
+      "bright_rel": -0.9218,
+      "tilt": -1.1923,
+      "hf_rel_abs": -12.7371,
+      "decay_t60": null,
+      "tail_ratio": null,
+      "inst_rt60_blind": null,
+      "decay_over_inst_rt": null,
+      "side_mid": -8.2316
+     },
+     "phrase_loss": [
+      -8.2594
+     ]
     }
    },
    "step_times": {
@@ -1399,6 +1559,18 @@
       "t": 57.5,
       "d_level": 0.6786,
       "d_bright": 1.9481
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_Ado": [
+     {
+      "t": 57.5,
+      "d_level": -0.4201,
+      "d_bright": -2.2458
      },
      {
       "t": 162.0,
@@ -1435,6 +1607,30 @@
       "t": 57.5,
       "d_level": 1.9225,
       "d_bright": 0.1996
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_Yoei": [
+     {
+      "t": 57.5,
+      "d_level": 0.1649,
+      "d_bright": -0.018
+     },
+     {
+      "t": 162.0,
+      "d_level": null,
+      "d_bright": null
+     }
+    ],
+    "LoveAndDestroy__cover_YuukiAoi": [
+     {
+      "t": 57.5,
+      "d_level": 1.3351,
+      "d_bright": -0.5115
      },
      {
       "t": 162.0,
