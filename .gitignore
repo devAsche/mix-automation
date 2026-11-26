@@ -51,3 +51,10 @@ tools/*.ps1
 Thumbs.db
 .vscode/
 .idea/
+
+# Archived renders (local only)
+data/archive/*
+!data/archive/README.md
+
+# Local tool notes that may contain cookie paths
+tools/gdown_yoidore.txt

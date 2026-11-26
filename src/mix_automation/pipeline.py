@@ -66,6 +66,7 @@ from mix_automation.io.song_builder import (
     export_template_vst3_states,
     write_pcm24_wav,
 )
+from mix_automation.provenance import render_provenance
 
 
 def _dict_to_profile(d: dict, resolved_name: str) -> SectionRelativeProfile:
@@ -1183,6 +1184,7 @@ def run_full_automix_for_song(
 
     report = {
         "schema_version": "7.0",
+        **render_provenance("v7", profiles_json_path),
         "song_name": song_name,
         "requested_style": style,
         "taste_style": eff_taste,
