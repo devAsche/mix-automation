@@ -45,3 +45,19 @@ v7 の固定点: タグ `gemini-v7.0`（40a85cc）と `gemini-final`（8fa2575�
 | 解析 | `scripts/analysis/`（区間スペクトル差分・時刻→区間・区間バランス） |
 | 正解データ | `docs/evaluations/`、下書き生成 `scripts/evaluations/parse_notes.py` |
 | サブエージェント | `.claude/agents/implementer.md`・`worker.md` |
+
+## Phase 2 で用意したもの（採否はレビューで決める）
+
+| もの | 場所 |
+|---|---|
+| 指標（純関数・出典コメント付き） | `src/mix_automation/v8/metrics/`（loudness=A 部分ラウドネス, spectral=B 声色, consonants=C 子音, steps=D 段差, space=E 空間, timing=F 拍ずれ・G 演出抜け, harmony=H ハモリ） |
+| 合成信号テスト | `tests/test_v8_metrics.py`（各指標の向き） |
+| 参照分布 | `docs/evaluations/reference_stats.json`（`scripts/analysis/build_reference_stats.py`） |
+| 判定表 | `docs/evaluations/metric_validation.md`（`scripts/analysis/evaluate_issues.py --write-md`） |
+
+検証で分かったこと（2026-11-26、v7 の 4 曲）:
+
+- 当たった: 子音アタックの強調（fil-1, six-7。処理後−処理前の「子音／母音」比）、段差（six-3, six-8）、演出抜け（six-4）、ディレイの拍ずれ（six-5/6）。いずれも局所・処理前との差で見る指標。
+- 当たらない（現時点で検出不可）: 全体の埋もれ・軽さ・こもり・エアリー・ジリつき・空間過多・載ってる、局所の埋もれ（eva-2/4）、歯擦音（潰れ・強すぎとも）。全体指標はプロ分布（分離ステム）が広すぎ、自 MIX でも誤報が出る。
+- v7 の書き出しの癖: シックスの `VocalBus.wav` は −5.3 dB ピーク正規化されている（マスターから推定して補正）。`02_mainvocal_prepared.wav` は演出区間が抜かれている（演出トラックを足し戻して処理前とする）。
+- v7 のテンポ: シックスは Beat This! 93.8 BPM に対し v7 126.1（2 番目のセグメントは 444.6 s 開始で曲長 217 s を超える）。他 3 曲は 2〜3 BPM 差。

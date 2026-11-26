@@ -7,6 +7,8 @@ v8 の「正解」は、ユーザー（凌）の耳による評価・自 MIX・S
 |---|---|
 | `YYYY-MM-DD_曲の評価.txt` | ユーザーのメモの原文（一字一句そのまま。編集しない） |
 | `issues.yaml` | 原文を 1 指摘 = 1 項目に構造化したもの。評価指標の検証（指摘を当てられるか）に使う |
+| `metric_validation.md` | Phase 2: 指摘 × 指標の判定表・hit 率・誤報・v7 の合否（`scripts/analysis/evaluate_issues.py --write-md` の出力） |
+| `reference_stats.json` | Phase 2: 指標の参照分布（プロ 87 曲の分離ステム・自 MIX 2 曲・v7 分離版、`scripts/analysis/build_reference_stats.py`） |
 
 新しいメモが来たら:
 
@@ -54,3 +56,13 @@ v8 の「正解」は、ユーザー（凌）の耳による評価・自 MIX・S
 | `distance` | 声の距離感そのもの | `ok`, `too_far`, `too_close` |
 
 新しい分類が必要になったら、この表と `tests/test_evaluations.py` の `CATEGORIES` を同時に更新してください。
+
+## 指標の検証（Phase 2）
+
+指標の実装は `src/mix_automation/v8/metrics/`（純関数、定数には出典コメント）。手順:
+
+1. `.venv\Scripts\python.exe scripts\analysis\build_reference_stats.py`（既存の分離ステムを使う。中間結果は `data/processed/v8_eval_cache/`、約 30 分）
+2. `.venv\Scripts\python.exe scripts\analysis\evaluate_issues.py --write-md`（既定は `data/archive/gemini_v7_20261126` の 4 曲。Beat This! に GPU を使う）
+
+追加の依存（pyproject には未登録。torch を入れ直さないよう `--no-deps`）:
+`uv pip install --python .venv\Scripts\python.exe --no-deps beat-this einops soxr rotary-embedding-torch tqdm blind_rt60` と `uv pip install --python .venv\Scripts\python.exe matplotlib`（blind_rt60 が import する）。
