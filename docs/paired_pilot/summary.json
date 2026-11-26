@@ -1,0 +1,1156 @@
+{
+ "En_Kamippoina": {
+  "align": {
+   "lag_samples": 2135,
+   "global_peak": 0.246,
+   "n_win": 9,
+   "track_peak_med": 0.376,
+   "n_lag_steps": 64,
+   "lag_range_ms": 24.8,
+   "drift_ppm": 3.34,
+   "lag_fit_icpt": 2125.5851284482997,
+   "lag_slope": 0.14731668415100288,
+   "local_lag_resid_max": 14.64,
+   "n_outlier": 4,
+   "local_peak_med": 0.363,
+   "cover_s": 204.0,
+   "inst_s": 95.6,
+   "groups": {
+    "lead": "m2",
+    "main": [
+     "m2",
+     "m1"
+    ],
+    "other": [
+     "h",
+     "s"
+    ],
+    "alt": [],
+    "rel": {
+     "m1": {
+      "overlap": 0.01,
+      "wave_corr": 0.02,
+      "kind": "split"
+     }
+    },
+    "inst": [
+     "inst-2"
+    ],
+    "ref": []
+   }
+  },
+  "sub": {
+   "free_s": 9.1,
+   "res_gain_db": 0.1,
+   "res_lin_db": -1.9,
+   "res_track_db": -2.6,
+   "use_track": true,
+   "master_gain_db": 19.7,
+   "bands": {
+    "0-250": -3.6,
+    "coh0-250": 0.54,
+    "250-2000": -1.7,
+    "coh250-2000": 0.16,
+    "2000-8000": -0.0,
+    "coh2000-8000": 0.04,
+    "8000-22050": -0.1,
+    "coh8000-22050": 0.05
+   }
+  },
+  "take": {
+   "main_only_s": 5.3,
+   "main_act_s": 70.1,
+   "n_seg": 4,
+   "env_corr_mo": 0.873,
+   "env_corr_all": 0.769,
+   "lag_med_ms": 0.12,
+   "lag_dev_max_ms": 0.51,
+   "n_lag_jump2ms": 0,
+   "n_lag_win": 53,
+   "pitch_off_cents": 0.0,
+   "pitch_diff_med_c": 10.0,
+   "pitch_diff_p90_c": 30.0,
+   "grid_dev_raw_c": 20.0,
+   "grid_dev_pro_c": 20.0,
+   "voiced_both": 454
+  },
+  "sep": {
+   "sep_leak_db": -10.2,
+   "master_gain_lowband_db": 18.8
+  }
+ },
+ "Komono_GimmeGimme": {
+  "align": {
+   "lag_samples": -90093,
+   "global_peak": 0.311,
+   "n_win": 7,
+   "track_peak_med": 0.483,
+   "n_lag_steps": 45,
+   "lag_range_ms": 7.3,
+   "drift_ppm": 5.91,
+   "lag_fit_icpt": -90106.04248504415,
+   "lag_slope": 0.26050834146527746,
+   "local_lag_resid_max": 20.01,
+   "n_outlier": 2,
+   "local_peak_med": 0.519,
+   "cover_s": 223.1,
+   "inst_s": 84.6,
+   "groups": {
+    "lead": "m2",
+    "main": [
+     "m2",
+     "m1"
+    ],
+    "other": [
+     "h1",
+     "h2",
+     "h3"
+    ],
+    "alt": [],
+    "rel": {
+     "m1": {
+      "overlap": 0.03,
+      "wave_corr": 0.0,
+      "kind": "split"
+     }
+    },
+    "inst": [
+     "inst-2"
+    ],
+    "ref": []
+   }
+  },
+  "sub": {
+   "free_s": 21.4,
+   "res_gain_db": 0.5,
+   "res_lin_db": -4.9,
+   "res_track_db": -5.0,
+   "use_track": false,
+   "master_gain_db": 19.9,
+   "bands": {
+    "0-250": -6.8,
+    "coh0-250": 0.85,
+    "250-2000": -3.9,
+    "coh250-2000": 0.46,
+    "2000-8000": -2.0,
+    "coh2000-8000": 0.21,
+    "8000-22050": 0.1,
+    "coh8000-22050": 0.03
+   }
+  },
+  "take": {
+   "main_only_s": 6.3,
+   "main_act_s": 50.7,
+   "n_seg": 4,
+   "env_corr_mo": 0.565,
+   "env_corr_all": 0.599,
+   "lag_med_ms": 0.17,
+   "lag_dev_max_ms": 0.78,
+   "n_lag_jump2ms": 0,
+   "n_lag_win": 36,
+   "pitch_off_cents": 0.0,
+   "pitch_diff_med_c": 10.0,
+   "pitch_diff_p90_c": 40.0,
+   "grid_dev_raw_c": 20.0,
+   "grid_dev_pro_c": 20.0,
+   "voiced_both": 529
+  },
+  "sep": {
+   "sep_leak_db": -51.9,
+   "master_gain_lowband_db": 19.4
+  }
+ },
+ "Komono_Villain": {
+  "align": {
+   "lag_samples": 7297,
+   "global_peak": 0.26,
+   "n_win": 7,
+   "track_peak_med": 0.385,
+   "n_lag_steps": 47,
+   "lag_range_ms": 2.6,
+   "drift_ppm": 3.69,
+   "lag_fit_icpt": 7290.092848469104,
+   "lag_slope": 0.16259512861391473,
+   "local_lag_resid_max": 6.75,
+   "n_outlier": 0,
+   "local_peak_med": 0.363,
+   "cover_s": 201.3,
+   "inst_s": 80.0,
+   "groups": {
+    "lead": "m2",
+    "main": [
+     "m2",
+     "m1"
+    ],
+    "other": [
+     "h1",
+     "h2",
+     "s"
+    ],
+    "alt": [],
+    "rel": {
+     "m1": {
+      "overlap": 0.01,
+      "wave_corr": -0.01,
+      "kind": "split"
+     }
+    },
+    "inst": [
+     "-3inst"
+    ],
+    "ref": []
+   }
+  },
+  "sub": {
+   "free_s": 20.3,
+   "res_gain_db": 0.6,
+   "res_lin_db": -4.4,
+   "res_track_db": -4.8,
+   "use_track": false,
+   "master_gain_db": 14.1,
+   "bands": {
+    "0-250": -8.3,
+    "coh0-250": 0.91,
+    "250-2000": -3.3,
+    "coh250-2000": 0.56,
+    "2000-8000": -0.5,
+    "coh2000-8000": 0.23,
+    "8000-22050": 0.2,
+    "coh8000-22050": 0.05
+   }
+  },
+  "take": {
+   "main_only_s": 10.1,
+   "main_act_s": 52.6,
+   "n_seg": 6,
+   "env_corr_mo": 0.634,
+   "env_corr_all": 0.683,
+   "lag_med_ms": -0.08,
+   "lag_dev_max_ms": 0.14,
+   "n_lag_jump2ms": 0,
+   "n_lag_win": 35,
+   "pitch_off_cents": 0.0,
+   "pitch_diff_med_c": 0.0,
+   "pitch_diff_p90_c": 30.0,
+   "grid_dev_raw_c": 20.0,
+   "grid_dev_pro_c": 20.0,
+   "voiced_both": 544
+  },
+  "sep": {
+   "sep_leak_db": -46.2,
+   "master_gain_lowband_db": 14.7
+  },
+  "fit": {
+   "target": "sep",
+   "n_chunks": 11,
+   "steps": 600,
+   "vlag_med_ms": -5.9,
+   "vlag_range_ms": 0.0,
+   "loss_fit": 4.94,
+   "loss_dry": 10.848,
+   "loss_first50": 6.863,
+   "loss_last50": 4.915,
+   "out_gain_db": -11.57,
+   "in_scale_db": 8.06,
+   "voc_minus_inst_lu": -1.9,
+   "sm_pro_db": -26.9,
+   "tail_pro_db": -37.3,
+   "floor_pro_db": -79.7,
+   "lufs_fit_minus_pro": -0.21,
+   "sm_fit_db": -25.3,
+   "tail_fit_db": -35.9,
+   "params": {
+    "0.Q": 0.262800008058548,
+    "0.freq": 4567.77294921875,
+    "0.gain": 3.3850998878479004,
+    "1.Q": 0.225600004196167,
+    "1.freq": 6747.86865234375,
+    "1.gain": 2.8740999698638916,
+    "2.freq": 113.36630249023438,
+    "2.gain": -4.217400074005127,
+    "3.freq": 8056.0888671875,
+    "3.gain": -1.7359999418258667,
+    "4.Q": 0.9093999862670898,
+    "4.freq": 10289.4013671875,
+    "5.Q": 0.9922000169754028,
+    "5.freq": 190.74200439453125,
+    "6.at": 0.00419999985024333,
+    "6.avg_coef": 0.07440000027418137,
+    "6.cmp_ratio": 3.1268999576568604,
+    "6.cmp_th": -18.983299255371094,
+    "6.exp_ratio": 0.9782999753952026,
+    "6.exp_th": -51.441001892089844,
+    "6.lookahead": [
+     0.13850000500679016
+    ],
+    "6.make_up": 0.8946999907493591,
+    "6.rt": 9.999999747378752e-05,
+    "7.sends_0": [
+     0.9017000198364258
+    ],
+    "7.effects.0.delay": 362.368896484375,
+    "7.effects.0.feedback": 0.042500000447034836,
+    "7.effects.0.gain": 0.01510000042617321,
+    "7.effects.0.eq.Q": 0.5414000153541565,
+    "7.effects.0.eq.freq": 1046.8397216796875,
+    "7.effects.0.odd_pan.pan": 0.517300009727478,
+    "7.effects.0.even_pan.pan": 0.5181999802589417,
+    "7.effects.1.U": "array[6, 6]",
+    "7.effects.1.b": "array[6, 2]",
+    "7.effects.1.c": "array[2, 6]",
+    "7.effects.1.gamma": "array[49, 1]",
+    "7.effects.1.eq.0.Q": 0.20260000228881836,
+    "7.effects.1.eq.0.freq": 690.6295776367188,
+    "7.effects.1.eq.0.gain": -3.850399971008301,
+    "7.effects.1.eq.1.Q": 0.25589999556541443,
+    "7.effects.1.eq.1.freq": 6846.076171875,
+    "7.effects.1.eq.1.gain": 3.0827999114990234,
+    "7.effects.1.eq.2.freq": 436.3819885253906,
+    "7.effects.1.eq.2.gain": -5.5609002113342285,
+    "7.effects.1.eq.3.freq": 3619.76806640625,
+    "7.effects.1.eq.3.gain": 3.675100088119507,
+    "7.pan.pan": 0.5166000127792358,
+    "eq_db": {
+     "60": -23.6,
+     "120": -8.7,
+     "250": 1.2,
+     "500": 1.3,
+     "1000": 2.4,
+     "2000": 4.6,
+     "4000": 6.3,
+     "8000": 5.7,
+     "12000": -0.8,
+     "16000": -14.0
+    },
+    "wet_to_dry_db": -18.4,
+    "fdn_t60_s": 4.13,
+    "delay_db": -50.4,
+    "fdn_db": -18.4
+   }
+  },
+  "listen": {
+   "start_s": 7.7,
+   "main_only_frac": 0.34,
+   "lufs_out": -16.0,
+   "files": [
+    "Komono_Villain_a_pro.wav",
+    "Komono_Villain_b_fitchain.wav",
+    "Komono_Villain_c_gainonly.wav"
+   ]
+  }
+ },
+ "Momose_Dynamite": {
+  "align": {
+   "lag_samples": -354176,
+   "global_peak": 0.844,
+   "n_win": 20,
+   "track_peak_med": 0.829,
+   "n_lag_steps": 1,
+   "lag_range_ms": 0.2,
+   "drift_ppm": 0.43,
+   "lag_fit_icpt": -354174.8795435053,
+   "lag_slope": 0.01892523882262,
+   "local_lag_resid_max": 4.75,
+   "n_outlier": 0,
+   "local_peak_med": 0.821,
+   "cover_s": 199.8,
+   "inst_s": 207.8,
+   "groups": {
+    "lead": "m2",
+    "main": [
+     "m2",
+     "m1",
+     "m3"
+    ],
+    "other": [
+     "c1",
+     "c2",
+     "c3"
+    ],
+    "alt": [],
+    "rel": {
+     "m1": {
+      "overlap": 0.0,
+      "wave_corr": -0.01,
+      "kind": "split"
+     },
+     "m3": {
+      "overlap": 0.12,
+      "wave_corr": -0.0,
+      "kind": "split"
+     }
+    },
+    "inst": [
+     "inst"
+    ],
+    "ref": []
+   }
+  },
+  "sub": {
+   "free_s": 2.5,
+   "res_gain_db": -9.8,
+   "res_lin_db": -11.5,
+   "res_track_db": -15.3,
+   "use_track": true,
+   "master_gain_db": 12.4,
+   "bands": {
+    "0-250": -17.0,
+    "coh0-250": 0.97,
+    "250-2000": -6.2,
+    "coh250-2000": 0.84,
+    "2000-8000": -1.9,
+    "coh2000-8000": 0.22,
+    "8000-22050": 0.0,
+    "coh8000-22050": 0.04
+   }
+  },
+  "take": {
+   "main_only_s": 26.4,
+   "main_act_s": 161.3,
+   "n_seg": 18,
+   "env_corr_mo": 0.62,
+   "env_corr_all": 0.618,
+   "lag_med_ms": 17.81,
+   "lag_dev_max_ms": 15.21,
+   "n_lag_jump2ms": 1,
+   "n_lag_win": 121,
+   "pitch_off_cents": 0.0,
+   "pitch_diff_med_c": 10.0,
+   "pitch_diff_p90_c": 70.0,
+   "grid_dev_raw_c": 20.0,
+   "grid_dev_pro_c": 20.0,
+   "voiced_both": 1306
+  },
+  "sep": {
+   "sep_leak_db": -36.1,
+   "master_gain_lowband_db": 12.2
+  },
+  "fit": {
+   "target": "sep",
+   "n_chunks": 33,
+   "steps": 600,
+   "vlag_med_ms": 17.8,
+   "vlag_range_ms": 3.0,
+   "loss_fit": 7.995,
+   "loss_dry": 12.469,
+   "loss_first50": 9.351,
+   "loss_last50": 7.549,
+   "out_gain_db": -8.82,
+   "in_scale_db": -1.67,
+   "voc_minus_inst_lu": -5.5,
+   "sm_pro_db": -14.2,
+   "tail_pro_db": -13.6,
+   "floor_pro_db": null,
+   "lufs_fit_minus_pro": -0.49,
+   "sm_fit_db": -21.8,
+   "tail_fit_db": -28.8,
+   "params": {
+    "0.Q": 6.686100006103516,
+    "0.freq": 611.8026123046875,
+    "0.gain": -1.0915000438690186,
+    "1.Q": 0.23250000178813934,
+    "1.freq": 5917.94287109375,
+    "1.gain": 3.1498000621795654,
+    "2.freq": 175.53489685058594,
+    "2.gain": 1.292099952697754,
+    "3.freq": 1239.652587890625,
+    "3.gain": 2.9679999351501465,
+    "4.Q": 1.6497999429702759,
+    "4.freq": 12458.7421875,
+    "5.Q": 0.8707000017166138,
+    "5.freq": 139.4759979248047,
+    "6.at": 0.004699999932199717,
+    "6.avg_coef": 0.03819999843835831,
+    "6.cmp_ratio": 8.5,
+    "6.cmp_th": -20.650699615478516,
+    "6.exp_ratio": 0.9448000192642212,
+    "6.exp_th": -49.97909927368164,
+    "6.lookahead": [
+     0.5950999855995178
+    ],
+    "6.make_up": 1.1424000263214111,
+    "6.rt": 0.00039999998989515007,
+    "7.sends_0": [
+     0.6413999795913696
+    ],
+    "7.effects.0.delay": 442.697998046875,
+    "7.effects.0.feedback": 0.44429999589920044,
+    "7.effects.0.gain": 0.024900000542402267,
+    "7.effects.0.eq.Q": 0.9158999919891357,
+    "7.effects.0.eq.freq": 10685.783203125,
+    "7.effects.0.odd_pan.pan": 0.5174000263214111,
+    "7.effects.0.even_pan.pan": 0.585099995136261,
+    "7.effects.1.U": "array[6, 6]",
+    "7.effects.1.b": "array[6, 2]",
+    "7.effects.1.c": "array[2, 6]",
+    "7.effects.1.gamma": "array[49, 1]",
+    "7.effects.1.eq.0.Q": 0.23170000314712524,
+    "7.effects.1.eq.0.freq": 1505.1431884765625,
+    "7.effects.1.eq.0.gain": 2.2716000080108643,
+    "7.effects.1.eq.1.Q": 0.28999999165534973,
+    "7.effects.1.eq.1.freq": 1714.9508056640625,
+    "7.effects.1.eq.1.gain": 1.8525999784469604,
+    "7.effects.1.eq.2.freq": 394.4502868652344,
+    "7.effects.1.eq.2.gain": 2.609999895095825,
+    "7.effects.1.eq.3.freq": 6902.5517578125,
+    "7.effects.1.eq.3.gain": -1.8143999576568604,
+    "7.pan.pan": 0.5073000192642212,
+    "eq_db": {
+     "60": -13.0,
+     "120": -1.7,
+     "250": 0.9,
+     "500": 0.5,
+     "1000": 2.0,
+     "2000": 4.9,
+     "4000": 6.4,
+     "8000": 8.0,
+     "12000": 10.2,
+     "16000": -3.1
+    },
+    "wet_to_dry_db": -25.9,
+    "fdn_t60_s": 3.46,
+    "delay_db": -33.3,
+    "fdn_db": -26.8
+   }
+  }
+ },
+ "Ten_Doodle": {
+  "align": {
+   "lag_samples": 6864,
+   "global_peak": 0.374,
+   "n_win": 21,
+   "track_peak_med": 0.403,
+   "n_lag_steps": 127,
+   "lag_range_ms": 15.6,
+   "drift_ppm": -4.03,
+   "lag_fit_icpt": 6897.395561425865,
+   "lag_slope": -0.17751931835247375,
+   "local_lag_resid_max": 53.43,
+   "n_outlier": 5,
+   "local_peak_med": 0.391,
+   "cover_s": 231.8,
+   "inst_s": 230.7,
+   "groups": {
+    "lead": "main",
+    "main": [
+     "main",
+     "main_cross"
+    ],
+    "other": [
+     "hamo1_1",
+     "hamo1_2",
+     "hamo2_1",
+     "hamo2_2",
+     "hamo3_1",
+     "hamo3_2"
+    ],
+    "alt": [],
+    "rel": {
+     "main_cross": {
+      "overlap": 0.02,
+      "wave_corr": 0.0,
+      "kind": "split"
+     }
+    },
+    "inst": [
+     "inst-3"
+    ],
+    "ref": []
+   }
+  },
+  "sub": {
+   "free_s": 47.3,
+   "res_gain_db": 1.3,
+   "res_lin_db": -4.2,
+   "res_track_db": -4.1,
+   "use_track": false,
+   "master_gain_db": 17.9,
+   "bands": {
+    "0-250": -9.3,
+    "coh0-250": 0.81,
+    "250-2000": -1.1,
+    "coh250-2000": 0.11,
+    "2000-8000": -0.4,
+    "coh2000-8000": 0.12,
+    "8000-22050": -0.3,
+    "coh8000-22050": 0.01
+   }
+  },
+  "take": {
+   "main_only_s": 48.2,
+   "main_act_s": 159.1,
+   "n_seg": 30,
+   "env_corr_mo": 0.653,
+   "env_corr_all": 0.706,
+   "lag_med_ms": 10.65,
+   "lag_dev_max_ms": 30.56,
+   "n_lag_jump2ms": 45,
+   "n_lag_win": 109,
+   "pitch_off_cents": 0.0,
+   "pitch_diff_med_c": 0.0,
+   "pitch_diff_p90_c": 30.0,
+   "grid_dev_raw_c": 10.0,
+   "grid_dev_pro_c": 10.0,
+   "voiced_both": 3210
+  },
+  "sep": {
+   "sep_leak_db": -36.9,
+   "master_gain_lowband_db": 16.9
+  },
+  "fit": {
+   "target": "sep",
+   "n_chunks": 58,
+   "steps": 600,
+   "vlag_med_ms": 0.1,
+   "vlag_range_ms": 25.0,
+   "loss_fit": 5.713,
+   "loss_dry": 10.294,
+   "loss_first50": 7.769,
+   "loss_last50": 5.694,
+   "out_gain_db": -11.33,
+   "in_scale_db": 11.21,
+   "voc_minus_inst_lu": 0.2,
+   "sm_pro_db": -26.7,
+   "tail_pro_db": -33.1,
+   "floor_pro_db": -42.7,
+   "lufs_fit_minus_pro": -0.17,
+   "sm_fit_db": -27.0,
+   "tail_fit_db": -37.1,
+   "params": {
+    "0.Q": 0.8862000107765198,
+    "0.freq": 525.8037109375,
+    "0.gain": -1.1796000003814697,
+    "1.Q": 0.21889999508857727,
+    "1.freq": 4405.77978515625,
+    "1.gain": 4.003799915313721,
+    "2.freq": 170.2353057861328,
+    "2.gain": 1.5299999713897705,
+    "3.freq": 8124.50244140625,
+    "3.gain": -1.3224999904632568,
+    "4.Q": 1.3320000171661377,
+    "4.freq": 9547.408203125,
+    "5.Q": 0.9359999895095825,
+    "5.freq": 109.85910034179688,
+    "6.at": 0.007899999618530273,
+    "6.avg_coef": 0.0421999990940094,
+    "6.cmp_ratio": 8.807700157165527,
+    "6.cmp_th": -21.423099517822266,
+    "6.exp_ratio": 0.9519000053405762,
+    "6.exp_th": -50.54999923706055,
+    "6.lookahead": [
+     0.1046999990940094
+    ],
+    "6.make_up": 1.3675999641418457,
+    "6.rt": 0.00019999999494757503,
+    "7.sends_0": [
+     0.8485000133514404
+    ],
+    "7.effects.0.delay": 377.42181396484375,
+    "7.effects.0.feedback": 0.09619999676942825,
+    "7.effects.0.gain": 0.013500000350177288,
+    "7.effects.0.eq.Q": 0.6216999888420105,
+    "7.effects.0.eq.freq": 4540.1142578125,
+    "7.effects.0.odd_pan.pan": 0.5184000134468079,
+    "7.effects.0.even_pan.pan": 0.5218999981880188,
+    "7.effects.1.U": "array[6, 6]",
+    "7.effects.1.b": "array[6, 2]",
+    "7.effects.1.c": "array[2, 6]",
+    "7.effects.1.gamma": "array[49, 1]",
+    "7.effects.1.eq.0.Q": 0.2648000121116638,
+    "7.effects.1.eq.0.freq": 2061.41357421875,
+    "7.effects.1.eq.0.gain": 0.7129999995231628,
+    "7.effects.1.eq.1.Q": 0.2264000028371811,
+    "7.effects.1.eq.1.freq": 5780.005859375,
+    "7.effects.1.eq.1.gain": 1.4737000465393066,
+    "7.effects.1.eq.2.freq": 426.7713928222656,
+    "7.effects.1.eq.2.gain": -4.414999961853027,
+    "7.effects.1.eq.3.freq": 14718.333984375,
+    "7.effects.1.eq.3.gain": -1.0313999652862549,
+    "7.pan.pan": 0.516700029373169,
+    "eq_db": {
+     "60": -8.2,
+     "120": 1.3,
+     "250": 0.7,
+     "500": -0.1,
+     "1000": 1.7,
+     "2000": 3.5,
+     "4000": 4.7,
+     "8000": 6.1,
+     "12000": -1.9,
+     "16000": -16.3
+    },
+    "wet_to_dry_db": -27.8,
+    "fdn_t60_s": 1.52,
+    "delay_db": -44.5,
+    "fdn_db": -27.9
+   }
+  },
+  "listen": {
+   "start_s": 107.4,
+   "main_only_frac": 0.53,
+   "lufs_out": -16.0,
+   "files": [
+    "Ten_Doodle_a_pro.wav",
+    "Ten_Doodle_b_fitchain.wav",
+    "Ten_Doodle_c_gainonly.wav"
+   ]
+  }
+ },
+ "Wakabayashi_Odo": {
+  "align": {
+   "lag_samples": 2404509,
+   "global_peak": 0.375,
+   "n_win": 3,
+   "track_peak_med": 0.613,
+   "n_lag_steps": 0,
+   "lag_range_ms": 0.0,
+   "drift_ppm": 0.0,
+   "lag_fit_icpt": 2404509.511689216,
+   "lag_slope": 0.0,
+   "local_lag_resid_max": 0.01,
+   "n_outlier": 0,
+   "local_peak_med": 0.545,
+   "cover_s": 94.1,
+   "inst_s": 39.4,
+   "groups": {
+    "lead": "m1",
+    "main": [
+     "m1",
+     "m2"
+    ],
+    "other": [
+     "c1",
+     "c2",
+     "c3",
+     "c4",
+     "h"
+    ],
+    "alt": [],
+    "rel": {
+     "m2": {
+      "overlap": 0.0,
+      "wave_corr": 0.0,
+      "kind": "split"
+     }
+    },
+    "inst": [
+     "踊　inst(BPM128)"
+    ],
+    "ref": [
+     "参考"
+    ]
+   }
+  },
+  "sub": {
+   "free_s": 13.7,
+   "res_gain_db": -1.1,
+   "res_lin_db": -3.4,
+   "res_track_db": -3.5,
+   "use_track": false,
+   "master_gain_db": 13.0,
+   "bands": {
+    "0-250": -10.4,
+    "coh0-250": 0.89,
+    "250-2000": -1.3,
+    "coh250-2000": 0.28,
+    "2000-8000": -2.7,
+    "coh2000-8000": 0.41,
+    "8000-22050": -2.5,
+    "coh8000-22050": 0.24
+   }
+  },
+  "take": {
+   "main_only_s": 0.0,
+   "main_act_s": 17.3,
+   "n_seg": 0,
+   "env_corr_mo": NaN,
+   "env_corr_all": 0.539,
+   "lag_med_ms": -0.19,
+   "lag_dev_max_ms": 15.3,
+   "n_lag_jump2ms": 4,
+   "n_lag_win": 10,
+   "pitch_off_cents": 0.0,
+   "pitch_diff_med_c": 10.0,
+   "pitch_diff_p90_c": 50.0,
+   "grid_dev_raw_c": 20.0,
+   "grid_dev_pro_c": 20.0,
+   "voiced_both": 1194
+  },
+  "sep": {
+   "sep_leak_db": -6.5,
+   "master_gain_lowband_db": 10.6
+  }
+ },
+ "Zarame_ZundaPartyNight": {
+  "align": {
+   "lag_samples": 1769,
+   "global_peak": 0.25,
+   "n_win": 8,
+   "track_peak_med": 0.312,
+   "n_lag_steps": 83,
+   "lag_range_ms": 42.9,
+   "drift_ppm": -3.24,
+   "lag_fit_icpt": 1470.7146207107528,
+   "lag_slope": -0.1429988098560011,
+   "local_lag_resid_max": 41.41,
+   "n_outlier": 0,
+   "local_peak_med": 0.351,
+   "cover_s": 165.5,
+   "inst_s": 165.2,
+   "groups": {
+    "lead": "m2",
+    "main": [
+     "m2",
+     "m1"
+    ],
+    "other": [
+     "ainote",
+     "d",
+     "s",
+     "z"
+    ],
+    "alt": [],
+    "rel": {
+     "m1": {
+      "overlap": 0.01,
+      "wave_corr": -0.01,
+      "kind": "split"
+     }
+    },
+    "inst": [
+     "inst"
+    ],
+    "ref": []
+   }
+  },
+  "sub": {
+   "free_s": 4.0,
+   "res_gain_db": 2.3,
+   "res_lin_db": -4.1,
+   "res_track_db": -4.2,
+   "use_track": false,
+   "master_gain_db": -0.5,
+   "bands": {
+    "0-250": -13.0,
+    "coh0-250": 0.97,
+    "250-2000": -2.9,
+    "coh250-2000": 0.67,
+    "2000-8000": 2.1,
+    "coh2000-8000": 0.37,
+    "8000-22050": 1.6,
+    "coh8000-22050": 0.15
+   }
+  },
+  "take": {
+   "main_only_s": 17.7,
+   "main_act_s": 129.5,
+   "n_seg": 12,
+   "env_corr_mo": 0.512,
+   "env_corr_all": 0.503,
+   "lag_med_ms": 0.14,
+   "lag_dev_max_ms": 0.42,
+   "n_lag_jump2ms": 0,
+   "n_lag_win": 95,
+   "pitch_off_cents": 0.0,
+   "pitch_diff_med_c": 10.0,
+   "pitch_diff_p90_c": 30.0,
+   "grid_dev_raw_c": 20.0,
+   "grid_dev_pro_c": 20.0,
+   "voiced_both": 471
+  },
+  "sep": {
+   "sep_leak_db": -31.9,
+   "master_gain_lowband_db": -0.9
+  },
+  "fit": {
+   "target": "sep",
+   "n_chunks": 35,
+   "steps": 600,
+   "vlag_med_ms": 0.4,
+   "vlag_range_ms": 0.7,
+   "loss_fit": 12.39,
+   "loss_dry": 17.766,
+   "loss_first50": 14.333,
+   "loss_last50": 12.578,
+   "out_gain_db": 1.2,
+   "in_scale_db": 5.45,
+   "voc_minus_inst_lu": -2.6,
+   "sm_pro_db": -17.8,
+   "tail_pro_db": -16.4,
+   "floor_pro_db": -68.1,
+   "lufs_fit_minus_pro": -2.1,
+   "sm_fit_db": -17.7,
+   "tail_fit_db": -23.0,
+   "params": {
+    "0.Q": 0.5110999941825867,
+    "0.freq": 1807.1446533203125,
+    "0.gain": 3.152899980545044,
+    "1.Q": 0.27059999108314514,
+    "1.freq": 15225.771484375,
+    "1.gain": -0.9355000257492065,
+    "2.freq": 179.10409545898438,
+    "2.gain": -3.050600051879883,
+    "3.freq": 3720.719970703125,
+    "3.gain": -1.8391000032424927,
+    "4.Q": 0.582099974155426,
+    "4.freq": 9485.615234375,
+    "5.Q": 1.5435999631881714,
+    "5.freq": 305.6046142578125,
+    "6.at": 0.0034000000450760126,
+    "6.avg_coef": 0.023900000378489494,
+    "6.cmp_ratio": 4.1992998123168945,
+    "6.cmp_th": -18.769500732421875,
+    "6.exp_ratio": 0.58160001039505,
+    "6.exp_th": -48.987701416015625,
+    "6.lookahead": [
+     0.08869999647140503
+    ],
+    "6.make_up": -0.5974000096321106,
+    "6.rt": 0.0015999999595806003,
+    "7.sends_0": [
+     0.27410000562667847
+    ],
+    "7.effects.0.delay": 487.6567077636719,
+    "7.effects.0.feedback": 0.27959999442100525,
+    "7.effects.0.gain": 0.030400000512599945,
+    "7.effects.0.eq.Q": 0.659500002861023,
+    "7.effects.0.eq.freq": 2795.222412109375,
+    "7.effects.0.odd_pan.pan": 0.5152999758720398,
+    "7.effects.0.even_pan.pan": 0.5199000239372253,
+    "7.effects.1.U": "array[6, 6]",
+    "7.effects.1.b": "array[6, 2]",
+    "7.effects.1.c": "array[2, 6]",
+    "7.effects.1.gamma": "array[49, 1]",
+    "7.effects.1.eq.0.Q": 0.17309999465942383,
+    "7.effects.1.eq.0.freq": 2146.32080078125,
+    "7.effects.1.eq.0.gain": 0.4553000032901764,
+    "7.effects.1.eq.1.Q": 0.1981000006198883,
+    "7.effects.1.eq.1.freq": 5512.71484375,
+    "7.effects.1.eq.1.gain": 1.4013999700546265,
+    "7.effects.1.eq.2.freq": 72.48750305175781,
+    "7.effects.1.eq.2.gain": 3.614000082015991,
+    "7.effects.1.eq.3.freq": 14332.6162109375,
+    "7.effects.1.eq.3.gain": -0.7505999803543091,
+    "7.pan.pan": 0.5153999924659729,
+    "eq_db": {
+     "60": -31.0,
+     "120": -17.6,
+     "250": 0.2,
+     "500": 3.3,
+     "1000": 2.8,
+     "2000": 2.9,
+     "4000": -0.2,
+     "8000": -5.0,
+     "12000": -11.1,
+     "16000": -20.7
+    },
+    "wet_to_dry_db": -18.5,
+    "fdn_t60_s": 2.15,
+    "delay_db": -39.0,
+    "fdn_db": -18.5
+   }
+  }
+ },
+ "_summary": {
+  "fit": [
+   {
+    "song": "Komono_Villain",
+    "res_db": -4.4,
+    "sep_leak": -46.2,
+    "n_chunk": 11,
+    "loss_fit": 4.94,
+    "loss_dry": 10.848,
+    "dLUFS": -0.21,
+    "voc-inst": -1.9,
+    "SM_pro": -26.9,
+    "SM_fit": -25.3,
+    "tail_pro": -37.3,
+    "tail_fit": -35.9,
+    "floor_pro": -79.7
+   },
+   {
+    "song": "Momose_Dynamite",
+    "res_db": -11.5,
+    "sep_leak": -36.1,
+    "n_chunk": 33,
+    "loss_fit": 7.995,
+    "loss_dry": 12.469,
+    "dLUFS": -0.49,
+    "voc-inst": -5.5,
+    "SM_pro": -14.2,
+    "SM_fit": -21.8,
+    "tail_pro": -13.6,
+    "tail_fit": -28.8,
+    "floor_pro": null
+   },
+   {
+    "song": "Ten_Doodle",
+    "res_db": -4.2,
+    "sep_leak": -36.9,
+    "n_chunk": 58,
+    "loss_fit": 5.713,
+    "loss_dry": 10.294,
+    "dLUFS": -0.17,
+    "voc-inst": 0.2,
+    "SM_pro": -26.7,
+    "SM_fit": -27.0,
+    "tail_pro": -33.1,
+    "tail_fit": -37.1,
+    "floor_pro": -42.7
+   },
+   {
+    "song": "Zarame_ZundaPartyNight",
+    "res_db": -4.1,
+    "sep_leak": -31.9,
+    "n_chunk": 35,
+    "loss_fit": 12.39,
+    "loss_dry": 17.766,
+    "dLUFS": -2.1,
+    "voc-inst": -2.6,
+    "SM_pro": -17.8,
+    "SM_fit": -17.7,
+    "tail_pro": -16.4,
+    "tail_fit": -23.0,
+    "floor_pro": -68.1
+   }
+  ],
+  "eq": [
+   {
+    "song": "Komono_Villain",
+    "60": -26.0,
+    "120": -11.1,
+    "250": -1.2,
+    "500": -1.1,
+    "1000": 0.0,
+    "2000": 2.2,
+    "4000": 3.9,
+    "8000": 3.3,
+    "12000": -3.2,
+    "16000": -16.4
+   },
+   {
+    "song": "Momose_Dynamite",
+    "60": -15.0,
+    "120": -3.7,
+    "250": -1.1,
+    "500": -1.5,
+    "1000": 0.0,
+    "2000": 2.9,
+    "4000": 4.4,
+    "8000": 6.0,
+    "12000": 8.2,
+    "16000": -5.1
+   },
+   {
+    "song": "Ten_Doodle",
+    "60": -9.9,
+    "120": -0.4,
+    "250": -1.0,
+    "500": -1.8,
+    "1000": 0.0,
+    "2000": 1.8,
+    "4000": 3.0,
+    "8000": 4.4,
+    "12000": -3.6,
+    "16000": -18.0
+   },
+   {
+    "song": "Zarame_ZundaPartyNight",
+    "60": -33.8,
+    "120": -20.4,
+    "250": -2.6,
+    "500": 0.5,
+    "1000": 0.0,
+    "2000": 0.1,
+    "4000": -3.0,
+    "8000": -7.8,
+    "12000": -13.9,
+    "16000": -23.5
+   }
+  ],
+  "fx": [
+   {
+    "song": "Komono_Villain",
+    "hpf": 190.74200439453125,
+    "cmp_th": -18.983299255371094,
+    "ratio": 3.1268999576568604,
+    "at_rt": [
+     0.00419999985024333,
+     9.999999747378752e-05
+    ],
+    "delay_ms": 362.368896484375,
+    "delay_db": -50.4,
+    "fdn_db": -18.4,
+    "t60": 4.13,
+    "wet_dry": -18.4,
+    "pan": 0.5166000127792358
+   },
+   {
+    "song": "Momose_Dynamite",
+    "hpf": 139.4759979248047,
+    "cmp_th": -20.650699615478516,
+    "ratio": 8.5,
+    "at_rt": [
+     0.004699999932199717,
+     0.00039999998989515007
+    ],
+    "delay_ms": 442.697998046875,
+    "delay_db": -33.3,
+    "fdn_db": -26.8,
+    "t60": 3.46,
+    "wet_dry": -25.9,
+    "pan": 0.5073000192642212
+   },
+   {
+    "song": "Ten_Doodle",
+    "hpf": 109.85910034179688,
+    "cmp_th": -21.423099517822266,
+    "ratio": 8.807700157165527,
+    "at_rt": [
+     0.007899999618530273,
+     0.00019999999494757503
+    ],
+    "delay_ms": 377.42181396484375,
+    "delay_db": -44.5,
+    "fdn_db": -27.9,
+    "t60": 1.52,
+    "wet_dry": -27.8,
+    "pan": 0.516700029373169
+   },
+   {
+    "song": "Zarame_ZundaPartyNight",
+    "hpf": 305.6046142578125,
+    "cmp_th": -18.769500732421875,
+    "ratio": 4.1992998123168945,
+    "at_rt": [
+     0.0034000000450760126,
+     0.0015999999595806003
+    ],
+    "delay_ms": 487.6567077636719,
+    "delay_db": -39.0,
+    "fdn_db": -18.5,
+    "t60": 2.15,
+    "wet_dry": -18.5,
+    "pan": 0.5153999924659729
+   }
+  ],
+  "v7": [
+   {
+    "song": "エバ",
+    "main_only_s": 77.0,
+    "voc_minus_inst_lu": 0.8,
+    "sm_pro_db": -17.0,
+    "tail_pro_db": -29.8,
+    "floor_pro_db": -57.5
+   },
+   {
+    "song": "シックスフィートアンダー",
+    "main_only_s": 5.6,
+    "voc_minus_inst_lu": -5.8,
+    "sm_pro_db": -16.9,
+    "tail_pro_db": -30.7,
+    "floor_pro_db": -45.9
+   }
+  ]
+ }
+}
