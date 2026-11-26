@@ -10,6 +10,7 @@ v8 の「正解」は、ユーザー（凌）の耳による評価と Studio One
 | `YYYY-MM-DD_スレッド発言.txt` | プロジェクトのスレッドでの発言の原文（同上）。issues.yaml の項目は `source:` でこのファイルを指す |
 | `issues.yaml` | 原文を 1 指摘 = 1 項目に構造化したもの。評価指標の検証（指摘を当てられるか）に使う |
 | `metric_validation.md` | Phase 2: 指摘 × 指標の判定表・hit 率・誤報・v7 の合否（`scripts/analysis/evaluate_issues.py --write-md` の出力） |
+| `cover_stats.json` | Phase 2c: 同じ曲の人間プロカバー（YouTube、BS-RoFormer 分離、オフボに時間合わせ）の要約統計と取り込み判定（`scripts/analysis/cover_refs.py ingest|identity|stats`。音声はコミットしない） |
 | `reference_stats.json` | Phase 2: 指標の参照分布（プロ 87 曲の分離ステム・自 MIX 2 曲・v7 分離版、`scripts/analysis/build_reference_stats.py`） |
 
 新しいメモが来たら:

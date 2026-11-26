@@ -28,6 +28,7 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _cover_judge as cj  # noqa: E402
 from _common import (  # noqa: E402
     ROOT,
     fmt_time,
@@ -489,6 +490,15 @@ def judge_harmony_missing(res, issue, ref):
                  note="現時点で検出不可（値のみ）。エバは録音ハモリ無し→Nectar 3 生成ハモリが 2mix に入る設計")]
 
 
+_CS: dict = {}
+
+
+def cover_stats() -> dict | None:
+    if "v" not in _CS:
+        _CS["v"] = cj.load()
+    return _CS["v"]
+
+
 def judge_global(res, issue, ref, song_scalars):
     cat, song = issue["category"], issue["song"]
     if cat == "step_change":
@@ -508,13 +518,28 @@ def judge_global(res, issue, ref, song_scalars):
     for rid, _, key, side, label, thr, kind in CATEGORY_RULES.get(cat, []):
         if issue["direction"] == "fizzy" and rid == "R_airy":
             continue
-        if orig is None:
-            out.append(dict(metric=f"{rid}: {label}", value=None, note="本家音源なし"))
-            continue
         d_sep = rel_delta(v7sep, orig, key, kind)
         d_true = rel_delta(song_scalars, orig, key, kind)
         dry = (res.get("dry_scalars") or {})
         d_dry = rel_delta(dry, orig, key, kind) if dry else None
+        cs = cover_stats()
+        if cs and song in cs["songs"]:
+            j = cj.judge_rule(cs, song, (rid, cat, key, side, label, thr, kind))
+            if j["fires"] is not None:
+                edge = j["lo"] if side == "low" else j["hi"]
+                if kind == "ratio":
+                    athr = edge * (1 - thr) if side == "low" else edge * (1 + thr)
+                else:
+                    athr = edge - thr if side == "low" else edge + thr
+                lab = label.replace("v7−本家", "v7（分離）").replace("v7/本家−1", "v7（分離）")
+                out.append(dict(metric=f"{rid}: {lab} vs 人間カバー", value=j["value"], abs_thr=athr,
+                                abs_src=f"カバー範囲 [{fmt(j['lo'])}, {fmt(j['hi'])}] (n={j['n']}) の外 + JND", rel_thr=None,
+                                hit_abs=j["fires"], hit_rel=None, n_similar="—",
+                                extra=f"端からの距離 {fmt(j['dist'])}; 参考 v7−本家 {fmt(d_sep)}"))
+                continue
+        if orig is None:
+            out.append(dict(metric=f"{rid}: {label}", value=None, note="本家音源なし"))
+            continue
         out.append(dict(metric=f"{rid}: {label}", value=d_sep, abs_thr=(-thr if side == "low" else thr),
                         abs_src="JND（v7 分離版−本家 分離）", rel_thr=None, hit_abs=fires_rel(d_sep, thr, side), hit_rel=None,
                         n_similar="—", extra=f"v7 ステム−本家 {fmt(d_true)}; ドライ再レンダー−本家 {fmt(d_dry)}"))
@@ -572,6 +597,118 @@ def intelligibility_of_original(song: str, dname: str, transcriber) -> dict:
         c = [r[2] for r in a["chunks"] if r[2] is not None]
         out |= {"cer_p90": float(np.percentile(c, 90)) if c else None, "cer_median": float(np.median(c)) if c else None}
     return out
+
+
+
+def cover_sections(issues, results):
+    """Phase 2c sections (human covers). Returns (markdown lines, extra issue rows, verdict rows)."""
+    cs = cover_stats()
+    if not cs:
+        return [], [], []
+    md: list[str] = []
+    # 1. Ingest / identity.
+    idrows = []
+    for d in cs["identity"].values():
+        idrows.append([d["song"], f"{d['kind']}_{d['name']}", fmt(d["len_s"], 0), fmt(d["offset_s"]), fmt(d["env_corr"]),
+                       f"{d['coverage'] * 100:.0f}%", fmt(d.get("drift_ms_per_min"), 1), d.get("edits"), f"{d['key_shift']:+d}",
+                       {"use": "使用", "flag": "フラグ付きで使用", "exclude": "除外"}[d["status"]], d["why"] or "—"])
+    c = cs["criteria"]
+    md += ["## Phase 2c: 人間カバーの取り込み（YouTube webm → BS-RoFormer、v7 のオフボに時間合わせ）", "",
+           f"`scripts/analysis/cover_refs.py`。オフボと分離オケの包絡相関 < {c['corr_unrelated']} は別アレンジとして除外、"
+           f"20 s 窓の局所オフセットのずれ > {c['drift_ms_per_min']:.0f} ms/分 または直線から {c['edit_s']} s 超の窓（編集）は除外、"
+           f"v7 の時間軸の被覆 < {c['min_coverage'] * 100:.0f}% は除外、移調はフラグ付きで使用。", "",
+           md_table(["曲", "音源", "長さ s", "offset s", "包絡相関", "被覆", "drift ms/分", "編集窓", "移調", "扱い", "理由"], idrows), ""]
+    # 2. Global rules x songs.
+    grows, verdict = [], []
+    for song in cs["songs"]:
+        fired, n_ok = [], 0
+        for rule in GLOBAL_RULES:
+            j = cj.judge_rule(cs, song, rule)
+            n_ok += j["fires"] is not None
+            if j["fires"]:
+                fired.append(f"{rule[0]}({fmt(j['value'])} / [{fmt(j['lo'])}, {fmt(j['hi'])}])")
+            grows.append([song, rule[0], fmt(j["value"]), f"[{fmt(j['lo'])}, {fmt(j['hi'])}]", j["n"], fmt(j["dist"]),
+                          yn(j["fires"]) if j["fires"] is not None else "—"])
+        verdict.append([song, "FAIL" if fired else ("PASS" if n_ok else "判定不可"), ", ".join(fired) or "—"])
+    ref = load_ref()
+    sm = [f"{s[:4]}: v7 {fmt(sd['v7_sep'].get('side_mid'))} / 本家 {fmt((ref.get('original', {}).get(s) or {}).get('side_mid'))}"
+          for s, sd in cs["songs"].items() if s not in cj.HUMAN_ORIGINAL]
+    md += ["## Phase 2c: 全体ルール × 曲（v7 分離 vs 人間カバーの範囲）", "",
+           "発火 = v7 がカバーの範囲（最小〜最大）の外で、近い端から JND 以上離れ、ルールの向きと一致。"
+           "距離 = 近い端からの外側への距離（正 = 外、減衰時間は比）。Fall in Love は本家（人間の歌唱）も参照に含む。"
+           "参考（判定に使わない）Side/Mid のボカロ本家: " + "; ".join(sm), "",
+           md_table(["曲", "ルール", "v7", "カバー範囲", "n", "距離", "発火"], grows), ""]
+    # 3. Leave-one-out.
+    lo = cj.loo(cs, GLOBAL_RULES)
+    lrows = [[k, f"{v[0]}/{v[1]}", f"{(v[0] / v[1] * 100) if v[1] else 0:.0f}%"] for k, v in lo["rules"].items()]
+    tot = [sum(v[0] for v in lo["rules"].values()), sum(v[1] for v in lo["rules"].values())]
+    lrows.append(["計", f"{tot[0]}/{tot[1]}", f"{(tot[0] / tot[1] * 100) if tot[1] else 0:.0f}%"])
+    srows = [[s, f"{v[0]}/{v[1]}"] for s, v in lo["songs"].items()]
+    md += ["## Phase 2c: 誤報率（leave-one-out）", "",
+           "各カバーを、同じ曲の残りの参照の範囲で同じ規則により判定し、発火した数（カバー × ルール）。", "",
+           md_table(["ルール", "発火/試行", "誤報率"], lrows), "", md_table(["曲", "発火/試行"], srows), ""]
+    # 4. fil-g2 (distance OK) as a negative.
+    if "Fall in Love" in cs["songs"]:
+        frows = []
+        for rule in GLOBAL_RULES:
+            if rule[0] in cj.DISTANCE_RULES:
+                j = cj.judge_rule(cs, "Fall in Love", rule)
+                frows.append([rule[0], fmt(j["value"]), f"[{fmt(j['lo'])}, {fmt(j['hi'])}]", yn(j["fires"]) if j["fires"] is not None else "—"])
+        md += ["## Phase 2c: fil-g2（距離感は OK）の否定例", "", "距離を読むルールが Fall in Love の v7 で発火したら誤報。", "",
+               md_table(["ルール", "v7", "カバー＋本家の範囲", "発火（=誤報）"], frows), ""]
+    # 5. Phrase comparison (eva-2, eva-4).
+    extra_rows = []
+    by_id = {i["id"]: i for i in issues}
+    wins = {iid: window_of(by_id[iid])[:2] for iid in ("eva-2", "eva-4") if iid in by_id}
+    if "エバ" in cs["songs"] and wins:
+        pc = cj.phrase_compare(cs, "エバ", wins, {"eva-2": float(by_id["eva-2"]["time_sec"])})
+        prow = []
+        for iid, d in pc["issues"].items():
+            for r in d["phrases"]:
+                prow.append([iid, f"{fmt_time(r['start'])}–{fmt_time(r['end'])}", fmt(r["v7"]), f"[{fmt(r['cov_lo'])}, {fmt(r['cov_hi'])}]", r["n"],
+                             yn(r["abs"]) if r["abs"] is not None else "—", fmt(r["v7_contrast"]), yn(r["loc"]) if r["loc"] is not None else "—"])
+            extra_rows.append({"id": iid, "cat": "buried/buried", "when": fmt_time(by_id[iid]["time_sec"]),
+                               "metric": "A フレーズ部分ラウドネス損失 vs 人間カバー（同じ歌詞フレーズ）",
+                               "value": min((r["v7"] for r in d["phrases"] if r["v7"] is not None), default=None),
+                               "abs_thr": None, "abs_src": "カバー範囲の下端 − 1 phon", "rel_thr": None,
+                               "hit_abs": d["hit_abs"], "hit_rel": d["hit_loc"],
+                               "n_similar": f"{pc['similar_abs']}/{pc['n_phrases']} フレーズ（局所 {pc['similar_loc']}）",
+                               "extra": "rel = 局所コントラスト（前後フレーズとの差）がカバー範囲より 1 phon 以上低い",
+                               "hit": bool(d["hit_abs"] or d["hit_loc"])})
+        sp = pc["split"].get("eva-2")
+        if sp:
+            extra_rows.append({"id": "eva-2", "cat": "buried/buried", "when": "1:31.0", "metric": "A 1:31 直後−直前 フレーズ損失差 vs 人間カバー",
+                               "value": sp["v7"], "abs_thr": (sp["cov_lo"] - cj.PHRASE_JND) if sp["cov_lo"] is not None else None,
+                               "abs_src": f"カバー範囲 [{fmt(sp['cov_lo'])}, {fmt(sp['cov_hi'])}] (n={sp['n']}) − 1 phon", "rel_thr": None,
+                               "hit_abs": sp["fires"], "hit_rel": None, "n_similar": "—",
+                               "extra": f"直前 {fmt_time(sp['t_before'][0])}–{fmt_time(sp['t_before'][1])} / 直後 {fmt_time(sp['t_after'][0])}–{fmt_time(sp['t_after'][1])}",
+                               "hit": sp["fires"]})
+        md += ["## Phase 2c: フレーズ比較（局所の埋もれ eva-2, eva-4）", "",
+               "v7 の分離ボーカルのフレーズ（区間）を、オフボに時間合わせしたカバーの同じ区間と対応させ、部分ラウドネス損失（phon）を比べる。"
+               "絶対 = v7 がカバー範囲の下端より 1 phon 以上低い。局所 = 前後フレーズの平均との差（局所コントラスト）が同様に低い。"
+               f"同じくらい悪い他のフレーズ（指摘外、誤報に数えない）: 絶対 {pc['similar_abs']} / 局所 {pc['similar_loc']}（全 {pc['n_phrases']} フレーズ）。", "",
+               md_table(["id", "フレーズ", "v7 損失", "カバー範囲", "n", "絶対", "v7 局所", "局所"], prow), ""]
+        if sp:
+            md += [f"1:31 の前後差（直後−直前）: v7 {fmt(sp['v7'])} / カバー [{fmt(sp['cov_lo'])}, {fmt(sp['cov_hi'])}] → {yn(sp['fires'])}", ""]
+    # 6. Step negatives.
+    strows = []
+    for song in ("エバ", "シックスフィートアンダー"):
+        if song not in cs["songs"]:
+            continue
+        for r in cj.step_negatives(cs, song):
+            cells = [r["name"], fmt_time(r["t"])]
+            for feat in ("d_level", "d_bright"):
+                f = r[feat]
+                cells += [fmt(f["v7"]), f"[{fmt(f['lo'])}, {fmt(f['hi'])}]", f"{f['covers_same_sign_jnd']}/{f['n']}",
+                          "v7 固有" if f["v7_specific"] else ("カバーにも同程度" if f["v7_specific"] is not None else "—")]
+            strows.append(cells)
+    if strows:
+        md += ["## Phase 2c: 声質の段差の否定例（eva-g4, six-3, six-8）", "",
+               "同じ区間境界で、v7（分離）とカバーの分離ボーカルの生の段差（後 3 s − 前 3 s、声が出ているフレームのみ）。"
+               "Δlevel = Δ(声 − オケ) dB、Δbright = Δ(2-8 kHz − 150 Hz-1 kHz) dB。生の段差は歌唱・アレンジ・MIX をすべて含む。"
+               "「v7 固有」= v7 がカバー範囲の外に JND 以上。「同符号≥JND」= 同じ向きに 1 dB 以上の段差があるカバーの数。", "",
+               md_table(["境界", "時刻", "v7 Δlevel", "カバー", "同符号≥JND", "判定", "v7 Δbright", "カバー", "同符号≥JND", "判定"], strows), ""]
+    return md, extra_rows, verdict
 
 
 def main() -> None:
@@ -647,6 +784,10 @@ def main() -> None:
             return " ".join(f"{s[:4]}:{'発火' if v else ('なし' if v is not None else '—')}" for s, v in dct.items())
         fa_rows.append([rid, show(v7), show(cov), show(selfs)])
 
+    cover_md, cover_rows, cover_verdict = cover_sections(issues, results)
+    rows += cover_rows
+    print_table(["曲", "判定（人間カバー基準）", "発火"], cover_verdict)
+
     # Per-metric hit rates.
     by_metric: dict[str, list[bool]] = {}
     for r in rows:
@@ -684,7 +825,7 @@ def main() -> None:
     print_table(["曲", "Beat This BPM", "v7 BPM", "v7 tempo_segments", "曲長(s)"], tempo)
 
     if args.write_md:
-        write_md(table, hdr, by_metric, verdict_rows, fa_rows, tempo, results, ref, rank_rows)
+        write_md(table, hdr, by_metric, verdict_rows, fa_rows, tempo, results, ref, rank_rows, cover_md, cover_verdict)
 
 
 def md_table(hdr, rows) -> str:
@@ -694,9 +835,9 @@ def md_table(hdr, rows) -> str:
     return "\n".join(out)
 
 
-def write_md(table, hdr, by_metric, verdict_rows, fa_rows, tempo, results, ref, rank_rows) -> None:
+def write_md(table, hdr, by_metric, verdict_rows, fa_rows, tempo, results, ref, rank_rows, cover_md=(), cover_verdict=()) -> None:
     parts = [
-        "# 指標の検証（Phase 2）",
+        "# 指標の検証（Phase 2 / 2c）",
         "",
         "`scripts/analysis/evaluate_issues.py --write-md` の出力。指標の定義と出典は `src/mix_automation/v8/metrics/`、"
         "参照分布は `reference_stats.json`（`scripts/analysis/build_reference_stats.py`）。",
@@ -714,11 +855,13 @@ def write_md(table, hdr, by_metric, verdict_rows, fa_rows, tempo, results, ref, 
         "",
         md_table(["指標", "hit/件"], [[k, f"{sum(v)}/{len(v)}"] for k, v in by_metric.items()]),
         "",
-        "## 曲ごとの合否（本家との差の全体ルールのどれかが発火したら FAIL）",
+        "## 曲ごとの合否（Phase 2c: 人間カバー基準。全体ルールのどれかが発火したら FAIL）",
         "",
-        md_table(["曲", "判定", "発火した全体ルール"], verdict_rows),
+        md_table(["曲", "判定", "発火した全体ルール（v7 値 / カバー範囲）", "参考: 本家基準（Phase 2）"],
+                 [list(c) + [next((f"{v[1]} {v[2]}" for v in verdict_rows if v[0] == c[0]), "—")] for c in cover_verdict]),
         "",
-        "## 全体ルールの誤報（否定例）",
+        *cover_md,
+        "## 全体ルールの誤報（否定例、Phase 2 の本家基準・参考）",
         "",
         "全体ルールは本家（原曲を同じ BS-RoFormer で分離）との差を JND と比べる。v7 もマスターを同じモデルで分離した値を使う。"
         "同じ曲のプロカバー（ラブ&デストロイの梓川カバーのみ）で発火したら誤報。自MIX は凌の回答（2026-11-26「納得してない、天井にしないで」）により否定例・閾値の出典から外し、参考に値だけ載せる。"
