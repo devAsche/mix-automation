@@ -25,6 +25,7 @@ from pedalboard import Pedalboard, load_plugin
 from scipy import ndimage, signal
 
 from mix_automation.config.plugin_registry import get_plugin_map
+from mix_automation.debug_taps import tap
 from mix_automation.dsp.lyrics_aligner import LyricsPhonemeAlignment, align_lyrics_and_phonemes
 from mix_automation.dsp.pitch_timing import PitchTimingReport, run_smart_pitch_and_timing_stage
 from mix_automation.dsp.vst3_adapter import (
@@ -334,6 +335,7 @@ def run_self_calibrating_deess_and_soothe2(
                 chosen_thresh = round(best_t, 2)
                 meas_sib_gr = round(best_gr, 2)
                 meas_atk_delta = round(best_atk, 2)
+    tap("04_deess", v)
 
     soothe_applied = False
     if pmap["soothe2"].exists and cfg.soothe_depth_db > 0.05:
@@ -342,6 +344,7 @@ def run_self_calibrating_deess_and_soothe2(
         set_vst3_param_strict(s2, "depth", cfg.soothe_depth_db)
         v = np.mean(s2(np.stack([v, v], axis=0).astype(np.float32), sr, reset=True), axis=0)
         soothe_applied = True
+    tap("05_soothe2_pre", v)
 
     v, final_lufs = stage_vocal_loudness(v, sr=sr, target_lufs=cfg.target_staged_lufs)
     calib = PreprocessCalibrationReport(
@@ -372,11 +375,13 @@ def preprocess_vocal_pipeline(
     """Execute complete v7 self-calibrating, phoneme/attack-preserving Stage 1 pre-processing."""
     cfg = cfg or PreprocessConfig()
 
+    tap("00_raw", raw_mono_vocal)
     v = strip_silence_gate(raw_mono_vocal, sr=sr)
 
     if cfg.enable_rx10_cleanup:
         v = run_rx10_cleanup(v, sr=sr, cfg=cfg)
         v = strip_silence_gate(v, sr=sr)
+    tap("01_rx", v)
 
     alignment = align_lyrics_and_phonemes(v, sr=sr, lyrics_path=lyrics_path)
     scale_info = detect_key_scale_mask(inst_mono, sr=sr)
@@ -390,13 +395,16 @@ def preprocess_vocal_pipeline(
         enable_auto_align=cfg.enable_auto_align,
         lyrics_alignment=alignment,
     )
+    tap("02_pitch", v)
 
     if cfg.enable_gain_rider:
         v = apply_phoneme_aware_gain_rider(v, inst_mono, sr=sr, cfg=cfg)
+    tap("03_rider", v)
 
     # Stage to -18.0 LUFS BEFORE de-essing & Soothe2 so detectors work at calibrated studio level!
     v, _ = stage_vocal_loudness(v, sr=sr, target_lufs=cfg.target_staged_lufs)
     v, calib_report = run_self_calibrating_deess_and_soothe2(v, sr=sr, cfg=cfg)
+    tap("06_prepared", v)
 
     if return_alignment:
         return v, pt_report, scale_info, calib_report, alignment

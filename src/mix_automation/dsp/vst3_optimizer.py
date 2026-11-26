@@ -52,6 +52,7 @@ from pedalboard import (
 )
 from scipy import ndimage, signal
 
+from mix_automation import debug_taps
 from mix_automation.analysis.relative_profile import (
     VOCAL_MIX_BANDS,
     SectionRelativeProfile,
@@ -61,6 +62,7 @@ from mix_automation.analysis.relative_profile import (
     compute_section_relative_profile,
 )
 from mix_automation.config.plugin_registry import get_plugin_map
+from mix_automation.debug_taps import tap
 from mix_automation.dsp.vst3_adapter import (
     PRECISION_EQ_BAND_SPECS,
     configure_clean_plate_r2,
@@ -1609,6 +1611,14 @@ class RealVST3CharacterRig:
         st_in = np.stack([vocal_mono, vocal_mono], axis=0).astype(np.float32)
         core_st = board(st_in, sr, reset=True)
         core_mono = np.mean(core_st, axis=0, dtype=np.float32)
+        if debug_taps.active():
+            # Taps only: re-render the leading plugins on their own (the real path above is untouched).
+            tap("10_in", vocal_mono)  # chain input, reference for the first stage
+            for k, nm in ((1, "11_pq"), (2, "12_vca"), (3, "13_la2a")):
+                if k < len(chain):
+                    part = Pedalboard(chain[:k])(st_in, sr, reset=True)
+                    tap(nm, np.mean(part, axis=0, dtype=np.float32))
+            tap("14_color" if self.color is not None else "13_la2a", core_mono)
 
         # Midrange-ONLY Parallel Harmonic Saturation (240 Hz - 4.0 kHz strictly!! Zero HF sizzle!)
         if p.parallel_sat_amount > 0.1 and p.parallel_sat_wet_pct > 0.01:
@@ -1628,6 +1638,7 @@ class RealVST3CharacterRig:
                 core_mono = ((1.0 - w_arr) * core_mono + w_arr * sat_m).astype(np.float32)
             else:
                 core_mono = ((1.0 - base_w) * core_mono + base_w * sat_m).astype(np.float32)
+        tap("15_sat", core_mono)
 
         # Post-Comp / Post-Sat 4-Band Surgical `Oeksound Soothe2` (eliminates harsh bite & HF sizzle!)
         if self.soothe2 is not None and p.soothe2_depth > 0.15:
@@ -1641,12 +1652,14 @@ class RealVST3CharacterRig:
             )
             s2_out = self.soothe2(np.stack([core_mono, core_mono], axis=0).astype(np.float32), sr, reset=True)
             core_mono = np.mean(s2_out, axis=0, dtype=np.float32)
+        tap("16_soothe2", core_mono)
 
         # Gentle 6-Bark-band consonant-needle soft-shaper (rounds extreme piercing onset spikes only!)
         if p.bark_transient_tame_amt > 0.03:
             core_mono = apply_bark_consonant_transient_tamer(
                 core_mono, sr=sr, amount=p.bark_transient_tame_amt
             )
+        tap("17_bark", core_mono)
 
         return (core_mono * float(10.0 ** (p.vocal_fader_db / 20.0))).astype(np.float32)
 
@@ -1841,7 +1854,13 @@ def process_main_harmony_bus(
             Compressor(threshold_db=-26.0, ratio=6.5, attack_ms=0.8, release_ms=340.0),
         ]
     )
-    proc = _soften_harmony_sibilants(h_board(h, sr), sr=sr, cutoff_hz=4400.0, max_depth=0.62)
+    h_comp = h_board(h, sr)
+    if debug_taps.active():
+        tap("20_in", h)
+        tap("21_eq", Pedalboard(list(h_board)[:-1])(h, sr))
+        tap("22_comp", h_comp)
+    proc = _soften_harmony_sibilants(h_comp, sr=sr, cutoff_hz=4400.0, max_depth=0.62)
+    tap("23_sib", proc)
 
     # 2. Cohesive Stereo Frame Width (kept focused around lead rather than over-widened)
     mid = 0.5 * (proc[0] + proc[1])
@@ -1880,10 +1899,14 @@ def process_main_harmony_bus(
         except Exception:
             pass
 
+    tap("24_space", wide)
     leveled = _level_stereo_bus_to_lead_klufs(
         wide, lead_final_dry, sr=sr, target_rel_db=target_rel_db, dry_activity_ref=dry_ref
     )
-    return _apply_lead_contour_pocket(leveled, lead_final_dry, sr=sr, target_rel_db=target_rel_db, headroom_db=2.2)
+    tap("25_level", leveled)
+    pocketed = _apply_lead_contour_pocket(leveled, lead_final_dry, sr=sr, target_rel_db=target_rel_db, headroom_db=2.2)
+    tap("26_pocket", pocketed)
+    return pocketed
 
 
 def process_choir_bus(
@@ -1911,7 +1934,13 @@ def process_choir_bus(
             Compressor(threshold_db=-24.0, ratio=4.5, attack_ms=4.5, release_ms=200.0),
         ]
     )
-    proc = _soften_harmony_sibilants(c_board(h, sr), sr=sr, cutoff_hz=5200.0, max_depth=0.45)
+    c_comp = c_board(h, sr)
+    if debug_taps.active():
+        tap("20_in", h)
+        tap("21_eq", Pedalboard(list(c_board)[:-1])(h, sr))
+        tap("22_comp", c_comp)
+    proc = _soften_harmony_sibilants(c_comp, sr=sr, cutoff_hz=5200.0, max_depth=0.45)
+    tap("23_sib", proc)
 
     mid = 0.5 * (proc[0] + proc[1])
     side = 0.5 * (proc[0] - proc[1]) * float(10.0 ** (side_boost_db / 20.0))
@@ -1931,9 +1960,12 @@ def process_choir_bus(
         except Exception:
             pass
 
-    return _level_stereo_bus_to_lead_klufs(
+    tap("24_space", wide)
+    leveled = _level_stereo_bus_to_lead_klufs(
         wide, lead_final_dry, sr=sr, target_rel_db=target_rel_db, dry_activity_ref=dry_ref
     )
+    tap("25_level", leveled)
+    return leveled
 
 
 def process_dedicated_harmony_bus(
@@ -1974,6 +2006,7 @@ def apply_2mix_bus_glue_and_safe_master(
     )
 
     raw_2mix = (inst_stereo + vocal_bus_stereo).astype(np.float32)
+    tap("40_mix", raw_2mix)
 
     pre_peak = float(np.max(np.abs(raw_2mix))) + 1e-9
     safe_ceiling = 10.0 ** (-3.5 / 20.0)
@@ -1999,6 +2032,7 @@ def apply_2mix_bus_glue_and_safe_master(
             glued = bus_comp(raw_2mix, sr, reset=True)
         except Exception:
             glued = raw_2mix
+    tap("41_glue", glued)
 
     cur_lufs = meter.integrated_loudness(glued.T.astype(np.float64))
     gain_db = float(np.clip(effective_target_lufs - cur_lufs, -6.0, 14.0)) if np.isfinite(cur_lufs) else 0.0

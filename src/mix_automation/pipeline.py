@@ -11,6 +11,7 @@ import soundfile as sf
 from pedalboard import Compressor, HighpassFilter, LowpassFilter, PeakFilter, Pedalboard
 from scipy import signal
 
+from mix_automation import debug_taps
 from mix_automation.analysis.preference_learner import (
     apply_user_preference_offsets,
     propagate_anchor_advanced,
@@ -361,6 +362,13 @@ def _write_debug_stems(folder: Path, sr: int, **stems: np.ndarray) -> None:
         sf.write(str(folder / f"{name}.wav"), a.T if a.ndim == 2 else a, sr, subtype="FLOAT")
 
 
+def _flush_stage_taps(folder: Path | None, sr: int) -> None:
+    """Write (and free) the per-stage taps recorded so far (v8 Phase 3 analysis aid)."""
+    taps = debug_taps.drain()
+    if folder is not None and taps:
+        _write_debug_stems(folder, sr, **taps)
+
+
 def run_full_automix_for_song(
     song_folder: Path,
     template_song_path: Path,
@@ -378,7 +386,9 @@ def run_full_automix_for_song(
     """Execute the complete v5 automated vocal mixing & true 1:1 Studio One 5 pipeline.
 
     `export_debug_stems` (v8 Phase 2 analysis aid) additionally writes the final vocal-bus components
-    to `<out>/debug_stems/` as float WAV; it does not change any audio or the master.
+    to `<out>/debug_stems/` as float WAV, and (Phase 3) each processing stage's output of the lead,
+    harmony/choir/aux chains and the master bus to `<out>/debug_stems/stages/`. It does not change
+    any audio or the master.
     """
     song_name = song_folder.name
     safe_slug = song_name.replace("&", "and").replace(" ", "_")
@@ -462,15 +472,18 @@ def run_full_automix_for_song(
     print("=== [2/7] Stage 1 Lyrics-Protected Pre-processing (RX10 Music + Spectral De-ess >5.8kHz + -18 LUFS) ===", flush=True)
     prep_cfg = PreprocessConfig(force_auto_pitch=force_auto_pitch, enable_auto_align=enable_auto_align)
     lyrics_file = assets["lyrics"] if isinstance(assets["lyrics"], Path) else None
-    lead_prepared, pt_report, scale_info, prep_calib, lyrics_alignment = preprocess_vocal_pipeline(
-        lead_raw,
-        inst_mono,
-        sr=target_sr,
-        ref_vocal_mono=ref_vocal_aligned,
-        cfg=prep_cfg,
-        lyrics_path=lyrics_file,
-        return_alignment=True,
-    )
+    stage_dir = (out_dir / "debug_stems" / "stages") if export_debug_stems else None
+    with debug_taps.capture("lead_", export_debug_stems):
+        lead_prepared, pt_report, scale_info, prep_calib, lyrics_alignment = preprocess_vocal_pipeline(
+            lead_raw,
+            inst_mono,
+            sr=target_sr,
+            ref_vocal_mono=ref_vocal_aligned,
+            cfg=prep_cfg,
+            lyrics_path=lyrics_file,
+            return_alignment=True,
+        )
+    _flush_stage_taps(stage_dir, target_sr)
     scale_mask, key_root, key_mode = scale_info
     note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
     detected_key_str = f"{note_names[key_root]} {key_mode}"
@@ -563,7 +576,9 @@ def run_full_automix_for_song(
     space_env = np.clip(_smooth_envelope(space_env_sec, target_sr, 0.35) * dist_envs["space_env"], 0.85, 1.40)
     delay_env = np.clip(_smooth_envelope(delay_env_sec, target_sr, 0.35), 0.70, 1.10)
 
-    lead_chained_base = rig.apply_insert_chain(lead_prepared, sr=target_sr, p=chain_params, sat_envelope=sat_env)
+    with debug_taps.capture("lead_", export_debug_stems):
+        lead_chained_base = rig.apply_insert_chain(lead_prepared, sr=target_sr, p=chain_params, sat_envelope=sat_env)
+    _flush_stage_taps(stage_dir, target_sr)
     lead_adapted, multisec_diag = apply_multisection_adaptive_sculpting(
         lead_chained_base,
         inst_stereo,
@@ -619,9 +634,15 @@ def run_full_automix_for_song(
     combined_gain_env = (section_envelope * dist_envs["gain_env"]).astype(np.float32)
     # Apply BOTH section clip-gain envelope AND gentle continuous distance gain on quiet drops!
     lead_final_dry = (lead_adapted * combined_gain_env).astype(np.float32)
+    with debug_taps.capture("lead_", export_debug_stems):
+        debug_taps.tap("18_fader", lead_chained_base)
+        debug_taps.tap("30_multisec", lead_adapted)
+        debug_taps.tap("31_gainenv", lead_final_dry)
     lead_final_dry = apply_dynamic_distance_tone_soften(
         lead_final_dry, sr=target_sr, soften_env=dist_envs["soften_env"], max_cut_db=0.45
     )
+    with debug_taps.capture("lead_", export_debug_stems):
+        debug_taps.tap("32_soften", lead_final_dry)
     fine_events = build_fine_distance_sub_events(
         lead_prepared, combined_gain_env, raw_spans, sr=target_sr
     )
@@ -638,6 +659,9 @@ def run_full_automix_for_song(
     lead_final_dry, inline_fx_spot_stems = apply_verified_inline_fx_chain(
         lead_final_dry, sr=target_sr, events=fx_events, scale_mask=scale_mask
     )
+    with debug_taps.capture("lead_", export_debug_stems):
+        debug_taps.tap("33_inlinefx", lead_final_dry)
+    _flush_stage_taps(stage_dir, target_sr)
     fx_throw_stereo = render_ethereal_throw_stem(lead_final_dry, sr=target_sr, events=fx_events, bpm=bpm)
     fx_spot_delay_stereo = render_spot_delay_throw_stem(lead_final_dry, sr=target_sr, events=fx_events, bpm=bpm)
 
@@ -688,6 +712,10 @@ def run_full_automix_for_song(
             ]
         )
         proc = b(padded, target_sr)
+        if debug_taps.active():
+            debug_taps.tap("20_in", padded)
+            debug_taps.tap("21_eq", Pedalboard(list(b)[:-1])(padded, target_sr))
+            debug_taps.tap("22_comp", proc)
         cur_rms = float(np.sqrt(np.mean(proc[np.abs(proc) > 1e-4] ** 2) + 1e-12))
         target_rms = lead_active_rms * (10.0 ** (rel_db / 20.0))
         gain = float(np.clip(target_rms / cur_rms, 0.04, 16.0))
@@ -702,17 +730,20 @@ def run_full_automix_for_song(
     sup_oc_bal: np.ndarray | None = None
 
     if consolidated.double_stereo is not None:
-        dbl_bal = _balance_aux_stereo(consolidated.double_stereo, rel_db=-11.8, hpf=200.0)
+        with debug_taps.capture("dbl_", export_debug_stems):
+            dbl_bal = _balance_aux_stereo(consolidated.double_stereo, rel_db=-11.8, hpf=200.0)
         if dbl_bal is not None:
             aux_layers_stereo += dbl_bal
 
     if consolidated.sub_octave_stereo is not None:
-        sub_oc_bal = _balance_aux_stereo(consolidated.sub_octave_stereo, rel_db=-13.8, hpf=110.0)
+        with debug_taps.capture("suboc_", export_debug_stems):
+            sub_oc_bal = _balance_aux_stereo(consolidated.sub_octave_stereo, rel_db=-13.8, hpf=110.0)
         if sub_oc_bal is not None:
             aux_layers_stereo += sub_oc_bal
 
     if consolidated.super_octave_stereo is not None:
-        sup_oc_bal = _balance_aux_stereo(consolidated.super_octave_stereo, rel_db=-14.5, hpf=260.0)
+        with debug_taps.capture("superoc_", export_debug_stems):
+            sup_oc_bal = _balance_aux_stereo(consolidated.super_octave_stereo, rel_db=-14.5, hpf=260.0)
         if sup_oc_bal is not None:
             aux_layers_stereo += sup_oc_bal
 
@@ -724,28 +755,30 @@ def run_full_automix_for_song(
     choir_processed: np.ndarray | None = None
 
     if consolidated.main_harmonies_stereo_bus is not None:
-        main_harm_processed = process_main_harmony_bus(
-            consolidated.main_harmonies_stereo_bus,
-            lead_final_dry,
-            sr=target_sr,
-            lead_core_hz=chain_params.lead_core_formant_hz,
-            target_rel_db=harmony_target_rel_db,
-            side_boost_db=0.6,
-            plate_plugin=rig.r2,
-            room_plugin=rig.phoenix,
-        )
+        with debug_taps.capture("harm_", export_debug_stems):
+            main_harm_processed = process_main_harmony_bus(
+                consolidated.main_harmonies_stereo_bus,
+                lead_final_dry,
+                sr=target_sr,
+                lead_core_hz=chain_params.lead_core_formant_hz,
+                target_rel_db=harmony_target_rel_db,
+                side_boost_db=0.6,
+                plate_plugin=rig.r2,
+                room_plugin=rig.phoenix,
+            )
         harm_bus_processed = (harm_bus_processed + main_harm_processed).astype(np.float32)
 
     if consolidated.choir_stereo_bus is not None:
-        choir_processed = process_choir_bus(
-            consolidated.choir_stereo_bus,
-            lead_final_dry,
-            sr=target_sr,
-            target_rel_db=choir_target_rel_db,
-            side_boost_db=2.0,
-            plate_plugin=rig.r2,
-            room_plugin=rig.phoenix,
-        )
+        with debug_taps.capture("choir_", export_debug_stems):
+            choir_processed = process_choir_bus(
+                consolidated.choir_stereo_bus,
+                lead_final_dry,
+                sr=target_sr,
+                target_rel_db=choir_target_rel_db,
+                side_boost_db=2.0,
+                plate_plugin=rig.r2,
+                room_plugin=rig.phoenix,
+            )
         harm_bus_processed = (harm_bus_processed + choir_processed).astype(np.float32)
 
     if consolidated.harmonies_stereo_bus is not None:
@@ -890,9 +923,15 @@ def run_full_automix_for_song(
             sup_oc_bal = (sup_oc_bal * aux_g).astype(np.float32)
         vocal_bus_stereo = lead_stereo + aux_layers_stereo + harm_bus_processed + wet_total
 
-    final_master_2mix = apply_2mix_bus_glue_and_safe_master(
-        inst_unmasked, vocal_bus_stereo, sr=target_sr, target_lufs=-9.0
-    )
+    _flush_stage_taps(stage_dir, target_sr)
+    with debug_taps.capture("master_", export_debug_stems):
+        final_master_2mix = apply_2mix_bus_glue_and_safe_master(
+            inst_unmasked, vocal_bus_stereo, sr=target_sr, target_lufs=-9.0
+        )
+        debug_taps.tap("42_master", final_master_2mix)
+        debug_taps.tap("lead_bus", lead_stereo)
+        debug_taps.tap("vocal_bus", vocal_bus_stereo)
+    _flush_stage_taps(stage_dir, target_sr)
 
     if export_debug_stems:
         _write_debug_stems(
