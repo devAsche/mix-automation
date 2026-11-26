@@ -1,0 +1,178 @@
+# ユーザー（凌）の耳による評価を構造化した「正解データ」。
+# 原文: docs/evaluations/2026-11-26_曲の評価.txt（評価対象: v7 = Gemini 版の 2026-11-26 レンダー、
+#        保存先 data/archive/gemini_v7_20261126/）
+# 項目と分類の定義: docs/evaluations/README.md
+# song は mix_report.json の song_name と一致させる。
+schema_version: 1
+source: docs/evaluations/2026-11-26_曲の評価.txt
+evaluated_engine: v7
+evaluated_at: "2026-11-26"
+issues:
+  # ---------------- Fall in Love ----------------
+  - id: fil-g1
+    song: Fall in Love
+    scope: global
+    category: airy_fizzy
+    direction: too_airy
+    related: [thin_light]
+    quote: "全体的に声がエアリーすぎるというか、中域を取りすぎてる音がする、高域が少ないオケに合ってない気がする"
+  - id: fil-g2
+    song: Fall in Love
+    scope: global
+    category: distance
+    direction: ok
+    polarity: positive
+    quote: "ただ距離感自体はあくまで聴覚上では割と聞けるレベルな気がする"
+  - id: fil-1
+    song: Fall in Love
+    time_sec: 154
+    approx: true
+    lyric: "タラータッタラー（アドリブ）"
+    category: consonant_attack
+    direction: too_strong
+    quote: "2:34～くらいからの「タラータッタラー(歌詞ではなくてアドリブだが)」のアタックが強くて耳障りな気がする"
+
+  # ---------------- エバ ----------------
+  - id: eva-g1
+    song: エバ
+    scope: global
+    category: space_excess
+    direction: too_much
+    quote: "全体的にリバーブとかディレイの空間系がオケと合ってない、おそらく過剰"
+  - id: eva-g2
+    song: エバ
+    scope: global
+    category: buried
+    direction: buried
+    quote: "声がオケに負けている"
+  - id: eva-g3
+    song: エバ
+    scope: global
+    category: thin_light
+    direction: too_light
+    quote: "というか声が軽い気がする"
+  - id: eva-1
+    song: エバ
+    time_sec: 20
+    lyric: "真の髄から（「し」）"
+    category: sibilance
+    direction: crushed
+    quote: "0:20～「真の髄から」の「し」の歯擦音がつぶれてる"
+  - id: eva-2
+    song: エバ
+    time_sec: 91
+    approx: true
+    category: buried
+    direction: buried
+    note: "1:31 直前（オケの音数が少ない）は聞こえるが、直後に音数が増えると聞こえづらくなる"
+    quote: "1:31直前あたりはオケの音数が少なかったから声が割と聞こえてたが、この後音数が多くなったタイミングでちょっと聞こえづらくなってる"
+  - id: eva-3
+    song: エバ
+    time_sec: 121
+    approx: true
+    category: muddy
+    direction: too_muddy
+    quote: "2:01あたりからは逆にこもりが少し目立つ"
+  - id: eva-4
+    song: エバ
+    time_sec: 162
+    lyric: "理性的であれ"
+    category: buried
+    direction: buried
+    quote: "2:42の「理性的であれ」も結構聞こえない"
+
+  # ---------------- シックスフィートアンダー ----------------
+  - id: six-g1
+    song: シックスフィートアンダー
+    scope: global
+    category: sits_on_top
+    direction: not_blended
+    quote: "なんか声の距離は一定だけど、オケに「載ってる」気がして混ざってる感じは薄い / このままフェーダー下げたら埋もれるんだろうなとは思う"
+  - id: six-g2
+    song: シックスフィートアンダー
+    scope: global
+    category: airy_fizzy
+    direction: fizzy
+    quote: "fall in loveほどではないが、ちょっとハイ域に要らないジリついた音があるか、エアリーになってるかも"
+  - id: six-1
+    song: シックスフィートアンダー
+    time_sec: 29
+    approx: true
+    category: harmony_prominent
+    direction: too_strong
+    note: "オク上の生成ハモリ。元のキーから離れるほど生成感が強まる"
+    quote: "0:29くらい、0:40くらいのオク上の生成ハモリが主張強い　生成ハモリは元のキーと離れれば離れるほど生成感が強まるから、それに合わせた対策すべきかもしれない"
+  - id: six-2
+    song: シックスフィートアンダー
+    time_sec: 40
+    approx: true
+    category: harmony_prominent
+    direction: too_strong
+    note: "six-1 と同じ指摘（オク上の生成ハモリ）"
+    quote: "0:29くらい、0:40くらいのオク上の生成ハモリが主張強い　生成ハモリは元のキーと離れれば離れるほど生成感が強まるから、それに合わせた対策すべきかもしれない"
+  - id: six-3
+    song: シックスフィートアンダー
+    time_sec: 53
+    approx: true
+    category: step_change
+    direction: too_far
+    note: "サビ入りから一段奥へ"
+    quote: "0:53のサビ入りくらいから、一段声が奥に行く気がする"
+  - id: six-4
+    song: シックスフィートアンダー
+    time_sec: 137
+    lyric: "邪魔者はだれ―（「れー」）"
+    category: fx_dropout
+    direction: missing_fx
+    note: "ラジオボイス演出の処理が語尾で抜けている"
+    quote: "2:17のラジオボイスは、「邪魔者はだれ―」の「れー」が処理抜けてる"
+  - id: six-5
+    song: シックスフィートアンダー
+    time_sec: 144
+    category: delay_offbeat
+    direction: off_grid
+    quote: "2:24、2:26のディレイ飛ばしは、一応できてはいるけど飛ばされたディレイが曲の拍に合ってないから不自然に聞こえる"
+  - id: six-6
+    song: シックスフィートアンダー
+    time_sec: 146
+    category: delay_offbeat
+    direction: off_grid
+    note: "six-5 と同じ指摘"
+    quote: "2:24、2:26のディレイ飛ばしは、一応できてはいるけど飛ばされたディレイが曲の拍に合ってないから不自然に聞こえる"
+  - id: six-7
+    song: シックスフィートアンダー
+    time_sec: 149
+    approx: true
+    lyric: "タイミングは（「タ」）"
+    category: consonant_attack
+    direction: too_strong
+    quote: "2:29の「タイミングは」の「タ」あたりがアタック強いかも"
+  - id: six-8
+    song: シックスフィートアンダー
+    time_sec: 163
+    category: step_change
+    direction: too_far
+    quote: "2:43から一段声が奥に行く"
+  - id: six-9
+    song: シックスフィートアンダー
+    time_sec: 185
+    lyric: "360度ずっと（「じゅうどずっと」）"
+    category: sibilance
+    direction: too_strong
+    quote: "3:05「360度ずっと」の「じゅうどずっと」あたりのサ行が強いかも"
+
+  # ---------------- ラブ&デストロイ ----------------
+  - id: lad-g1
+    song: ラブ&デストロイ
+    scope: global
+    category: muddy
+    direction: too_muddy
+    related: [buried]
+    quote: "声がこもってるし埋もれてる、オケにも合ってないし"
+  - id: lad-1
+    song: ラブ&デストロイ
+    time_sec: 46
+    lyric: "悪さを手に入れたい（「さ」）"
+    category: sibilance
+    direction: crushed
+    quote: "0:46の「悪さを手に入れたい」の「さ」がつぶれてる"
