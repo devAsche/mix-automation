@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Annotated
 
 import soundfile as sf
 import typer
@@ -149,6 +150,10 @@ def mix_song(
         "--export-debug-stems",
         help="v7: also write lead dry / wet returns / harmony bus / aux layers to <out>/debug_stems (analysis only; audio unchanged)",
     ),
+    v8_knobs: Annotated[
+        Path | None,
+        typer.Option("--v8-knobs", help="v8: JSON file overriding knob values (names/ranges: mix_automation/v8/knobs.py)"),
+    ] = None,
 ) -> None:
     """Run full v6 ultra-precision automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
     engine = engine.strip().lower()
@@ -157,18 +162,20 @@ def mix_song(
         raise typer.Exit(code=2)
 
     if engine == "v8":
-        from mix_automation.v8 import V8NotImplementedError, run_v8_automix_for_song
+        from mix_automation.v8 import run_v8_automix_for_song
 
-        try:
-            run_v8_automix_for_song(
-                song_folder=song_folder,
-                template_song_path=template_song,
-                profiles_json_path=profiles_json,
-                output_root=output_root,
-            )
-        except V8NotImplementedError as exc:
-            console.print(f"[red][v8 未実装][/red] {exc}")
-            raise typer.Exit(code=3) from exc
+        v8_report = run_v8_automix_for_song(
+            song_folder=song_folder,
+            output_root=output_root,
+            knobs_json=v8_knobs,
+        )
+        m = v8_report["metrics"]
+        console.print("\n[bold green]v8 (R3) Auto-MIX Complete![/bold green]")
+        console.print(f"  Output dir : [cyan]{v8_report['output_dir']}[/cyan]")
+        console.print(
+            f"  Metrics    : voc-inst {m['voc_minus_inst_lu']} LU | side/mid {m['vocal_side_mid_db']} dB | "
+            f"master {m['master_lufs']} LUFS | tempo {v8_report['tempo_bpm']} BPM"
+        )
         return
 
     from mix_automation.pipeline import run_full_automix_for_song

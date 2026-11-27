@@ -131,3 +131,85 @@ v8 のチェーン設計への示唆（各 1 行、推測を含む）:
 - 静的 EQ の高域持ち上げは、後段の動的な削りと相殺させない量に抑える。
 - コンプの段数を減らし、アタックは子音を通しすぎない設定（無音直後の立ち上がりで +4〜7 dB）にする。または子音の後にゆっくり戻る処理を置く。
 - 下処理（ステージ 1）では子音の量を変えない（ゲインライダーが対象の子音で子音比を +0.6〜+1.5 dB 動かしている）。
+
+## 再設計 R1〜R6（2026-11-27〜）
+
+凌さんの評価「v7 はボーカルが乗ってるだけで混ざっていない」を受けて、上の Phase 4 以降を次の段階に組み替えた。対象は当面メインボーカルだけ（ハモリ・コーラスは後回し）。
+
+| # | 段階 | 内容 | 状態 |
+|---|---|---|---|
+| R1 | 知識抽出 | 解説動画 10 本 → [mix_knowledge/](mix_knowledge/README.md)（rulebook・plugin_map・gap_vs_v7） | 完了（PR #7） |
+| R2 | プロのボーカルの取り出し | Amo_* の練習音源（生ボーカル＋inst）と完成カバーの対から、プロ処理後の声を参照として取り出す | inst 8 曲分が揃った。未着手 |
+| R3 | 骨格 | 実機プラグインでチェーンの骨格を組み、動かすつまみを 1 か所に定義（`--engine v8`） | 本 PR |
+| R4 | 参照合わせ | ST-ITO 方式で、つまみを参照（R2）に合わせて曲ごとに探す | |
+| R5 | 好みの詰め | 凌さんの A/B で好みを詰める | |
+| R6 | 展開・ハモリ | 展開ごとの空間の自動化（A メロでプレートを切る等）、ハモリ・コーラス | |
+
+### R3 で決めた構成（`src/mix_automation/v8/`）
+
+- プラグインの読み込み・設定に失敗したら例外で止める。黙って素通り・代替はしない。段ごとの plugin・path・loaded・bypassed・設定値・実測値は `mix_report.json` の `stages` に残す。
+- 手順 0 の確認: v7 は全段で本物のプラグインを読んでいた。UAD（LA-2A・Pultec）と Wave Breaker が × だったのは、監査スクリプトが VST3 バンドルの外側のパスで開いていたため（スクリプトと plugin_map.md は訂正済み）。v7 の 2mix グルー（VCA）と Wave Breaker は、失敗すると黙って素通りする作りのまま（v7 は変えない）。
+- 目標値（GR・ディエッサー量・ラウドネス）は、各段のパラメータをカリブレーションして実測で合わせる（`dsp.calibrate`、最大 4 回）。
+
+| 区分 | 段 | プラグイン | 既定値（R3） | 出典 |
+|---|---|---|---|---|
+| リード | 軽い掃除 | RX 10 Mouth De-click → Voice De-noise | 控えめ。ディエッサー・ライダーは入れない（子音の量を変えない） | Phase 3 の示唆 |
+| | 引き算 EQ | Persistent Q | HPF 140 Hz、500 Hz −1.5 dB（静的のみ） | Mo_qfyNdYQQ@2:38, 2afvdjOpVJQ@2:40, 4:17 |
+| | コンプ 1（速い） | Softube VCA | ratio 4、GR = 合計 × 0.45 | 2afvdjOpVJQ@6:53 |
+| | コンプ 2（遅い） | UAD LA-2A | GR = 合計 × 0.55（合計の既定 8.5 dB） | -c0bHeO5ISs@17:06, 2afvdjOpVJQ@5:21 |
+| | 音色 EQ | UAD Pultec EQP-1A | 100 CPS boost 2 / atten 3、8 KCS boost = brightness | -c0bHeO5ISs@19:22 |
+| | ディエッサー 1 段 | RX 10 De-ess | 歯擦音フレームの 5–10 kHz を −3 dB | 2afvdjOpVJQ@10:30 |
+| | サチュ | Saturation Knob | 1.5 | 2afvdjOpVJQ@8:02 |
+| | リミッター | kHs Limiter | ピーク GR 約 3.5 dB | RTVPdDmWrwo@21:41 |
+| | 音量の追従 | 自前 | 声−オケ −2.5 LU を目標に、フレーズごとに ±1.5 LU を超えた分を補正 | paired_pilot（プロ −5.5〜+0.2 LU） |
+| センド | ダブラー | Vocal Doubler → Mid −6 dB・9 kHz LPF | −18.5 dB | JUXJShxfzKQ@7:07, 12:36 |
+| | ルーム | PhoenixVerb（0.45 s・10 ms）→ 100 Hz〜2.7 kHz | −16 dB | JUXJShxfzKQ@8:49 |
+| | プレート | Rev PLATE-140（プリディレイ 50 ms、1.35 s、ローカット 400 Hz）→ 3.4 kHz LPF | −18 dB | JUXJShxfzKQ@14:30 |
+| | ディレイ | 自前の 1/16 ピンポン（Beat This! の拍、400 Hz〜4 kHz） | −24 dB | 2afvdjOpVJQ@15:50 |
+| | ダッキング | 自前（プレート＋ディレイ、キー = リード） | 最大 6 dB | JUXJShxfzKQ@37:34 |
+| オケ | 帯域別ダッキング | 自前（STFT、300–1k / 1–3k / 3–6 kHz、重み 0.5 / 1 / 0.8） | 最大 3 dB | RTVPdDmWrwo@41:11 |
+| 2mix | サチュ | Saturation Knob | 0.8 | RTVPdDmWrwo@41:31 |
+| | M/S コンプ | 自前（Mid のみ） | GR 約 1.5 dB | RTVPdDmWrwo@42:02 |
+| | 並列グルー | Softube VCA（dry/wet） | wet 側 GR 4 dB、Wet 35% | RTVPdDmWrwo@43:25 |
+| | リミッター | Wave Breaker | −9.5 LUFS 着地 | RTVPdDmWrwo@22:34 |
+
+つまみ（R4・R5 で動かすもの。定義は `v8/knobs.py` の 1 か所、`--v8-knobs <json>` で上書き）:
+
+| 名前 | 範囲 | 既定 |
+|---|---|---|
+| vocal_offset_lu | −5.5〜+0.5 | −2.5 |
+| ride_tolerance_lu | 0.5〜4 | 1.5 |
+| comp_total_gr_db | 6〜11 | 8.5 |
+| brightness（Pultec 8k つまみ） | 0〜6 | 2.5 |
+| deess_db | 0〜8 | 3 |
+| saturation | 0〜4 | 1.5 |
+| doubler_send_db | −24〜−14 | −18.5 |
+| room_send_db | −22〜−12 | −16 |
+| plate_send_db | −26〜−12 | −18 |
+| plate_decay_s | 0.9〜2.0 | 1.35 |
+| delay_send_db | −34〜−16 | −24 |
+| fx_duck_db | 0〜12 | 6 |
+| inst_duck_max_db | 0〜6 | 3 |
+| glue_wet | 0〜0.6 | 0.35 |
+
+後の段階に回したもの:
+- 展開ごとの空間の自動化（A〜B メロでプレートを切る、サビ前だけホール）→ R6。
+- ハモリ・コーラス・ダブル → R6。
+- スラップディレイ（150〜190 ms）との選択、1176 系パラレル、ボーカルバス EQ → R4 以降で候補として検討。
+- 音量の追従は、ダッキング前のオケとセンド前のリードで測っている。そのため最終の声−オケは目標より約 0.8 LU 大きくなる（エバ）。R4 で測る位置を揃える。
+- ディレイの音価: 1/16 が 100 ms 未満になるときは 1/8 に倍にする（`chain.delay_note_s`）。シックスは Beat This! がオフボーカルで 187.5 BPM（マスターでは 93.8）と倍テンポに出るため、1/8 = 160 ms になる。テンポの倍・半分の曖昧さは R4 以降で扱う。
+
+### R3 の確認（2 曲、v7 はハモリ・コーラスを除いた版）
+
+v7 側は Phase 2 のレンダーの debug_stems（lead_dry＋wet＝声、inst_unmasked＝オケ）を、v7 自身の 2mix 関数に通して作った（`scripts/analysis/v8r3_compare.py`）。声−オケはペア音源パイロットと同じ定義（VocalBus と処理後オケの積分 LUFS 差）。
+
+| 曲 | 版 | 声−オケ LU | 声の S/M dB | マスター LUFS |
+|---|---|---|---|---|
+| エバ | v7 メインのみ | +0.75 | −18.0 | −12.1 |
+| | v8 | −1.70 | −18.1 | −9.6 |
+| シックス | v7 メインのみ | −0.37 | −17.7 | −9.5 |
+| | v8 | −2.35 | −18.0 | −9.5 |
+
+- v8 の声−オケは、2 曲ともプロの範囲（−5.5〜+0.2 LU）の中に入った。v7 のエバは上に外れている。
+- 声の S/M はほとんど変わらない（ダブラーの Mid −6 dB、プレートの幅を足しても約 −18 dB）。エバの「浮いていた」（Side/Mid が狭い）は、ボーカルバス単体ではなくマスターで測った値なので、この表とは別物。R4 で参照と比べる。
+- 聴き比べ用 wav（−14 LUFS に揃えた）: `data/outputs_v8r3/final/listen/`。
