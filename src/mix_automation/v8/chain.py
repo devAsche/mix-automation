@@ -67,7 +67,19 @@ class StageLog:
 _PLUGIN_CACHE: dict[str, Any] | None = None
 # Reloaded every time even inside plugin_cache(): a reused PhoenixVerb instance rejected the second
 # rvb_time write (wrote 0.448, read 0.084; R4 smoke test 2026-11-27).
-_NO_CACHE_KEYS = frozenset({"phoenix_verb"})
+# iZotope Vocal Doubler too: a reused instance gave a different output on every call (same settings,
+# second call +2.2 dB apart), while fresh loads were bit-identical across processes
+# (scripts/match/parallel_safety.py, data/processed/v8r_match/parallel_safety/20261128-032827.json).
+_NO_CACHE_KEYS = frozenset({"phoenix_verb", "vocal_doubler"})
+
+# Calibration warm starts (R4b): last calibrated value per stage key, used as x0 for the next calibration.
+# Only active inside plugin_cache() (matching); None outside, so engine renders calibrate from the ends.
+_CALIB_HINTS: dict[str, float] | None = None
+# Warm-start step per stage (config, about 1/10 of each calibration range: VCA -40..-8 dB, LA-2A peak
+# reduction 10..90, De-ess threshold -50..-2 dB, kHs threshold window peak-9..peak-0.5 dB) and whether
+# the measured reduction grows with the parameter (matches the lo/hi passed to dsp.calibrate below).
+_CALIB_STEP = {"vca": 3.0, "la2a": 10.0, "deess": 4.0, "limiter": 1.5}
+_CALIB_INCREASING = {"vca": False, "la2a": True, "deess": False, "limiter": False}
 
 
 @contextlib.contextmanager
@@ -75,14 +87,35 @@ def plugin_cache():
     """Reuse one instance per plugin key inside the block (R4 matching runs the chain many times).
 
     Every stage sets all parameters it relies on and run_plugin resets the plugin state, so a reused
-    instance renders the same as a fresh one. Not used by the engine (one render per load)."""
-    global _PLUGIN_CACHE
-    prev = _PLUGIN_CACHE
+    instance renders the same as a fresh one. Not used by the engine (one render per load).
+    Also enables calibration warm starts (_CALIB_HINTS) for the block."""
+    global _PLUGIN_CACHE, _CALIB_HINTS
+    prev, prev_h = _PLUGIN_CACHE, _CALIB_HINTS
     _PLUGIN_CACHE = {} if prev is None else prev
+    _CALIB_HINTS = {} if prev_h is None else prev_h
     try:
         yield
     finally:
-        _PLUGIN_CACHE = prev
+        _PLUGIN_CACHE, _CALIB_HINTS = prev, prev_h
+
+
+def set_calib_hints(hints: dict[str, float] | None) -> dict[str, float] | None:
+    """Swap the warm-start store (match_pool keeps one per song); returns the previous one."""
+    global _CALIB_HINTS
+    prev = _CALIB_HINTS
+    _CALIB_HINTS = hints
+    return prev
+
+
+def _calibrate(key: str, render, measure, target: float, lo: float, hi: float):
+    """dsp.calibrate with the stage's warm start when hints are active; stores the result."""
+    hints = _CALIB_HINTS
+    if hints is None:
+        return dsp.calibrate(render, measure, target, lo, hi)
+    cal = dsp.calibrate(render, measure, target, lo, hi, x0=hints.get(key), step=_CALIB_STEP[key],
+                        increasing=_CALIB_INCREASING[key])
+    hints[key] = float(cal.value)
+    return cal
 
 
 def load_stage_plugin(spec: PluginSpec) -> tuple[Any, dict]:
@@ -262,7 +295,7 @@ def lead_tone(x: np.ndarray, mask: np.ndarray, sr: int, knobs: V8Knobs, log: Sta
         return run_plugin(plug, x, sr)
 
     target = knobs.comp_total_gr_db * 0.45
-    cal = dsp.calibrate(vca_render, lambda y_: _static_gain_comp_gr(x, y_, neutral, mask, sr), target, -40.0, -8.0)
+    cal = _calibrate("vca", vca_render, lambda y_: _static_gain_comp_gr(x, y_, neutral, mask, sr), target, -40.0, -8.0)
     set_vst3_param_strict(plug, "compression_db", float(cal.value))
     rec["params"] = _changed(before, plug)
     rec["calibration"] = cal.summary()
@@ -281,7 +314,7 @@ def lead_tone(x: np.ndarray, mask: np.ndarray, sr: int, knobs: V8Knobs, log: Sta
         return run_plugin(plug, x, sr)
 
     target = knobs.comp_total_gr_db * 0.55
-    cal = dsp.calibrate(la2a_render, lambda y_: _static_gain_comp_gr(x, y_, neutral, mask, sr), target, 10.0, 90.0)
+    cal = _calibrate("la2a", la2a_render, lambda y_: _static_gain_comp_gr(x, y_, neutral, mask, sr), target, 10.0, 90.0)
     set_vst3_param_strict(plug, "peak_reduct", round(cal.value))
     rec["params"] = _changed(before, plug)
     rec["calibration"] = cal.summary()
@@ -382,7 +415,7 @@ def _deess_stage(x: np.ndarray, sr: int, knobs: V8Knobs, mask: np.ndarray, log: 
         set_vst3_param_strict(plug, "threshold", float(thr))
         return run_plugin(plug, x, sr)
 
-    cal = dsp.calibrate(render, lambda y_: band_attenuation_db(x, y_, sr, sib, _DEESS_BAND), knobs.deess_db, -50.0, -2.0)
+    cal = _calibrate("deess", render, lambda y_: band_attenuation_db(x, y_, sr, sib, _DEESS_BAND), knobs.deess_db, -50.0, -2.0)
     set_vst3_param_strict(plug, "threshold", float(cal.value))
     rec["params"] = _changed(before, plug)
     rec["calibration"] = cal.summary()
@@ -438,7 +471,7 @@ def _limiter_stage(x: np.ndarray, sr: int, log: StageLog) -> np.ndarray:
         holder["thr"] = thr
         return render(thr)
 
-    cal = dsp.calibrate(render_t, measure, _LIMITER_TARGET_PEAK_GR_DB, hi, lo)
+    cal = _calibrate("limiter", render_t, measure, _LIMITER_TARGET_PEAK_GR_DB, hi, lo)
     set_khs_db(plug, "threshold", float(cal.value), -20.0, 6.0)
     rec["params"] = _changed(before, plug)
     rec["calibration"] = cal.summary()
