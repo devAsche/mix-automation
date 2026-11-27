@@ -9,15 +9,16 @@ from typer.testing import CliRunner
 
 from mix_automation import provenance
 from mix_automation.cli import app
-from mix_automation.v8 import V8NotImplementedError, run_v8_automix_for_song
+from mix_automation.v8 import run_v8_automix_for_song
 
 runner = CliRunner()
 
 
-def test_engine_v8_stops_with_not_implemented(tmp_path):
+def test_engine_v8_fails_loudly_without_inputs(tmp_path):
+    # R3: v8 renders; a folder without stems/off-vocal must raise before any output is written.
     result = runner.invoke(app, ["mix", str(tmp_path), "--engine", "v8", "-o", str(tmp_path / "out")])
-    assert result.exit_code == 3
-    assert "未実装" in result.output
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FileNotFoundError)
     assert not (tmp_path / "out").exists()
 
 
@@ -27,9 +28,9 @@ def test_unknown_engine_is_rejected(tmp_path):
     assert "Unknown --engine" in result.output
 
 
-def test_v8_entry_point_raises(tmp_path):
-    with pytest.raises(V8NotImplementedError):
-        run_v8_automix_for_song(tmp_path, tmp_path / "t.song", tmp_path / "p.json", tmp_path)
+def test_v8_entry_point_raises_without_inputs(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        run_v8_automix_for_song(tmp_path, tmp_path / "out")
 
 
 def test_render_provenance_fields(tmp_path):

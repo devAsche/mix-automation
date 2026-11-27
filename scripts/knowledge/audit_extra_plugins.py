@@ -54,33 +54,33 @@ TARGETS = [
 LONG = {"iZotope Nectar 3 (60s)": 60}
 
 
-def worker_code() -> str:
+def _audit_module():
     spec = importlib.util.spec_from_file_location("audit", REPO / "scripts" / "audit_vst3_load.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.WORKER_CODE
+    return mod
+
+
+def worker_code() -> str:
+    return _audit_module().WORKER_CODE
 
 
 def main() -> None:
-    code = worker_code()
+    audit = _audit_module()
+    code = audit.WORKER_CODE
     res = {}
     for label, path in TARGETS:
         if not path.exists():
             res[label] = {"status": "missing"}
         else:
             try:
-                p = subprocess.run([sys.executable, "-c", code, str(path)], capture_output=True, text=True,
-                                   timeout=LONG.get(label, 15))
+                # Same rule as PluginSpec.loadable_path (inner x86_64-win binary of a bundle when present).
+                p = subprocess.run([sys.executable, "-c", code, str(audit.loadable_path(path))], capture_output=True,
+                                   text=True, timeout=LONG.get(label, 15))
                 lines = [ln for ln in p.stdout.splitlines() if ln.strip().startswith("{")]
                 res[label] = json.loads(lines[-1]) if lines else {"status": "crash_or_no_json", "rc": p.returncode}
             except subprocess.TimeoutExpired:
                 res[label] = {"status": "timeout_dialog_likely"}
-            inner = path / "Contents" / "x86_64-win" / path.name
-            if res[label].get("status") == "scan_error" and inner.exists():  # bundle: try inner binary
-                p = subprocess.run([sys.executable, "-c", code, str(inner)], capture_output=True, text=True, timeout=15)
-                lines = [ln for ln in p.stdout.splitlines() if ln.strip().startswith("{")]
-                if lines:
-                    res[label] = {**json.loads(lines[-1]), "via": "inner"}
         r = res[label]
         print(f"{label:<28} {r.get('status')} params={r.get('param_count', '-')} out_rms={r.get('out_rms', '-')}", flush=True)
     OUT.write_text(json.dumps(res, indent=1, ensure_ascii=False), encoding="utf-8")

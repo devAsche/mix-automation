@@ -111,6 +111,15 @@ else:
 """
 
 
+def loadable_path(path: Path) -> Path:
+    """Same rule as PluginSpec.loadable_path: open the inner Contents/x86_64-win/<name>.vst3 of a bundle."""
+    if path.is_dir():
+        inner = path / "Contents" / "x86_64-win" / path.name
+        if inner.exists():
+            return inner
+    return path
+
+
 def main() -> None:
     results = {}
     for label, path in TARGETS:
@@ -119,7 +128,7 @@ def main() -> None:
             continue
         try:
             proc = subprocess.run(
-                [sys.executable, "-c", WORKER_CODE, str(path)],
+                [sys.executable, "-c", WORKER_CODE, str(loadable_path(path))],
                 capture_output=True,
                 text=True,
                 timeout=12,

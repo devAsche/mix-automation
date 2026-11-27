@@ -4,6 +4,8 @@
 - `data/outputs/vst3_audit_report.json`（`scripts/audit_vst3_load.py`、既存）
 - `scripts/knowledge/audit_extra_plugins.py` → `data/processed/mix_knowledge/vst3_extra_audit.json`（今回の追加分）
 
+訂正（R3, 2026-11-27）: UAD と Wave Breaker の × は、監査スクリプトがバンドルの外側パスで開いていたための誤りでした。下表は訂正済みです。
+
 状態の記号: ◎ = 登録済み・v7 で使用中 / ○ = 読み込めて音が出る（未登録） / △ = 条件付き / × = 読み込めない
 
 | 手法（rulebook の段） | 第一候補 | 他の候補 | 状態・注意 |
@@ -14,8 +16,8 @@
 | 共振の動的抑制 | soothe2 | Initial Dynamic EQ | ◎ |
 | ディエッサー | RX 10 De-ess | （Pro-DS 系は無し）Initial Dynamic EQ の高域バンド | ◎ |
 | 速いピーク用コンプ（1176 系の役） | Softube VCA Compressor | MCompressor, kHs Compressor, kHs Dynamics, Flash(?) | ◎/○。1176 実機エミュは無し |
-| 遅い平均化コンプ（LA-2A 系の役） | **UAD LA-2A** | MCompressor（opto 風設定）, TALLBOY(?) | × UAD は scan_error（UAD ランタイムが必要）。v7 は代替で動いているか要確認 |
-| 音色 EQ（空気感・胸） | TDR VOS SlickEQ | **UAD Pultec EQP-1A/MEQ-5**, MEqualizer, VPRE-73 | Pultec は × scan_error |
+| 遅い平均化コンプ（LA-2A 系の役） | **UAD LA-2A** | MCompressor（opto 風設定）, TALLBOY(?) | ◎ 内側バイナリ（`Contents\x86_64-win\`）で読込可。v7 も本物を使用（R3 で確認） |
+| 音色 EQ（空気感・胸） | TDR VOS SlickEQ | **UAD Pultec EQP-1A/MEQ-5**, MEqualizer, VPRE-73 | ◎ Pultec も内側バイナリで読込可（R3 で確認） |
 | サチュレーション / 倍音 | Softube Saturation Knob | iZotope Trash 2, MSaturator, MWaveShaper, kHs Distortion, VPRE-73（プリアンプ色付け）, Dagon(?) | ◎/○。VPRE-73/Dagon は内側バイナリ指定で読込可 |
 | エキサイター / 明瞭化 | iZotope VEA | Nectar 3（Dimension/Exciter）, LANDR FX Voice | ◎/○。Nectar 3 は読込に 60 秒超かかることがある |
 | ダブラー | iZotope Vocal Doubler | kHs Chorus / Ensemble, kHs Pitch Shifter（±数 cent + 短ディレイで自作）, MDelay | ◎ だが v7 は 2mix に出していない（gap_vs_v7 参照） |
@@ -28,12 +30,12 @@
 | オケ側 EQ（ボーカル帯域を空ける） | 自前の動的ディップ（v7） | soothe2（外部サイドチェイン不可）, Initial Dynamic EQ, MEqualizer | サイドチェインは自前 DSP。M/S 処理は自前 or MChannelMatrix |
 | ボーカルライダー / 音量追従 | 自前（v7 の母音ライダー等） | MAGC（自動ゲイン） | ◎/○。Waves Vocal Rider は無し |
 | バスのまとめ（グルーコンプ） | Softube VCA Compressor | MCompressor, kHs Compressor | ◎ |
-| マスター（EQ・リミッター） | Ozone 9 Elements + Wave Breaker | Ozone 12 Elements, kHs Limiter, kHs Clipper | Wave Breaker は単体 scan だと ×（audit）だが v7 は使用中 → 読み込み経路を要確認。Ozone 12 Elements は param=0（パラメータ非公開） |
+| マスター（EQ・リミッター） | Ozone 9 Elements + Wave Breaker | Ozone 12 Elements, kHs Limiter, kHs Clipper | Wave Breaker は内側バイナリで読込可（v7 も使用中、R3 で確認）。Ozone 12 Elements は param=0（パラメータ非公開） |
 | 解析 | SPAN | MAnalyzer, MLoudnessAnalyzer | 表示用で処理には不要 |
 
 ## 空白・要対応（R2 以降で判断）
 
-1. **1176 系・LA-2A 系の実機エミュが使えない。** UAD は全部 scan_error。解説では LA-2A / 1176 / Pultec の名前がよく出るため、役割で置き換える（VCA Compressor = 速い、MCompressor の遅い設定 = opto 風）。
+1. ~~UAD は全部 scan_error~~ → 訂正（R3, 2026-11-27）: 監査スクリプトがバンドルの外側パスで開いていたための誤判定。内側バイナリで LA-2A・Pultec・Wave Breaker とも読み込める（監査スクリプトも修正）。1176 系は手持ちに無いので VCA Compressor で役を代替する。
 2. **イメージャーが未登録。** MStereoExpander / kHs Stereo / kHs Haas が読み込めるので、どれか 1 つを登録する。
 3. **ダブラーの音が 2mix に出ていない（v7）。** Vocal Doubler は読み込めるので、配線の問題。
 4. **ダッキング付きディレイ / サイドチェイン。** pedalboard の制約で外部サイドチェインは不可。MDelay の内部ダッキングか、自前のエンベロープでセンドを絞る。
