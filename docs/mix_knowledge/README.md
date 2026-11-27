@@ -1,6 +1,6 @@
 # MIX 知識（v8 再設計 R1、2026-11-27）
 
-- [rulebook.md](rulebook.md): 解説動画 10 本から作った処理の骨格と数値（出典は `ID@分:秒`）
+- [rulebook.md](rulebook.md): 解説動画 12 本（R2 で 2 本追加）と Web 記事から作った処理の骨格と数値（出典は `ID@分:秒`）
 - [rules.yaml](rules.yaml): 同じ内容を機械で読める形にしたもの（22 段）
 - [plugin_map.md](plugin_map.md): 手法と手持ち VST3 の対応表、および空白
 - [gap_vs_v7.md](gap_vs_v7.md): v7 のチェーンとの差分
@@ -45,6 +45,8 @@
 | 2afvdjOpVJQ | 24分 | 354 | 30 | 19 | 16 | 8 |
 | 4-GZf4N1cso | 10分 | 172 | 15 | 0 | 1 | 0 |
 | 5NQ7idc9fY8 | 6分 | 9（テロップ 149 行） | 14（+155 枚） | 8 | 7 | 4 |
+| DuFqH_AWANc | 30分 | 419 | 30 | 40 | 7 | 4 |
+| ZKot7JyrTZA | 32分 | 482 | 30 | 27 | 13 | 4 |
 | E8zUKz21S9c | 34分 | 430 | 30 | 72 | 15 | 7 |
 | heG8RtaRwN0 | 20分 | 257 | 24 | 20 | 15 | 5 |
 | JUXJShxfzKQ | 54分 | 588 | 30 | 105 | 30 | 11 |

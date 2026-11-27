@@ -187,3 +187,71 @@ disagreements:
   - {topic: imager, a: "MicroShift widening (2afvdjOpVJQ@19:12)", b: "avoid M/S imagers, use doubler (JUXJShxfzKQ)"}
   - {topic: space_per_song, a: "automate per section (JUX)", b: "fixed template (5NQ7idc9fY8@4:25)"}
   - {topic: vocal_bus_comp, a: "none (-c0bHeO5ISs@27:04)", b: "comps on lead group (RTVPdDmWrwo@8:15)"}
+
+# ---- R2 addendum (2026-11-27): MIX PRO ACADEMY #2/#3 + web articles (rulebook.md section 5)
+r2_addendum:
+  - id: inst_dynamic_eq_keyed
+    track: inst
+    placement: insert
+    params: {key: vocal_bus, send_db: 0, bands: "overlap with vocal (no numbers in the video)"}
+    article_values: {dynamic: {band_hz: [1000, 2000], cut_db: [1, 2]}, static: [{band_hz: [200, 500], cut_db: [2, 4]}, {band_hz: [2000, 4000], cut_db: [2, 3]}]}
+    src: ["DuFqH_AWANc@6:07", "note.com/leshy555", "pinzu.tech/blog/utattemita-mix"]
+  - id: inst_static_eq
+    track: inst
+    placement: insert
+    params: {low_mid: small_cut, high: small_boost}
+    src: ["DuFqH_AWANc@8:42"]
+  - id: inst_side_high_shelf
+    track: inst
+    placement: insert
+    params: {side_high_shelf: boost, mid: slight_cut}
+    src: ["note.com/leshy555"]
+  - id: reverb_hall
+    track: send
+    placement: send
+    params: {predelay_ms: {min: 20, screen_example: 20.8}, decay_s: 2.4, return_db: -12, width_max: 1.2}
+    src: ["DuFqH_AWANc@16:14", "DuFqH_AWANc@16:31(screen)", "DuFqH_AWANc@16:39"]
+  - id: reverb_ducking
+    track: send
+    placement: insert
+    params: {key: vocal, attack: fastest, release_ms: 200, threshold_db: -22.5, ratio: 12.5}
+    note: "screen OCR, ratio value needs confirmation"
+    src: ["DuFqH_AWANc@21:48(screen)"]
+  - id: delay_short_insert
+    track: lead
+    placement: insert
+    params: {time_ms: 189, synced: false}
+    src: ["DuFqH_AWANc@22:55(screen)", "-c0bHeO5ISs@25:38(screen)"]
+  - id: delay_pingpong_chorus_only
+    track: send
+    placement: send
+    params: {note: dotted_1/8, return_db: -12, sections: [chorus]}
+    src: ["DuFqH_AWANc@23:53"]
+  - id: delay_echo_phrase_end
+    track: send
+    placement: automation
+    params: {note: 1/4, return_db: -12, pan: off_center, where: "last word of a phrase only"}
+    src: ["ZKot7JyrTZA@11:03", "ZKot7JyrTZA@25:20(screen)"]
+  - id: volume_automation_syllable
+    track: lead
+    placement: automation
+    params: {granularity: syllable, rules: ["raise consonants", "vowel when no consonant", "head of each word group a bit louder", "first words after a section change louder"]}
+    src: ["ZKot7JyrTZA@6:53", "ZKot7JyrTZA@10:37"]
+  - id: tail_to_reverb
+    track: lead
+    placement: automation
+    params: {sustained_word_end: {vocal: down, reverb_send: up}}
+    src: ["ZKot7JyrTZA@12:47"]
+  - id: master_chain_light
+    track: mix_bus
+    placement: insert
+    params: {eq: none, comp1: {gr_db: [0.5, 1.0], stages: 2, sidechain_hpf: true}, glue: {gr_db: [2, 3]}, peak_ref: "0VU=-6dBFS, loudest part near 0VU"}
+    src: ["ZKot7JyrTZA@21:40", "ZKot7JyrTZA@24:27", "ZKot7JyrTZA@26:04", "ZKot7JyrTZA@23:28"]
+  - id: article_balance
+    track: vocal_bus
+    params: {vocal_vs_snare: "equal or slightly above", start: "+1..2 dB above just-intelligible"}
+    src: ["piko-mix.com/blog/utattemita-mix", "pinzu.tech/blog/utattemita-mix"]
+  - id: article_comp_total
+    track: lead
+    params: {total_gr_db: [3, 6], ratio: [2, 4]}
+    src: ["korewopoi.com/mix", "pinzu.tech/blog/utattemita-mix", "kudoshun.com"]
