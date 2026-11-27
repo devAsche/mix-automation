@@ -28,7 +28,7 @@ from mix_automation.dsp.vst3_adapter import (
     set_vst3_param_strict,
 )
 from mix_automation.v8 import dsp
-from mix_automation.v8.knobs import V8Knobs
+from mix_automation.v8.knobs import DELAY_TYPES, R3_DELAY_TYPE, V8Knobs, pultec_air_kcs
 from mix_automation.v8.metrics._core import band_power, stft_power
 
 # kHs Limiter is not in the v7 catalog (adding it there could change v7 role lookups), so it is
@@ -64,6 +64,27 @@ class StageLog:
 # ------------------------------------------------------------------ plugin helpers
 
 
+_PLUGIN_CACHE: dict[str, Any] | None = None
+# Reloaded every time even inside plugin_cache(): a reused PhoenixVerb instance rejected the second
+# rvb_time write (wrote 0.448, read 0.084; R4 smoke test 2026-11-27).
+_NO_CACHE_KEYS = frozenset({"phoenix_verb"})
+
+
+@contextlib.contextmanager
+def plugin_cache():
+    """Reuse one instance per plugin key inside the block (R4 matching runs the chain many times).
+
+    Every stage sets all parameters it relies on and run_plugin resets the plugin state, so a reused
+    instance renders the same as a fresh one. Not used by the engine (one render per load)."""
+    global _PLUGIN_CACHE
+    prev = _PLUGIN_CACHE
+    _PLUGIN_CACHE = {} if prev is None else prev
+    try:
+        yield
+    finally:
+        _PLUGIN_CACHE = prev
+
+
 def load_stage_plugin(spec: PluginSpec) -> tuple[Any, dict]:
     """Load `spec` from its loadable path (inner x86_64-win binary for bundles). Raises on failure."""
     from pedalboard import load_plugin
@@ -71,7 +92,13 @@ def load_stage_plugin(spec: PluginSpec) -> tuple[Any, dict]:
     path = spec.loadable_path
     if not path.exists():
         raise FileNotFoundError(f"v8: plugin binary not found for {spec.name}: {path}")
-    plug = load_plugin(str(path))
+    use_cache = _PLUGIN_CACHE is not None and spec.key not in _NO_CACHE_KEYS
+    if use_cache and spec.key in _PLUGIN_CACHE:
+        plug = _PLUGIN_CACHE[spec.key]
+    else:
+        plug = load_plugin(str(path))
+        if use_cache:
+            _PLUGIN_CACHE[spec.key] = plug
     return plug, {"plugin": spec.name, "key": spec.key, "path": str(path), "loaded": True, "bypassed": False}
 
 
@@ -144,6 +171,15 @@ def _level_to(x: np.ndarray, sr: int, target_db: float) -> tuple[np.ndarray, flo
 
 
 def process_lead(lead: np.ndarray, inst_work: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple[np.ndarray, dict]:
+    x, mask = lead_front(lead, sr, log)
+    x = lead_tone(x, mask, sr, knobs, log)
+    return lead_ride(x, inst_work, sr, knobs, log)
+
+
+def lead_front(lead: np.ndarray, sr: int, log: StageLog) -> tuple[np.ndarray, np.ndarray]:
+    """Input trim + RX De-click + RX Voice De-noise: no knob reaches these, so R4 caches the result.
+
+    Returns (audio, P.56 active mask of the trimmed input); the mask is reused by lead_tone as in R3."""
     pmap = get_plugin_map()
     x, g0 = _level_to(lead, sr, LEAD_WORK_LEVEL_DB)
     log.add({"stage": "lead_input_trim", "plugin": None, "gain_db": round(g0, 3), "target_active_dbfs": LEAD_WORK_LEVEL_DB})
@@ -169,15 +205,25 @@ def process_lead(lead: np.ndarray, inst_work: np.ndarray, sr: int, knobs: V8Knob
     y = run_plugin(plug, x, sr)
     rec["measured"] = {"level_change_db": round(-dsp.gr_db(x, y, mask, sr), 3)}
     log.add({"stage": "lead_voice_denoise", **rec})
-    x = y
+    return y, mask
 
-    # 2. Persistent Q: HPF 140 Hz (between 119 Hz Mo_qfyNdYQQ@2:38 and 159 Hz 2afvdjOpVJQ@2:40), 18 dB/oct
-    #    (existing profile configure_persistent_q_5band); 500 Hz -1.5 dB Q 1.0 ("少し" 2afvdjOpVJQ@4:17, R3 既定).
+
+def lead_tone(x: np.ndarray, mask: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> np.ndarray:
+    """EQ, pre-levelling, compressors (+ parallel), Pultec, de-ess, saturation, limiter."""
+    pmap = get_plugin_map()
+
+    # 2. Persistent Q: HPF = hpf_hz (R3: 140 Hz between 119 Hz Mo_qfyNdYQQ@2:38 and 159 Hz 2afvdjOpVJQ@2:40),
+    #    18 dB/oct (existing profile configure_persistent_q_5band); 500 Hz -1.5 dB Q 1.0 ("少し"
+    #    2afvdjOpVJQ@4:17, R3 既定); band 3 presence peak (articles [3][8]) only when presence_db > 0.
     plug, rec = load_stage_plugin(pmap["persistent_q"])
     before = _snapshot(plug)
     set_vst3_param_strict(plug, "bypass", False)
     set_vst3_param_strict(plug, "mix", 100.0)
-    for b, (typ, freq, gain, q) in {1: ("Highpass", 140.0, 0.0, 0.7), 2: ("Peaking", 500.0, -1.5, 1.0)}.items():
+    bands = {1: ("Highpass", float(knobs.hpf_hz), 0.0, 0.7), 2: ("Peaking", 500.0, -1.5, 1.0)}
+    if knobs.presence_db > 0.0:
+        # Q 1.0: same width as the R3 500 Hz band (about 1.4 octaves).
+        bands[3] = ("Peaking", float(knobs.presence_hz), float(knobs.presence_db), 1.0)
+    for b, (typ, freq, gain, q) in bands.items():
         set_vst3_param_strict(plug, f"band_{b}_enabled", True)
         set_vst3_param_strict(plug, f"band_{b}_type", typ)
         set_vst3_param_strict(plug, f"band_{b}_placement", "Stereo")
@@ -189,7 +235,7 @@ def process_lead(lead: np.ndarray, inst_work: np.ndarray, sr: int, knobs: V8Knob
             set_vst3_param_strict(plug, f"band_{b}_q", q)
         set_vst3_param_strict(plug, f"band_{b}_dynamic", False)
         set_vst3_param_strict(plug, f"band_{b}_spectral", False)
-    b = 3
+    b = len(bands) + 1
     while f"band_{b}_enabled" in plug.parameters:
         set_vst3_param_strict(plug, f"band_{b}_enabled", False)
         b += 1
@@ -198,6 +244,11 @@ def process_lead(lead: np.ndarray, inst_work: np.ndarray, sr: int, knobs: V8Knob
     rec["measured"] = {"level_change_db": round(-dsp.gr_db(x, y, mask, sr), 3)}
     log.add({"stage": "lead_subtractive_eq", **rec})
     x = y
+
+    # 2b. Pre-compressor levelling (clip gain, articles [2][8]); off at 0.
+    if knobs.pre_level_strength > 0.0:
+        x, st = dsp.pre_level(x, sr, knobs.pre_level_strength)
+        log.add({"stage": "lead_pre_level", "plugin": None, "dsp": "v8.dsp.pre_level", **st})
 
     # 3. Softube VCA, fast: ratio 4, attack 0.4 (fast end), release 0.85 (plugin default, mid); target GR = 45 % of total.
     plug, rec = load_stage_plugin(pmap["vca_compressor"])
@@ -236,15 +287,23 @@ def process_lead(lead: np.ndarray, inst_work: np.ndarray, sr: int, knobs: V8Knob
     rec["calibration"] = cal.summary()
     rec["measured"] = {"gr_db": round(cal.measured, 3), "target_gr_db": round(target, 3)}
     log.add({"stage": "lead_comp2_la2a", **rec})
-    x, g1 = _level_to(cal.audio, sr, LEAD_WORK_LEVEL_DB)
+    x = cal.audio
+    # 4b. Parallel compression (articles [8]: squashed copy, GR 10-20 dB); off at 0.
+    if knobs.par_comp_mix > 0.0:
+        x, st = dsp.parallel_compress(x, sr, knobs.par_comp_mix)
+        log.add({"stage": "lead_parallel_comp", "plugin": None, "dsp": "v8.dsp.parallel_compress", **st})
+    x, g1 = _level_to(x, sr, LEAD_WORK_LEVEL_DB)
     log.add({"stage": "lead_post_comp_trim", "plugin": None, "gain_db": round(g1, 3), "target_active_dbfs": LEAD_WORK_LEVEL_DB})
 
-    # 5. UAD Pultec EQP-1A: 100 CPS boost 2 / atten 3 (-c0bHeO5ISs@19:22), 8 KCS boost = brightness, hf_q 4.5 (existing profile).
+    # 5. UAD Pultec EQP-1A: 100 CPS boost 2 / atten 3 (-c0bHeO5ISs@19:22), hf boost = brightness at
+    #    air_hz rounded to 8/10/12 KCS (R3: 8 KCS), hf_q 4.5 (existing profile).
+    hf_freq, air_used = pultec_air_kcs(knobs.air_hz)
     plug, rec = load_stage_plugin(pmap["uad_pultec_eqp1a"])
     before = _snapshot(plug)
-    configure_uad_pultec(plug, lf_boost=2.0, hf_boost=knobs.brightness, lf_freq="100 CPS", hf_freq="8 KCS", hf_q=4.5)
+    configure_uad_pultec(plug, lf_boost=2.0, hf_boost=knobs.brightness, lf_freq="100 CPS", hf_freq=hf_freq, hf_q=4.5)
     set_vst3_param_strict(plug, "lf_atten", 3.0)
     rec["params"] = _changed(before, plug)
+    rec["air_hz_rounding"] = {"knob_hz": float(knobs.air_hz), "used_hz": air_used, "hf_freq": hf_freq}
     y = run_plugin(plug, x, sr)
     rec["measured"] = {"level_change_db": round(-dsp.gr_db(x, y, mask, sr), 3)}
     log.add({"stage": "lead_tone_eq_pultec", **rec})
@@ -264,8 +323,10 @@ def process_lead(lead: np.ndarray, inst_work: np.ndarray, sr: int, knobs: V8Knob
     x = y
 
     # 8. kHs Limiter last in the lead chain, peak GR about 4 dB (RTVPdDmWrwo@21:41); target 3.5 = middle of 3-4.
-    x = _limiter_stage(x, sr, log)
+    return _limiter_stage(x, sr, log)
 
+
+def lead_ride(x: np.ndarray, inst_work: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple[np.ndarray, dict]:
     # 9. Phrase ride against the backing track.
     ride = dsp.phrase_ride(x, inst_work, sr, target_lu=knobs.vocal_offset_lu, tol_lu=knobs.ride_tolerance_lu, max_db=6.0)
     st = ride.stats()
@@ -396,17 +457,55 @@ def _limiter_stage(x: np.ndarray, sr: int, log: StageLog) -> np.ndarray:
 MIN_DELAY_S = 0.1  # R3: below ~100 ms a tap fuses with the voice like a double; rulebook delays are >=150 ms or 1/16
 
 
-def delay_note_s(tempo_bpm: float) -> tuple[float, str]:
+def delay_note_s(tempo_bpm: float, start: str = "1/16") -> tuple[float, str]:
     """1/16 ping-pong (2afvdjOpVJQ@15:50); doubled to 1/8 when 1/16 is shorter than MIN_DELAY_S.
 
     Beat This! can report double tempo (シックス: 187.5 on the off-vocal vs 93.8 on the master), so the
-    note value is chosen by time, not only by the counted beat.
+    note value is chosen by time, not only by the counted beat. `start` = shortest note allowed.
     """
     beat = 60.0 / tempo_bpm
-    for name, frac in (("1/16", 0.25), ("1/8", 0.5), ("1/4", 1.0)):
+    notes = (("1/16", 0.25), ("1/8", 0.5), ("1/4", 1.0))
+    first = [nm for nm, _ in notes].index(start)
+    for name, frac in notes[first:]:
         if beat * frac >= MIN_DELAY_S:
             return beat * frac, name
     return beat, "1/4"
+
+
+SLAP_DELAY_S = 0.12  # articles [8] slap 80-120 ms; fixed at the upper end (not moved by the optimiser)
+
+
+def render_delay(lead_dry: np.ndarray, sr: int, delay_type: int, tempo_bpm: float) -> tuple[np.ndarray, dict]:
+    """Delay return at unity send (stereo). delay_type: see knobs.DELAY_TYPES; -1 = R3 ping-pong."""
+    if delay_type == R3_DELAY_TYPE:
+        # R3: 1/16 ping-pong (2afvdjOpVJQ@15:50); HP 400 / LP 4 kHz inside the feedback.
+        delay_s, note = delay_note_s(tempo_bpm)
+        kw = {"feedback": 0.3, "hp": 400.0, "lp": 4000.0}
+        y = dsp.pingpong_delay(lead_dry, sr, delay_s, **kw)
+        name, desc = "v8.dsp.pingpong_delay", "R3 1/16 ping-pong"
+    elif delay_type == 0:
+        # articles [1]: 1/16 once, low; centred; R3 band HP 400 / LP 4 kHz (2afvdjOpVJQ@15:50).
+        delay_s, note = delay_note_s(tempo_bpm)
+        kw = {"feedback": 0.0, "hp": 400.0, "lp": 4000.0}
+        y = dsp.feedback_delay(lead_dry, sr, delay_s, n_taps=1, **kw)
+        name, desc = "v8.dsp.feedback_delay", DELAY_TYPES[0]
+    elif delay_type == 1:
+        # articles [4]: 1/8, feedback 50 %, HPF 200 Hz, LPF 10 kHz; ping-pong placement as R3.
+        delay_s, note = delay_note_s(tempo_bpm, start="1/8")
+        kw = {"feedback": 0.5, "hp": 200.0, "lp": 10000.0}
+        y = dsp.pingpong_delay(lead_dry, sr, delay_s, **kw)
+        name, desc = "v8.dsp.pingpong_delay", DELAY_TYPES[1]
+    elif delay_type == 2:
+        # articles [8]: slap 80-120 ms, one tap, centred; R3 band HP 400 / LP 4 kHz.
+        delay_s, note = SLAP_DELAY_S, "slap"
+        kw = {"feedback": 0.0, "hp": 400.0, "lp": 4000.0}
+        y = dsp.feedback_delay(lead_dry, sr, delay_s, n_taps=1, **kw)
+        name, desc = "v8.dsp.feedback_delay", DELAY_TYPES[2]
+    else:
+        raise ValueError(f"unknown delay_type {delay_type}")
+    rec = {"dsp": name, "delay_type": delay_type, "type": desc, "delay_s": round(delay_s, 4), "note": note,
+           "feedback": kw["feedback"], "hp_hz": kw["hp"], "lp_hz": kw["lp"]}
+    return y, rec
 
 
 def build_sends(lead_dry: np.ndarray, sr: int, knobs: V8Knobs, tempo_bpm: float, log: StageLog) -> dict[str, np.ndarray]:
@@ -456,11 +555,10 @@ def build_sends(lead_dry: np.ndarray, sr: int, knobs: V8Knobs, tempo_bpm: float,
     rec["post"] = {"lpf_hz": 3400.0, "send_db": knobs.plate_send_db}
     log.add({"stage": "send_plate", **rec})
 
-    # Delay: 1/16 ping-pong (2afvdjOpVJQ@15:50), self-made DSP; HP 400 / LP 4 kHz inside the feedback.
-    delay_s, note = delay_note_s(tempo_bpm)
-    delay = dsp.pingpong_delay(lead_dry, sr, delay_s, feedback=0.3, hp=400.0, lp=4000.0) * 10 ** (knobs.delay_send_db / 20)
-    log.add({"stage": "send_delay", "plugin": None, "dsp": "v8.dsp.pingpong_delay", "delay_s": round(delay_s, 4), "note": note,
-             "tempo_bpm": round(tempo_bpm, 2), "feedback": 0.3, "hp_hz": 400.0, "lp_hz": 4000.0, "send_db": knobs.delay_send_db})
+    delay, drec = render_delay(lead_dry, sr, int(knobs.delay_type), tempo_bpm)
+    delay = delay * 10 ** (knobs.delay_send_db / 20)
+    log.add({"stage": "send_delay", "plugin": None, **drec, "tempo_bpm": round(tempo_bpm, 2),
+             "send_db": knobs.delay_send_db})
 
     # Duck plate + delay returns while the lead sings (JUXJShxfzKQ@37:34). Key range = P.56 margin: 0 dB at the
     # activity threshold, full depth at the active level.
@@ -488,9 +586,16 @@ def prepare_inst(inst: np.ndarray, sr: int, log: StageLog) -> np.ndarray:
     return (inst * 10 ** (g / 20)).astype(np.float32)
 
 
+INST_SIDE_SHELF_HZ = 6000.0  # articles [2]: Side high end of the backing track ("6 kHz 以上", R4 指示)
+
+
 def duck_inst(inst_work: np.ndarray, lead_dry: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple[np.ndarray, dict]:
     out, st = dsp.multiband_duck(inst_work, lead_dry, sr, knobs.inst_duck_max_db)
     log.add({"stage": "inst_multiband_duck", "plugin": None, "dsp": "v8.dsp.multiband_duck", **st})
+    if knobs.inst_side_high_db > 0.0:
+        out = dsp.side_high_shelf(out, sr, knobs.inst_side_high_db, INST_SIDE_SHELF_HZ)
+        log.add({"stage": "inst_side_high_shelf", "plugin": None, "dsp": "v8.dsp.side_high_shelf",
+                 "gain_db": knobs.inst_side_high_db, "freq_hz": INST_SIDE_SHELF_HZ})
     return out, st
 
 

@@ -1,0 +1,75 @@
+# R4: 参照に合わせて曲ごとの設定を自動で探す（2026-11-27、Claude 作業）
+
+コード: `src/mix_automation/v8/match.py`（区間・指標・距離・正規化・交差検証）、`scripts/match/run_match.py`（最適化）、`scripts/match/make_listen.py`（全曲レンダーと聴き比べ）。
+つまみ: `src/mix_automation/v8/knobs.py`（R4 で範囲と既定値を更新し、8 個追加。R3 の値の組は `R3_DEFAULTS`）。
+
+## 1. 対象と正解
+
+| 曲 | 参照（R2 で引き算が通ったもの） |
+|---|---|
+| エバ | Ivudotto, Junichi, KaguraNana, Ryushen |
+| ラブ&デストロイ | Azsagawa, WolpisCarter_gVT-, Yoei（v7 オフボが 66 s しかなく、その範囲だけ） |
+| Fall in Love | FemmeFatale_j6yGx-r |
+
+正解は R2 の組フォルダ `data/processed/v8r_targets/<組>/`: `target_vocal.wav`（プロの声）、`inst_pro.wav`（プロ処理後オケ）、`inst_aligned.wav`（元オケを cover 時間軸へ）。元の時間軸 ↔ cover 時間軸は `drift.json` の曲線（c − lag(c) = o を解く）。
+
+## 2. メインだけの区間（2a）
+
+- 凌さんのリード以外の声（ダブル・オクターブ・ハモリ・クワイア）の和の P.56 活動が無い、かつリードが歌っている所。
+- リードの休みが 3 s（前後の余白の合計）以上あれば区間を切る。長さ 2〜10 s、リードの活動率 50 % 以上（R2 の 10 s 窓と同じ条件）。
+- プロの声の S/M が、そのカバーの曲内 10 s 窓（活動 50 % 以上）の中央値以下であるカバーが半数以上の区間だけ残す。
+- 前 1 s・後 2 s の余白を付けて切り出し、余白込み 40 s 以内になるまで S/M の低い順に取る。評価は余白を除いた所（ダッキングと残響の尾は余白も見る）。
+- 区間リスト: `data/processed/v8r_match/<曲>/regions.json`。
+
+## 3. 目的関数（2b）
+
+v8 の声 = リード + センド（マスター前）、v8 のオケ = ダッキング後。プロの声は R2 の引き算で取り出した「マスター後の声」。
+
+| 項 | 中身 | 1 の目安（プロが 1 人だけの曲で使う） |
+|---|---|---|
+| lu | 区間ごとの声−オケ LU | 0.86 LU（R2 エバ 4 本の標準偏差） |
+| spec | 声−オケの 1/3 オクターブ曲線（平均を除く） | 1.83 dB（R2 明るさ） |
+| dyn | 声のモーメンタリーラウドネス（400 ms）の p90−p10 | 0.34 LU（R2 10 s 窓の幅） |
+| crest | 声のピーク − 活動区間 RMS | 1.0 dB（R2 に無し。仮置き） |
+| sm | 声の S/M | 2.38 dB |
+| tail | R2 の残響の尾（フレーズ末 100〜500 ms、3 フレーズ以上） | 1.76 dB |
+| inst_spec | オケ: 処理後 − 元 の 1/3 オクターブ曲線（平均を除く） | 1.8 dB |
+| inst_sm | オケ: S/M の変化 | 0.59 dB |
+| duck | オケ: 300 Hz〜6 kHz の（処理後/元）の、声のある所 − 無い所 | 0.5 dB |
+
+- 各項は 2 乗差を「プロ同士の 2 乗差」で割る。プロが 2 本以上の曲は、プロの組の中央値を使う（下限は上の目安の半分の 2 乗 × 2）。目安を使うときは 2×sd²。
+- 重み（設定）: lu 2、spec・sm・tail 1、その他 0.5。距離 = 使えた項の重み付き平均。カバーが複数ならカバーごとの距離の中央値。
+- ST-ITO は使っていない（重みのダウンロード許可が未取得）。
+
+注意:
+- **マスター段の差。** v8 の声はマスター前、プロの声はマスター後。マスターのサチュ・リミッターは声にもかかる（R2 で v8 の取り出し誤差 −8 dB）。比較はオケとの相対量（声−オケ、声/オケのスペクトル比）を主にして偏りを減らしたが、crest と dyn はプロ側が小さく出る向きに偏る。
+- **ハモリ。** プロの声はハモリ込み。メインだけの区間に絞って偏りを減らしている。
+- **音量追従の測り方。** phrase_ride はダッキング前オケとセンド前リードで測るため、最終の声−オケは目標より約 0.8 LU 大きく出る（R3 実測）。目的関数は最終の値で測るので探索には影響しないが、`vocal_offset_lu` の値そのものは「最終の声−オケ − 約 0.8」と読む。
+- **抜粋で回すこと。** 評価は抜粋をつないだ信号で行う。コンプ・ディエッサー・リミッターの較正、phrase_ride の全体ゲインは抜粋の中で決まるので、全曲レンダーとは少し違う値になる。
+
+## 4. 最適化（2c）
+
+- cmaes.CMA（sigma 0.22、つまみは [0,1] に正規化）。
+- 段 A（音色・ダイナミクス）: hpf_hz, presence_hz, presence_db, brightness, air_hz, comp_total_gr_db, deess_db, saturation, pre_level_strength, par_comp_mix。空間・音量は R4 既定のまま。
+- 段 B（空間・音量）: vocal_offset_lu, ride_tolerance_lu, doubler/room/plate send, plate_decay_s, delay_send_db, fx_duck_db, inst_duck_max_db, inst_side_high_db。段 A の最良のリード（リミッター後）を固定し、phrase_ride 以降だけ回す。
+- glue_wet は探さない。マスター段は評価で省き、VocalBus の一律ゲインの規則では声とオケの相対量を変えないため。
+- De-click / De-noise の出力は全評価共通なので `front_*.npz` にキャッシュ。テンポ（Beat This!）も `tempo.json` にキャッシュ。
+- プラグインは評価のたびに読み直さず使い回す（`chain.plugin_cache()`、PhoenixVerb だけは毎回読み直し: 使い回すと rvb_time の書き込みが通らなかった）。エバの R4 既定で、毎回読み直し 1.755 / 使い回し 1.777（声−オケ LU の差 0.01〜0.03）、1 回 60 s → 36 s。同じ設定の段 B の再評価でも 0.001 ほど揺れる。この程度の雑音は最適化の許容範囲として受け入れた。
+- 予算: R3 既定・R4 既定を 1 回ずつ評価して段 A の秒数、R4 既定の段 B で段 B の秒数を測り、残り時間を A 80 % / B 20 % に分ける（エバで A 65 s・B 5.5 s / 評価、2 時間で A 約 90・B 約 250 回）。最後に delay_type の残り 2 種を評価して最良を選ぶ。
+- 全評価を `evals.jsonl` に 1 行ずつ（つまみ・カバーごとの距離・項）。`--resume` で続きから、`--finalize-only` で jsonl から knobs JSON を書く。
+- 結果: `data/outputs_v8r4/knobs/<曲>.json`（つまみだけ。`--v8-knobs` にそのまま渡せる）、`data/processed/v8r_match/<曲>/result_*.json`。
+
+### 1 本抜き交差検証（近似）
+
+追加レンダーはしない。各 fold で、評価済みの候補（既定値 2 つを除く全評価）から残りのカバーの距離の中央値が最小のものを選び、抜いたカバーとの距離を出す。R3 既定・R4 既定は 1 回の評価の、そのカバーとの距離をそのまま並べる。候補は 4 本全部を見た最適化の軌跡から取っているので、真の交差検証より楽観的に出る。
+
+## 5. 実行
+
+```
+.venv\Scripts\python.exe scripts\match\run_match.py エバ --budget-min 120
+.venv\Scripts\python.exe scripts\match\run_match.py ラブ&デストロイ --budget-min 120
+.venv\Scripts\python.exe scripts\match\run_match.py "Fall in Love" --budget-min 120
+.venv\Scripts\python.exe scripts\match\make_listen.py --render
+```
+
+GPU と実機 VST3 を使うので 1 本ずつ。

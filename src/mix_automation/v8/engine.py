@@ -1,4 +1,4 @@
-"""v8 engine entry point (R3: fixed chain on real VST3 plugins, lead vocal only).
+"""v8 engine entry point (R3 chain + R4 knobs on real VST3 plugins, lead vocal only).
 
 Plan: docs/V8_PLAN.md. Chain and constants: v8/chain.py; knobs for R4/R5: v8/knobs.py.
 Only the main vocal (consolidate_vocal_stem_folder().lead_mono) is used; doubles, harmonies and
@@ -114,7 +114,7 @@ def run_v8_automix_for_song(
     metrics = dsp.mix_metrics(vocal_bus, inst_ducked, master, SR)
     report = {
         **render_provenance(ENGINE_NAME, None),
-        "stage_name": "R3",
+        "stage_name": "R4",
         "song": song_folder.name,
         "song_folder": str(song_folder),
         "inst_file": str(assets["inst"]),
