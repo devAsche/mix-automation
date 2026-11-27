@@ -1,0 +1,189 @@
+# Machine-readable companion of rulebook.md (R1, 2026-11-27).
+# Values are the ranges stated by the tutorials; sources are "<videoID>@m:ss" ("(screen)" = OCR).
+# track: lead | harm | dbl | inst | vocal_bus | mix_bus | send
+# placement: insert | send | parallel | automation
+# plugin_role refers to src/mix_automation/config/plugin_registry.py PluginRole (or "unregistered").
+version: 1
+loudness_target_lufs: {range: [-10, -9], src: ["RTVPdDmWrwo@20:10", "RTVPdDmWrwo@22:34"]}
+
+stages:
+  - id: inst_headroom
+    track: inst
+    placement: insert
+    params: {gain_db: [-9, -8]}
+    listen: "headroom for later work; not a balance decision"
+    src: ["E8zUKz21S9c@1:37", "RTVPdDmWrwo@20:10", "-c0bHeO5ISs@5:30"]
+
+  - id: lead_hpf
+    track: lead
+    placement: insert
+    plugin_role: subtractive_eq
+    params: {hpf_hz: [119, 220]}
+    listen: "low end clashing with bass instruments; higher for dense arrangements"
+    src: ["Mo_qfyNdYQQ@2:38", "2afvdjOpVJQ@2:40", "RTVPdDmWrwo@33:37"]
+
+  - id: lead_mid_peaks
+    track: lead
+    placement: insert
+    plugin_role: dynamic_unmask_eq
+    params: {bands_hz: [[500, 500], [1000, 2000], [3000, 4000]], mode: dynamic_for_moving_peaks}
+    listen: "boxiness / cheap hiss at 3k; judge with the instrumental, never solo"
+    src: ["2afvdjOpVJQ@4:17", "RTVPdDmWrwo@27:49", "RTVPdDmWrwo@34:37", "heG8RtaRwN0@8:52", "heG8RtaRwN0@14:39"]
+
+  - id: lead_resonance
+    track: lead
+    placement: insert
+    plugin_role: resonance_suppressor
+    params: {focus_hz: [3000, 4000]}
+    src: ["5NQ7idc9fY8@3:50", "RTVPdDmWrwo@23:17"]
+
+  - id: lead_comp_stack
+    track: lead
+    placement: insert
+    plugin_role: [optical_compressor, peak_compressor]
+    params:
+      total_gr_db: [6, 11]
+      stage_gr_db: [2, 6]
+      generic_fixed: {ratio: 3.0, attack_ms: 20, release_ms: 100}
+      release_tempo_sync: "1/8 or 1/16 note"
+    listen: "dynamic range should match the instrumental; GR meter"
+    src: ["-c0bHeO5ISs@17:06", "2afvdjOpVJQ@5:21", "2afvdjOpVJQ@6:53", "E8zUKz21S9c@14:17", "E8zUKz21S9c@15:09(screen)",
+          "Mo_qfyNdYQQ@5:45", "RTVPdDmWrwo@24:27", "5NQ7idc9fY8@2:15", "4-GZf4N1cso@4:10"]
+
+  - id: lead_parallel_comp
+    track: lead
+    placement: parallel
+    plugin_role: peak_compressor
+    params: {blend_pct: [5, 10], character: "1176-like"}
+    listen: "consonant attack, lyric intelligibility; more for rock, less for ballads"
+    src: ["-c0bHeO5ISs@21:29"]
+
+  - id: lead_deess
+    track: lead
+    placement: insert
+    plugin_role: deesser
+    position: after_comp_and_saturation   # alternative: two-stage (before + after)
+    params: {single_unit_max_reduction: light}
+    src: ["2afvdjOpVJQ@10:30", "Mo_qfyNdYQQ@6:19", "Mo_qfyNdYQQ@10:08", "RTVPdDmWrwo@26:38"]
+
+  - id: lead_tone_eq
+    track: lead
+    placement: insert
+    plugin_role: color_eq
+    params:
+      pultec_low: {freq_hz: 100, boost_and_atten: true}
+      pultec_high: {freq_hz: 5000, boost_and_atten: true}
+      harmonic_boost_hz: [1500, 5000]
+      warmth_hz: 250
+      air_shelf_hz: 4000
+    src: ["-c0bHeO5ISs@19:22", "heG8RtaRwN0@16:20", "E8zUKz21S9c@21:21", "2afvdjOpVJQ@3:28", "2afvdjOpVJQ@4:51"]
+
+  - id: lead_saturation
+    track: lead
+    placement: insert
+    plugin_role: saturator
+    listen: "thickness and consonant bite"
+    src: ["2afvdjOpVJQ@8:02", "heG8RtaRwN0@16:50", "2afvdjOpVJQ@9:26"]
+
+  - id: lead_limiter
+    track: lead
+    placement: insert
+    plugin_role: true_peak_limiter
+    params: {gr_db: [3, 5]}
+    src: ["RTVPdDmWrwo@21:41"]
+
+  - id: doubler
+    track: lead
+    placement: send
+    plugin_role: doubler
+    params: {send_db: [-20, -17], post_center_db: -6, post_lpf_hz: [8000, 10000], insert_alt_mix_pct: [9, 11]}
+    listen: "thicker like a double, no grit"
+    src: ["JUXJShxfzKQ@7:07", "JUXJShxfzKQ@12:36", "JUXJShxfzKQ@12:49", "RTVPdDmWrwo@30:23", "2afvdjOpVJQ@11:56"]
+
+  - id: small_room
+    track: lead
+    placement: send            # insert (mix ~10%, depth ~30%) for ballads
+    plugin_role: space_reverb
+    params: {hicut_hz: [2500, 3000], lowcut_hz: 100, early_late_depth_pct: [8, 10], mix_pct: 15, send_db: [-16, -15]}
+    listen: "no audible tail, only sheen"
+    src: ["JUXJShxfzKQ@8:49", "JUXJShxfzKQ@34:51", "RTVPdDmWrwo@30:23"]
+
+  - id: plate
+    track: lead
+    placement: send
+    plugin_role: plate_reverb
+    params: {predelay_ms: [40, 60], decay_s: [1.2, 1.5], hicut_hz: [3300, 3500], lowcut_hz: [400, 420], send_db: -18}
+    listen: "not consciously audible but richer; ends cleanly in tempo"
+    automation: "mostly off in verses, on in chorus"
+    src: ["JUXJShxfzKQ@14:30", "JUXJShxfzKQ@15:05(screen)", "JUXJShxfzKQ@22:57", "Mo_qfyNdYQQ@12:24"]
+
+  - id: hall_moment
+    track: lead
+    placement: send
+    plugin_role: space_reverb
+    params: {predelay_ms: 20, high_shelf_hz: 6000, lowcut_hz: 300, side_reduced: true}
+    automation: "pre-chorus phrase only; ride the return fader, not just the send"
+    src: ["JUXJShxfzKQ@24:21", "JUXJShxfzKQ@24:52(screen)", "JUXJShxfzKQ@24:51", "JUXJShxfzKQ@40:30"]
+
+  - id: slap_delay
+    track: lead
+    placement: send
+    plugin_role: delay
+    params: {time_ms: [150, 190], feedback: low, filter: "lo-fi or HP/LP"}
+    skip_when: "fast tight songs"
+    src: ["2afvdjOpVJQ@13:49", "-c0bHeO5ISs@25:11"]
+
+  - id: note_delay
+    track: lead
+    placement: send
+    plugin_role: delay
+    params: {note: ["1/16 ping-pong", "1/8", "1/4 on phrase ends"], filter: required, stereo_side_extra_hicut: true}
+    src: ["2afvdjOpVJQ@15:50", "JUXJShxfzKQ@30:10", "5NQ7idc9fY8@4:45"]
+
+  - id: send_ducking
+    track: send
+    placement: insert
+    params: {sidechain: lead}
+    src: ["JUXJShxfzKQ@37:34"]
+
+  - id: harm_treatment
+    track: harm
+    placement: insert
+    params: {low_cut_hz: [600, 700], pan: [50, 70], box_doubler: {timing_pct: 10, pitch_pct: 10, mix_pct: 70, width_pct: 80},
+             post_center_db: -6, space: "room only or room + light plate", reverb_vs_lead: "equal or less"}
+    src: ["JUXJShxfzKQ@20:38", "JUXJShxfzKQ@17:02", "JUXJShxfzKQ@19:11", "JUXJShxfzKQ@18:10", "E8zUKz21S9c@32:10", "RTVPdDmWrwo@55:19"]
+
+  - id: vocal_bus_eq
+    track: vocal_bus
+    placement: insert
+    params: {boost_hz: [40, "air"], cut: {freq_hz: 360, gain_db: -1}, limiter_as_fader: true}
+    src: ["-c0bHeO5ISs@29:00", "-c0bHeO5ISs@30:26", "-c0bHeO5ISs@31:47"]
+
+  - id: inst_sidechain_multiband
+    track: mix_bus
+    placement: insert
+    params: {sidechain: vocals, bands: "vocal range of the instrumental"}
+    listen: "needed most when the instrumental is loud/dense"
+    src: ["RTVPdDmWrwo@41:11", "RTVPdDmWrwo@63:05"]
+
+  - id: mix_bus_chain
+    track: mix_bus
+    placement: insert
+    order: [inst_sidechain_multiband, saturator_3band_eq, ms_comp_mid, glue_comp, final_eq, limiter]
+    params: {glue: {gr_db: 4, dry_wet_pct: [30, 40], speed: fast}, final_eq: {cut_hz: 10000}}
+    src: ["RTVPdDmWrwo@41:31", "RTVPdDmWrwo@42:02", "RTVPdDmWrwo@43:25", "RTVPdDmWrwo@44:12"]
+
+  - id: volume_automation
+    track: lead
+    placement: automation
+    listen: "raise buried words, trim extremes, pull reverb where it piles up"
+    src: ["-c0bHeO5ISs@4:39", "2afvdjOpVJQ@21:06", "E8zUKz21S9c@4:02", "RTVPdDmWrwo@58:26"]
+
+disagreements:
+  - {topic: eq_vs_comp_order, a: "EQ before comp (RTVPdDmWrwo@36:16)", b: "judge EQ after comp+limiter loudness (heG8RtaRwN0@3:30)"}
+  - {topic: eq_style, a: "subtractive peaks (RTVP, heG8)", b: "boost harmonics, pull output (E8zUKz21S9c@21:21)"}
+  - {topic: comp_depth, a: "light multi-stage", b: "one deep (9.7 dB) parallel-ish (5NQ7idc9fY8@2:15)"}
+  - {topic: deesser_position, a: "after comp/sat (2afvdjOpVJQ@10:30)", b: "two-stage (Mo_qfyNdYQQ@6:19)"}
+  - {topic: imager, a: "MicroShift widening (2afvdjOpVJQ@19:12)", b: "avoid M/S imagers, use doubler (JUXJShxfzKQ)"}
+  - {topic: space_per_song, a: "automate per section (JUX)", b: "fixed template (5NQ7idc9fY8@4:25)"}
+  - {topic: vocal_bus_comp, a: "none (-c0bHeO5ISs@27:04)", b: "comps on lead group (RTVPdDmWrwo@8:15)"}
