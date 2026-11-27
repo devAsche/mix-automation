@@ -568,3 +568,124 @@ def mix_metrics(vocal_bus: np.ndarray, inst: np.ndarray, master: np.ndarray, sr:
         "vocal_side_mid_db": round(float(10.0 * np.log10((e_s + EPS) / (e_m + EPS))), 3),
         "master_lufs": round(integrated_lufs(master, sr), 3),
     }
+
+
+# ---------------------------------------------------------------- R4 additions (knobs.py: articles [n])
+
+
+def feedback_delay(
+    mono: np.ndarray,
+    sr: int,
+    delay_s: float,
+    feedback: float = 0.0,
+    hp: float = 400.0,
+    lp: float = 4000.0,
+    n_taps: int = 1,
+) -> np.ndarray:
+    """Centred delay (same signal on L and R): tap k at k*delay_s, band filter inside the feedback."""
+    x = np.asarray(mono, dtype=np.float64)
+    n = len(x)
+    d = max(1, round(delay_s * sr))
+    out = np.zeros(n)
+    sos = signal.butter(2, (hp, lp), btype="bandpass", fs=sr, output="sos")
+    y = x.copy()
+    amp = 1.0
+    for k in range(1, n_taps + 1):
+        y = signal.sosfilt(sos, y)
+        off = k * d
+        if off >= n:
+            break
+        out[off:] += amp * y[: n - off]
+        amp *= feedback
+        if amp < 1e-3:  # -60 dB, as pingpong_delay
+            break
+    return np.stack([out, out]).astype(np.float32)
+
+
+def rbj_high_shelf(g_db: float, f0: float, sr: int, q: float = 1 / np.sqrt(2)) -> np.ndarray:
+    """RBJ cookbook high shelf as one sos row (same formula as the K-weighting stage 1)."""
+    a = 10 ** (g_db / 40.0)
+    w0 = 2 * np.pi * f0 / sr
+    alpha = np.sin(w0) / (2 * q)
+    cw = np.cos(w0)
+    b0 = a * ((a + 1) + (a - 1) * cw + 2 * np.sqrt(a) * alpha)
+    b1 = -2 * a * ((a - 1) + (a + 1) * cw)
+    b2 = a * ((a + 1) + (a - 1) * cw - 2 * np.sqrt(a) * alpha)
+    a0 = (a + 1) - (a - 1) * cw + 2 * np.sqrt(a) * alpha
+    a1 = 2 * ((a - 1) - (a + 1) * cw)
+    a2 = (a + 1) - (a - 1) * cw - 2 * np.sqrt(a) * alpha
+    return (np.array([b0, b1, b2, a0, a1, a2]) / a0)[None, :]
+
+
+def side_high_shelf(stereo: np.ndarray, sr: int, gain_db: float, freq_hz: float) -> np.ndarray:
+    """High shelf on the Side only (articles [2]: brighten the sides, leave the centre to the vocal)."""
+    x = np.asarray(stereo, dtype=np.float64)
+    mid = 0.5 * (x[0] + x[1])
+    side = signal.sosfilt(rbj_high_shelf(gain_db, freq_hz, sr), 0.5 * (x[0] - x[1]))
+    return np.stack([mid + side, mid - side]).astype(np.float32)
+
+
+_PRE_LEVEL_MAX_DB = 6.0  # same cap as phrase_ride max_db (R3)
+
+
+def pre_level(mono: np.ndarray, sr: int, strength: float) -> tuple[np.ndarray, dict]:
+    """Clip-gain style levelling before the compressor (articles [2][8]).
+
+    Each phrase (P.56 runs) is moved toward the median phrase level by `strength` x its offset
+    (capped at +-6 dB), with the phrase_ride 50 ms ramps. strength 0 = untouched."""
+    x = np.asarray(mono, dtype=np.float64)
+    n = len(x)
+    segs, _, _ = phrases(x.astype(np.float32), sr)
+    idx = [(max(0, int(s.start * sr)), min(n, int(s.end * sr))) for s in segs]
+    idx = [(a, b) for a, b in idx if b - a >= 2]
+    if strength <= 0.0 or len(idx) < 2:
+        return x.astype(np.float32), {"strength": strength, "n_phrases": len(idx), "max_abs_gain_db": 0.0}
+    lv = np.array([10 * np.log10(np.mean(x[a:b] ** 2) + EPS) for a, b in idx])
+    ref = float(np.median(lv))
+    gains = np.clip(-strength * (lv - ref), -_PRE_LEVEL_MAX_DB, _PRE_LEVEL_MAX_DB)
+    gain_db = np.zeros(n)
+    ramp = max(1, round(_RIDE_RAMP_S * sr))
+    for (a, b), g in zip(idx, gains, strict=True):
+        r0, r1 = max(0, a - ramp), min(n, b + ramp)
+        env = np.ones(r1 - r0)
+        if a - r0 > 0:
+            env[: a - r0] = np.linspace(0.0, 1.0, a - r0, endpoint=False)
+        if r1 - b > 0:
+            env[-(r1 - b):] = np.linspace(1.0, 0.0, r1 - b, endpoint=True)
+        gain_db[r0:r1] = np.where(np.abs(g * env) > np.abs(gain_db[r0:r1]), g * env, gain_db[r0:r1])
+    out = x * 10.0 ** (gain_db / 20.0)
+    return out.astype(np.float32), {"strength": strength, "n_phrases": len(idx), "ref_db": round(ref, 2),
+                                    "max_abs_gain_db": round(float(np.max(np.abs(gains))), 3)}
+
+
+# articles [8]: the parallel copy is squashed by 10-20 dB; aim at the middle. Ratio / times: 1176-style
+# fast settings (R4 既定; the article gives only the GR).
+PAR_COMP_GR_DB = 15.0
+PAR_COMP_RATIO = 10.0
+PAR_COMP_ATTACK_MS = 1.0
+PAR_COMP_RELEASE_MS = 100.0
+
+
+def squash(mono: np.ndarray, sr: int, thr_db: float, ratio: float = PAR_COMP_RATIO,
+           attack_ms: float = PAR_COMP_ATTACK_MS, release_ms: float = PAR_COMP_RELEASE_MS) -> tuple[np.ndarray, np.ndarray]:
+    """Feed-forward peak compressor -> (audio, per-sample GR dB)."""
+    x = np.asarray(mono, dtype=np.float64)
+    env_db = envelope(x, sr, attack_ms, release_ms, mode="peak")
+    gr = np.maximum(env_db - thr_db, 0.0) * (1.0 - 1.0 / ratio)
+    return x * 10.0 ** (-gr / 20.0), gr
+
+
+def parallel_compress(mono: np.ndarray, sr: int, mix: float) -> tuple[np.ndarray, dict]:
+    """dry + mix x (copy squashed to PAR_COMP_GR_DB mean GR on active frames, level-matched to the dry)."""
+    x = np.asarray(mono, dtype=np.float64)
+    mask = active_mask(x, sr)
+    peak = float(20 * np.log10(np.max(np.abs(x)) + EPS))
+    cal = calibrate(lambda t: squash(x, sr, t)[0], lambda y: gr_db(x, y, mask, sr), PAR_COMP_GR_DB,
+                    peak - 50.0, peak)
+    wet = np.asarray(cal.audio, dtype=np.float64)
+    act_x, _ = p56_threshold_db(x, sr)
+    act_w, _ = p56_threshold_db(wet, sr)
+    wet *= 10.0 ** ((act_x - act_w) / 20.0)
+    out = x + mix * wet
+    return out.astype(np.float32), {"mix": mix, "wet_gr_db": round(cal.measured, 3), "thr_db": round(cal.value, 2),
+                                    "target_gr_db": PAR_COMP_GR_DB}
