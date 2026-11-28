@@ -226,7 +226,7 @@ R4b のラブ&デストロイと Fall in Love は、凌さんが PC でゲーム
 
 ## 3. AFx-Rep（ST-ITO）
 
-- 重み: Hugging Face `csteinmetz1/afx-rep`（Apache-2.0）を `C:\MIX_automation_ext\weightsfx-rep` に置いた。
+- 重み: Hugging Face `csteinmetz1/afx-rep`（Apache-2.0）を `C:\MIX_automation_ext\weights\afx-rep` に置いた。
 - コードは st-ito の `panns.py`（Apache-2.0）をファイルパスで読み込む。torchlibrosa は `C:\MIX_automation_ext\pylibs` に置いた。
 - 項 afx: 区間の声の埋め込み（mid と side、512+512）のコサイン距離。
   - 尺度はプロ同士の中央値（エバ 0.309、ラブ&デストロイ 0.148。プロ 1 本の曲は全 9 組の中央値 0.271）。
