@@ -181,6 +181,22 @@ def load_target_profile(
     return prof, resolved, [], 0.55
 
 
+REVISED_STEM_TOKEN = "修正後"  # Ryo's naming for re-edited vocal takes (data/raw/エバ, 2026-11-28)
+
+
+def _revised_stem_key(p: Path) -> str:
+    return " ".join(p.name.replace(REVISED_STEM_TOKEN, "").split())
+
+
+def prefer_revised_stems(stem_files: list[Path]) -> tuple[list[Path], list[Path]]:
+    """(kept, superseded): a stem whose name with '修正後' removed (whitespace collapsed) matches a '修正後'
+    file is superseded by it; stems without a revised counterpart are kept. Files are never touched."""
+    revised_keys = {_revised_stem_key(p) for p in stem_files if REVISED_STEM_TOKEN in p.name}
+    kept = [p for p in stem_files if REVISED_STEM_TOKEN in p.name or _revised_stem_key(p) not in revised_keys]
+    superseded = [p for p in stem_files if p not in kept]
+    return kept, superseded
+
+
 def discover_song_assets(song_folder: Path) -> dict[str, Path | list[Path] | None]:
     """Automatically identify stems (supporting both `stems/` subfolder & flat folders), off-vocal, original & self-mix."""
     stems_dir = song_folder / "stems"
@@ -237,6 +253,7 @@ def discover_song_assets(song_folder: Path) -> dict[str, Path | list[Path] | Non
 
     if not stem_files and flat_stem_candidates:
         stem_files = flat_stem_candidates
+    stem_files, stems_superseded = prefer_revised_stems(stem_files)
 
     if inst_file is None:
         raise FileNotFoundError(f"Could not auto-detect off-vocal/INST file in {song_folder}")
@@ -245,6 +262,7 @@ def discover_song_assets(song_folder: Path) -> dict[str, Path | list[Path] | Non
 
     return {
         "stems": stem_files,
+        "stems_superseded": stems_superseded,
         "inst": inst_file,
         "inst_candidates": inst_candidates,
         "original": orig_file,

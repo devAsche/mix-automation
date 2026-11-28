@@ -605,8 +605,8 @@ def fresh_dir(base: Path) -> Path:
 
 
 def export_v8_song(v8_dir: Path | str, out_dir: Path | str | None = None, correction_cfg: dict | None = None,
-                   verify: bool = True, template: Path = TEMPLATE_SONG) -> dict:
-    """Build <out>/<slug>_v8r5.song (+ _orig copy), media in <out>/s1_media/, export_report.json.
+                   verify: bool = True, template: Path = TEMPLATE_SONG, tag: str = EXPORT_TAG) -> dict:
+    """Build <out>/<slug>_<tag>.song (+ _<tag>_orig copy; tag default "v8r5"), media in <out>/s1_media/, export_report.json.
     `out_dir` defaults to <v8 dir>/s1_export; an existing non-empty folder is never written into
     (a timestamped sibling is used). `correction_cfg` = correction EQ dict for the Vocal CorrEQ insert
     (None = flat)."""
@@ -638,7 +638,7 @@ def export_v8_song(v8_dir: Path | str, out_dir: Path | str | None = None, correc
     specs += [TrackSpec(f"Wet {k}", files[f"Wet {k}"], "FF16A085") for k in SEND_KEYS]
     specs += [TrackSpec(TRACK_INST, files[TRACK_INST], colors[TRACK_INST]),
               TrackSpec(TRACK_REF, files[TRACK_REF], colors[TRACK_REF], mute=True)]
-    name = f"{r.slug}_{EXPORT_TAG}"
+    name = f"{r.slug}_{tag}"
     song_path = write_song(out / f"{name}.song", specs, presets, r.sr, r.tempo_bpm, name, master_inserts, template)
     orig = out / f"{name}_orig.song"
     shutil.copyfile(song_path, orig)

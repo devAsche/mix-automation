@@ -52,6 +52,28 @@ def estimate_tempo_bpm(inst: np.ndarray, sr: int) -> tuple[float, int]:
     return 60.0 / ioi, len(beats)
 
 
+APPLIED_CEQ_NAME = "correction_eq_applied.json"  # read by scripts/s1/export_song.py
+
+
+def select_correction_eq(source: str, cfg: dict | None, lead_dry: np.ndarray, sr: int, auto_enabled: bool,
+                         raw_lead: np.ndarray | None = None, raw_inst: np.ndarray | None = None,
+                         voice: str | None = ceq.DEFAULT_VOICE) -> tuple[str, dict | None, dict]:
+    """Final (source, cfg, auto_info): "auto" becomes v8.auto_eq's profile of lead_dry (broad high band from
+    high_gap_db of the unprocessed lead vs the raw inst, when given), or "none" (flat) when auto is
+    disabled; other sources pass through."""
+    if source != "auto":
+        return source, cfg, {}
+    if not auto_enabled:
+        return "none", None, {}
+    gap = None
+    if raw_lead is not None and raw_inst is not None:
+        ri = np.asarray(raw_inst)
+        gap = ceq.auto_high_gap_db(raw_lead, ri.mean(axis=0) if ri.ndim == 2 else ri)
+    cfg = ceq.auto_config(lead_dry, sr, voice=voice, gap_db=gap)
+    return "auto", cfg, {"high_gap_db": None if gap is None else round(gap, 2),
+                         "broad_high": (cfg.get("source") or {}).get("broad_high")}
+
+
 def _write(path: Path, x: np.ndarray, sr: int, subtype: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     a = np.asarray(x, dtype=np.float32)
@@ -65,17 +87,19 @@ def run_v8_automix_for_song(
     knob_overrides: dict | None = None,
     voice: str = ceq.DEFAULT_VOICE,
     correction_eq_json: Path | None = None,
+    auto_correction_eq: bool = True,
     **_options: object,
 ) -> dict:
-    """R5: the correction EQ (profiles/correction_eq/<voice>.json, or `correction_eq_json`) is applied to
-    the lead after the phrase ride; missing or flat -> skipped (no plugin loaded, output unchanged)."""
+    """R5: the correction EQ is applied to the lead after the phrase ride. Source, first found:
+    `correction_eq_json` > profiles/correction_eq/index.json entry for the song folder > <voice>.json >
+    auto (v8.auto_eq on lead_dry; `auto_correction_eq=False` -> flat). Flat -> skipped (no plugin loaded)."""
     from mix_automation.pipeline import discover_song_assets
 
     t0 = time.time()
     song_folder = Path(song_folder)
     knobs = load_knobs(knobs_json, knob_overrides)
-    ceq_path = ceq.resolve_path(voice, correction_eq_json)
-    ceq_cfg = ceq.load(ceq_path)  # validated before the long render; None when the file does not exist
+    # validated before the long render; "auto" is computed once lead_dry exists
+    ceq_source, ceq_path, ceq_cfg = ceq.resolve_source(song_folder.name, voice, correction_eq_json)
     assets = discover_song_assets(song_folder)
     stems = consolidate_vocal_stem_folder(list(assets["stems"]), target_sr=SR)
     lead = np.asarray(stems.lead_mono, dtype=np.float32)
@@ -96,6 +120,8 @@ def run_v8_automix_for_song(
     lead_dry, ride_stats = chain.process_lead(lead, inst_work, SR, knobs, log)
     sends = chain.build_sends(lead_dry, SR, knobs, tempo_bpm, log)
     inst_ducked, duck_stats = chain.duck_inst(inst_work, lead_dry, SR, knobs, log)
+    ceq_source, ceq_cfg, ceq_auto = select_correction_eq(ceq_source, ceq_cfg, lead_dry, SR, auto_correction_eq,
+                                                         raw_lead=lead, raw_inst=inst, voice=voice)
     # R5: sends and the duck key stay on the uncorrected lead; the VocalBus gets the corrected lead.
     lead_corrected = chain.correction_eq(lead_dry, SR, ceq_cfg, log)
     ceq_flat = lead_corrected is lead_dry
@@ -115,6 +141,9 @@ def run_v8_automix_for_song(
     _write(master_path, master, SR, "PCM_24")
     _write(vb_path, vocal_bus_out, SR, "FLOAT")
     _write(out_dir / "stems" / "lead_dry.wav", lead_dry, SR, "FLOAT")
+    applied_path = out_dir / APPLIED_CEQ_NAME
+    if not ceq.is_flat(ceq_cfg):
+        ceq.save(ceq_cfg, applied_path)
     if not ceq_flat:
         _write(out_dir / "stems" / "lead_corrected.wav", lead_corrected, SR, "FLOAT")
     for k, w in sends.items():
@@ -132,6 +161,7 @@ def run_v8_automix_for_song(
             "used": "lead_mono (consolidate_vocal_stem_folder)",
             "dropped": ["double", "harmonies", "choir", "octave layers"],
             "stem_roles_summary": stems.stem_roles_summary,
+            "stems_superseded": [str(x) for x in assets.get("stems_superseded") or []],
         },
         "sr": SR,
         "knobs": knobs.to_dict(),
@@ -141,7 +171,9 @@ def run_v8_automix_for_song(
         "ride": {k: v for k, v in ride_stats.items() if k != "phrases"},
         "ride_phrases": ride_stats["phrases"],
         "inst_duck": duck_stats,
-        "correction_eq": {"voice": voice, **ceq.report_entry(ceq_path, ceq_cfg),
+        "correction_eq": {"source": ceq_source, "voice": voice, **ceq_auto,
+                          **ceq.report_entry(ceq_path if ceq_path is not None else applied_path, ceq_cfg),
+                          "applied_json": str(applied_path) if applied_path.exists() else None,
                           "lead_corrected_wav": None if ceq_flat else str(out_dir / "stems" / "lead_corrected.wav")},
         "mix_bus": mix_stats,
         "vocal_bus_note": (

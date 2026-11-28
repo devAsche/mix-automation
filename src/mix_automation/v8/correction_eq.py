@@ -178,6 +178,64 @@ def resolve_path(voice: str = DEFAULT_VOICE, correction_eq_json: Path | str | No
     return Path(correction_eq_json) if correction_eq_json is not None else PROFILE_DIR / f"{voice}.json"
 
 
+INDEX_FORMAT = "v8_correction_eq_index/1"
+INDEX_PATH = PROFILE_DIR / "index.json"
+SOURCES = ("explicit", "song_index", "voice", "auto", "none")
+
+
+def song_index_path(song: str, index_path: Path | str = INDEX_PATH) -> Path | None:
+    """Per-song correction EQ file from the index ({"format": INDEX_FORMAT, "songs": {<song folder name>:
+    <file relative to the index>}}); None when there is no index or no entry. A listed file that does
+    not exist raises."""
+    ip = Path(index_path)
+    if not ip.exists():
+        return None
+    try:
+        d = json.loads(ip.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise CorrectionEQError(f"{ip}: not valid JSON ({e})") from None
+    if not isinstance(d, dict) or d.get("format") != INDEX_FORMAT or not isinstance(d.get("songs"), dict):
+        raise CorrectionEQError(f"{ip}: format must be {INDEX_FORMAT!r} with a 'songs' object")
+    rel = d["songs"].get(song)
+    if rel is None:
+        return None
+    p = ip.parent / str(rel)
+    if not p.exists():
+        raise CorrectionEQError(f"{ip}: entry for {song!r} points to missing file {p}")
+    return p
+
+
+def resolve_source(song: str, voice: str = DEFAULT_VOICE, correction_eq_json: Path | str | None = None,
+                   index_path: Path | str = INDEX_PATH) -> tuple[str, Path | None, dict | None]:
+    """(source, path, cfg) in precedence order: explicit file > per-song index entry > <voice>.json >
+    "auto" (path and cfg None; the engine computes it or falls back to flat). An explicit file that does
+    not exist gives cfg None (flat), as before."""
+    if correction_eq_json is not None:
+        p = Path(correction_eq_json)
+        return "explicit", p, load(p)
+    p = song_index_path(song, index_path)
+    if p is not None:
+        return "song_index", p, load(p)
+    p = PROFILE_DIR / f"{voice}.json"
+    if p.exists():
+        return "voice", p, load(p)
+    return "auto", None, None
+
+
+def auto_config(lead: Any, sr: int, voice: str | None = DEFAULT_VOICE, gap_db: float | None = None) -> dict:
+    """Correction EQ derived from the lead itself (v8.auto_eq.auto_profile), validated. Imported lazily."""
+    from mix_automation.v8.auto_eq import auto_profile
+
+    return validate(auto_profile(lead, sr, voice=voice, gap_db=gap_db))
+
+
+def auto_high_gap_db(raw_lead: Any, raw_inst_mono: Any) -> float:
+    """v8.auto_eq.high_gap_db on the unprocessed lead and inst (input of the broad high band)."""
+    from mix_automation.v8.auto_eq import high_gap_db
+
+    return float(high_gap_db(raw_lead, raw_inst_mono))
+
+
 def load(path: Path | str) -> dict | None:
     """Validated config, or None when the file does not exist."""
     p = Path(path)
@@ -439,9 +497,13 @@ def average_profiles(profiles: list[dict | None], n_bands: int = 8, fs: float = 
 __all__ = [
     "DEFAULT_VOICE",
     "FORMAT",
+    "INDEX_FORMAT",
+    "INDEX_PATH",
     "PROFILE_DIR",
+    "SOURCES",
     "CorrectionEQError",
     "active_bands",
+    "auto_config",
     "average_profiles",
     "bands_from_plugin",
     "file_sha256",
@@ -451,8 +513,10 @@ __all__ = [
     "log_grid",
     "report_entry",
     "resolve_path",
+    "resolve_source",
     "response_db",
     "save",
+    "song_index_path",
     "validate",
     "write_to_plugin",
 ]

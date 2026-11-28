@@ -162,6 +162,12 @@ def mix_song(
         Path | None,
         typer.Option("--correction-eq", help="v8: correction EQ JSON file (overrides --voice); missing/flat = skipped"),
     ] = None,
+    no_auto_correction_eq: Annotated[
+        bool,
+        typer.Option("--no-auto-correction-eq",
+                     help="v8: when no explicit / per-song index / <voice>.json correction EQ exists, stay flat "
+                          "instead of deriving one from the lead (v8.auto_eq)"),
+    ] = False,
 ) -> None:
     """Run full v6 ultra-precision automated vocal mixing (Stages ①-④) and generate true 1:1 Studio One 5 .song + Master WAV."""
     engine = engine.strip().lower()
@@ -178,6 +184,7 @@ def mix_song(
             knobs_json=v8_knobs,
             voice=voice,
             correction_eq_json=correction_eq,
+            auto_correction_eq=not no_auto_correction_eq,
         )
         m = v8_report["metrics"]
         console.print("\n[bold green]v8 (R3) Auto-MIX Complete![/bold green]")
