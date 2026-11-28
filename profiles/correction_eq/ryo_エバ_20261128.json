@@ -1,0 +1,145 @@
+{
+ "format": "v8_correction_eq/1",
+ "voice": "ryo",
+ "plugin": "Persistent Q",
+ "source": {
+  "song": "C:\\MIX_automation\\data\\outputs_v8r5\\render\\エバ_v8\\s1_export\\エバ_v8r5.song",
+  "track": "Vocal CorrEQ",
+  "slot": "FX01",
+  "preset_path": "Presets/Channels/Vocal CorrEQ/1 - Persistent Q.vstpreset",
+  "song_sha256": "8d2c7a85bf6aaff50458d7fd24dea9358cc3c004a510e5e3232b64abe65c0a3b",
+  "read_at": "2026-11-28T19:37:35"
+ },
+ "global": {
+  "output_gain": 2.26
+ },
+ "bands": [
+  {
+   "band": 1,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 465.36,
+   "gain_db": -2.102,
+   "q": 4.501,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {
+    "mute": true,
+    "spectral": true,
+    "spectral_range": 2.5,
+    "spectral_attack": 1.0,
+    "spectral_release": 80.0
+   }
+  },
+  {
+   "band": 2,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 314.43,
+   "gain_db": -4.73,
+   "q": 2.83,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 3,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 13422.88,
+   "gain_db": -2.54,
+   "q": 3.3,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 4,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 8877.0,
+   "gain_db": -2.0,
+   "q": 3.3,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 5,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 2666.0,
+   "gain_db": -2.0,
+   "q": 3.866,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 6,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 642.0,
+   "gain_db": 0.0,
+   "q": 2.41,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {
+    "mute": true,
+    "spectral": true,
+    "spectral_range": 3.0,
+    "spectral_attack": 1.0,
+    "spectral_release": 80.0
+   }
+  },
+  {
+   "band": 7,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 615.28,
+   "gain_db": -3.241,
+   "q": 1.301,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 8,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 4009.0,
+   "gain_db": -2.0,
+   "q": 3.85,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 9,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 8322.74,
+   "gain_db": -2.546,
+   "q": 0.599,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 10,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 747.0,
+   "gain_db": 0.0,
+   "q": 2.83,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {
+    "dynamic": true,
+    "dynamic_range": 2.0,
+    "attack": 1.0,
+    "release": 80.0
+   }
+  }
+ ]
+}
