@@ -364,6 +364,11 @@ def main() -> int:
     if 6 in args.steps:
         res["step6"] = step6()
     out = OUT_DIR / "r5_correction_eq_analysis.json"
+    if out.exists():  # a partial run (--steps / --songs) updates only its own entries
+        prev = json.loads(out.read_text(encoding="utf-8"))
+        for k, v in res.items():
+            prev[k] = {**prev.get(k, {}), **v} if isinstance(v, dict) and k in SONGS else v
+        res = prev
     out.write_text(json.dumps(res, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
     print(f"\njson: {out}")
     return 0
