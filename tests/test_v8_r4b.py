@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import mix_automation.v8.match as match_mod
 from mix_automation.v8 import dsp
 from mix_automation.v8.match import (
     FRAME_DT,
@@ -183,7 +184,7 @@ def _feat(afx=None, tail_spots=None, tail=-20.0):
     return f
 
 
-def test_term_raw_afx_and_tail_spots():
+def test_term_raw_afx_and_tail_spots(monkeypatch):
     e1 = np.zeros(8)
     e1[0] = 1.0
     e2 = np.zeros(8)
@@ -198,9 +199,14 @@ def test_term_raw_afx_and_tail_spots():
     pro = _feat(tail_spots=[-20.0, -21.0, -21.0, nan])
     pro["late_by_spot"] = [-30.0, -22.0, -24.0, nan]  # decay 10 (two-sided), 1 and 3 (one-sided)
     rows = tail_spot_terms(v8, pro)
-    assert [k for *_, k in rows] == ["two", "one", "one"]
-    # (-30+20)^2 = 100 two-sided; -18 > -21 -> 9; -25 < -21 -> 0 (below the upper bound is fine)
-    assert term_raw(v8, pro)["tail"] == pytest.approx((100.0 + 9.0 + 0.0) / 3)
+    # two-sided comparison is switched off (TAIL_DECAY_MIN_DB = inf): every spot is an upper bound
+    assert [k for *_, k in rows] == ["one", "one", "one"]
+    # -30 < -20 -> 0; -18 > -21 -> 9; -25 < -21 -> 0 (below the upper bound is fine)
+    assert term_raw(v8, pro)["tail"] == pytest.approx((0.0 + 9.0 + 0.0) / 3)
+    with monkeypatch.context() as m:
+        m.setattr(match_mod, "TAIL_DECAY_MIN_DB", 6.0)
+        assert [k for *_, k in tail_spot_terms(v8, pro)] == ["two", "one", "one"]
+        assert term_raw(v8, pro)["tail"] == pytest.approx((100.0 + 9.0 + 0.0) / 3)
     pro2 = dict(pro, tail_by_spot=[-20.0, nan, -21.0, nan])
     assert np.isnan(term_raw(v8, pro2)["tail"])  # fewer than 3 usable spots
     a = v8

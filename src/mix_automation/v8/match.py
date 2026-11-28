@@ -219,7 +219,11 @@ TAIL_POST_S = P56_HANGOVER_S + TAIL_CUT_AFTER_END_S  # cut length after the mark
 # A pro spot counts as a real tail (two-sided term) when tail - late >= 6 dB. Reasoning (setting): a reverb
 # just as loud as the subtraction floor adds only +3 dB to it, so a 6 dB decay means the reverb is clearly
 # above the floor; below that the pro tail is only an upper bound for the reverb (one-sided term).
-TAIL_DECAY_MIN_DB = 6.0
+# R4b run 2026-11-28 (Eva): the two-sided spots (KaguraNana -8.5 dB, Ryushen -11.8 dB with 9-10 dB decay) pulled
+# the plate/room sends up by 12 dB of tail. The pros are other singers with their own phrasing, so 100-500 ms
+# after 凌's phrase end the pro can still be singing; a large "decay" does not prove a reverb tail. Two-sided
+# comparison is therefore switched off (inf): every spot is an upper bound only.
+TAIL_DECAY_MIN_DB = float("inf")
 # R4b tail scale fixed to the R2 fallback (2 x 1.76^2), not the pro-pair median: most pro spots sit on the
 # subtraction floor and only bound the reverb from above (one-sided), the few two-sided spots differ a
 # lot between pros, so the pair median is unstable (R4b smoke 2026-11-28: pro-pair median 46.4).
