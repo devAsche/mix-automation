@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -27,6 +27,7 @@ from mix_automation.dsp.vst3_adapter import (
     configure_uad_pultec,
     set_vst3_param_strict,
 )
+from mix_automation.v8 import correction_eq as ceq
 from mix_automation.v8 import dsp
 from mix_automation.v8.knobs import DELAY_TYPES, R3_DELAY_TYPE, V8Knobs, pultec_air_kcs
 from mix_automation.v8.metrics._core import band_power, stft_power
@@ -50,6 +51,16 @@ MIX_WORK_LUFS = -14.0
 # Landing loudness -10..-9 LUFS (RTVPdDmWrwo@20:10); aim at the middle.
 MASTER_TARGET_LUFS = -9.5
 MASTER_LUFS_RANGE = (-10.0, -9.0)
+# ---- 2mix bus plugin settings (shared with v8/s1_export.py, which rebuilds them for Studio One)
+# Saturation Knob light, KEEP LOW 0.8 (RTVPdDmWrwo@41:31-43:25, R3 既定).
+MASTER_SAT_AMOUNT = 0.8
+MASTER_SAT_TYPE = "KEEP LOW"
+# Parallel glue: Softube VCA ratio 3 (E8zUKz21S9c@14:17), attack 2.1 / release 0.7 / SC HPF 110 / drive 0.2
+# (existing v7 bus profile apply_2mix_bus_glue_and_safe_master).
+MASTER_GLUE_KW = {"ratio": 3.0, "attack_norm": 2.1, "release_norm": 0.7, "sc_hpf_hz": 110.0, "output_db": 0.0,
+                  "output_drive": 0.2}
+# Wave Breaker threshold -0.8 dB (existing v7 master profile).
+MASTER_LIMITER_THRESHOLD_DB = -0.8
 
 
 @dataclass
@@ -70,7 +81,10 @@ _PLUGIN_CACHE: dict[str, Any] | None = None
 # iZotope Vocal Doubler too: a reused instance gave a different output on every call (same settings,
 # second call +2.2 dB apart), while fresh loads were bit-identical across processes
 # (scripts/match/parallel_safety.py, data/processed/v8r_match/parallel_safety/20261128-032827.json).
-_NO_CACHE_KEYS = frozenset({"phoenix_verb", "vocal_doubler"})
+# R5 correction EQ: same Persistent Q binary as the subtractive EQ under its own key, never reused: the
+# correction file may change global parameters (output gain, latency mode) that lead_tone does not reset.
+PERSISTENT_Q_CORRECTION_KEY = "persistent_q_correction"
+_NO_CACHE_KEYS = frozenset({"phoenix_verb", "vocal_doubler", PERSISTENT_Q_CORRECTION_KEY})
 
 # Calibration warm starts (R4b): last calibrated value per stage key, used as x0 for the next calibration.
 # Only active inside plugin_cache() (matching); None outside, so engine renders calibrate from the ends.
@@ -607,6 +621,36 @@ def build_sends(lead_dry: np.ndarray, sr: int, knobs: V8Knobs, tempo_bpm: float,
     return sends
 
 
+# ------------------------------------------------------------------ R5 correction EQ (end of the lead)
+
+
+def correction_eq(lead_dry: np.ndarray, sr: int, cfg: dict | None, log: StageLog) -> np.ndarray:
+    """Persistent Q set by ear (v8/correction_eq.py) on the lead after the phrase ride.
+
+    Flat (no file / no band that changes the sound): returns `lead_dry` itself, no plugin is loaded and
+    nothing is logged. Sends and the backing-track duck keep using the uncorrected lead."""
+    if ceq.is_flat(cfg):
+        return lead_dry
+    spec = replace(get_plugin_map()["persistent_q"], key=PERSISTENT_Q_CORRECTION_KEY)
+    plug, rec = load_stage_plugin(spec)
+    before = _snapshot(plug)
+    ceq.write_to_plugin(plug, cfg)
+    rec["params"] = _changed(before, plug)
+    y = run_plugin(plug, lead_dry, sr)
+    rec["measured"] = {"lufs_change_db": round(float(dsp.integrated_lufs(y, sr) - dsp.integrated_lufs(lead_dry, sr)), 3)}
+    rec["bands"] = ceq.active_bands(cfg)
+    log.add({"stage": "lead_correction_eq", **rec})
+    return y
+
+
+def vocal_bus(lead: np.ndarray, sends: dict[str, np.ndarray], n: int) -> np.ndarray:
+    """VocalBus before the 2mix bus: the lead on both channels plus every send (float64)."""
+    bus = np.stack([lead, lead]).astype(np.float64)
+    for w in sends.values():
+        bus += fit_len(w, n)
+    return bus
+
+
 # ------------------------------------------------------------------ backing track
 
 
@@ -646,7 +690,7 @@ def master_bus(mix: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple
     # Saturation Knob light, KEEP LOW 0.8 (RTVPdDmWrwo@41:31-43:25, R3 既定).
     plug, rec = load_stage_plugin(pmap["saturation_knob"])
     before = _snapshot(plug)
-    configure_softube_saturation(plug, amount=0.8, sat_type="KEEP LOW")
+    configure_softube_saturation(plug, amount=MASTER_SAT_AMOUNT, sat_type=MASTER_SAT_TYPE)
     rec["params"] = _changed(before, plug) | {"saturation": str(plug.saturation)}
     y = run_plugin(plug, x, sr)
     rec["measured"] = {"level_change_db": round(-dsp.gr_db(x, y, mask, sr), 3)}
@@ -663,8 +707,7 @@ def master_bus(mix: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple
     # (existing v7 bus profile apply_2mix_bus_glue_and_safe_master). Wet-only GR calibrated to 4 dB (R3 既定), then dry/wet.
     plug, rec = load_stage_plugin(pmap["vca_compressor"])
     before = _snapshot(plug)
-    glue_kw = {"ratio": 3.0, "attack_norm": 2.1, "release_norm": 0.7, "sc_hpf_hz": 110.0, "output_db": 0.0, "output_drive": 0.2}
-    configure_softube_vca(plug, threshold_db=10.0, dry_wet=100.0, **glue_kw)
+    configure_softube_vca(plug, threshold_db=10.0, dry_wet=100.0, **MASTER_GLUE_KW)
     neutral = run_plugin(plug, x, sr)
 
     def render(thr: float) -> np.ndarray:
@@ -686,7 +729,7 @@ def master_bus(mix: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple
     plug, rec = load_stage_plugin(pmap["wave_breaker"])
     before = _snapshot(plug)
     set_vst3_param_strict(plug, "bypass", False)
-    set_vst3_param_strict(plug, "threshold_db", -0.8)
+    set_vst3_param_strict(plug, "threshold_db", MASTER_LIMITER_THRESHOLD_DB)
     rec["params"] = _changed(before, plug) | {"threshold_db": str(plug.threshold_db), "normalize_db": str(plug.normalize_db)}
     lg = dsp.integrated_lufs(glued, sr)
     pre = MASTER_TARGET_LUFS - lg

@@ -1,0 +1,95 @@
+{
+ "format": "v8_correction_eq/1",
+ "voice": "ryo",
+ "plugin": "Persistent Q",
+ "source": {
+  "song": "C:\\MIX_automation\\data\\outputs_v8r5\\render\\ラブandデストロイ_v8\\s1_export\\ラブandデストロイ_v8r5.song",
+  "track": "Vocal CorrEQ",
+  "slot": "FX01",
+  "preset_path": "Presets/Channels/Vocal CorrEQ/1 - Persistent Q.vstpreset",
+  "song_sha256": "8ee3dc407a51a41c07b02616937af49fce54203361260576e041a4c09c3ae9e3",
+  "read_at": "2026-11-28T19:37:52"
+ },
+ "global": {
+  "output_gain": 0.76
+ },
+ "bands": [
+  {
+   "band": 1,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 3738.91,
+   "gain_db": -1.927,
+   "q": 2.42,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 2,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 488.41,
+   "gain_db": -3.241,
+   "q": 2.42,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 3,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 925.0,
+   "gain_db": -0.5,
+   "q": 2.42,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {
+    "dynamic_range": 5.57,
+    "spectral": true,
+    "spectral_range": 2.0,
+    "spectral_attack": 1.0,
+    "spectral_release": 80.0
+   }
+  },
+  {
+   "band": 4,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 173.0,
+   "gain_db": 0.0,
+   "q": 1.52,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {
+    "dynamic": true,
+    "dynamic_range": 2.0,
+    "attack": 1.0,
+    "release": 80.0
+   }
+  },
+  {
+   "band": 5,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 9316.0,
+   "gain_db": -2.0,
+   "q": 4.496,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  },
+  {
+   "band": 6,
+   "enabled": true,
+   "type": "Peaking",
+   "frequency_hz": 12252.0,
+   "gain_db": -2.0,
+   "q": 3.3,
+   "slope_db_oct": null,
+   "placement": "Stereo",
+   "extra": {}
+  }
+ ]
+}
