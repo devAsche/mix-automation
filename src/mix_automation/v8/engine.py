@@ -18,6 +18,7 @@ import soundfile as sf
 from mix_automation.io.audio_loader import consolidate_vocal_stem_folder, load_audio
 from mix_automation.provenance import render_provenance
 from mix_automation.v8 import chain, dsp
+from mix_automation.v8 import correction_eq as ceq
 from mix_automation.v8.knobs import load_knobs
 
 ENGINE_NAME = "v8"
@@ -62,13 +63,19 @@ def run_v8_automix_for_song(
     output_root: Path,
     knobs_json: Path | None = None,
     knob_overrides: dict | None = None,
+    voice: str = ceq.DEFAULT_VOICE,
+    correction_eq_json: Path | None = None,
     **_options: object,
 ) -> dict:
+    """R5: the correction EQ (profiles/correction_eq/<voice>.json, or `correction_eq_json`) is applied to
+    the lead after the phrase ride; missing or flat -> skipped (no plugin loaded, output unchanged)."""
     from mix_automation.pipeline import discover_song_assets
 
     t0 = time.time()
     song_folder = Path(song_folder)
     knobs = load_knobs(knobs_json, knob_overrides)
+    ceq_path = ceq.resolve_path(voice, correction_eq_json)
+    ceq_cfg = ceq.load(ceq_path)  # validated before the long render; None when the file does not exist
     assets = discover_song_assets(song_folder)
     stems = consolidate_vocal_stem_folder(list(assets["stems"]), target_sr=SR)
     lead = np.asarray(stems.lead_mono, dtype=np.float32)
@@ -89,10 +96,11 @@ def run_v8_automix_for_song(
     lead_dry, ride_stats = chain.process_lead(lead, inst_work, SR, knobs, log)
     sends = chain.build_sends(lead_dry, SR, knobs, tempo_bpm, log)
     inst_ducked, duck_stats = chain.duck_inst(inst_work, lead_dry, SR, knobs, log)
+    # R5: sends and the duck key stay on the uncorrected lead; the VocalBus gets the corrected lead.
+    lead_corrected = chain.correction_eq(lead_dry, SR, ceq_cfg, log)
+    ceq_flat = lead_corrected is lead_dry
 
-    vocal_bus = np.stack([lead_dry, lead_dry]).astype(np.float64)
-    for w in sends.values():
-        vocal_bus += chain.fit_len(w, n)
+    vocal_bus = chain.vocal_bus(lead_corrected, sends, n)
     mix = inst_ducked.astype(np.float64) + vocal_bus
     master, mix_stats = chain.master_bus(mix.astype(np.float32), SR, knobs, log)
 
@@ -107,6 +115,8 @@ def run_v8_automix_for_song(
     _write(master_path, master, SR, "PCM_24")
     _write(vb_path, vocal_bus_out, SR, "FLOAT")
     _write(out_dir / "stems" / "lead_dry.wav", lead_dry, SR, "FLOAT")
+    if not ceq_flat:
+        _write(out_dir / "stems" / "lead_corrected.wav", lead_corrected, SR, "FLOAT")
     for k, w in sends.items():
         _write(out_dir / "stems" / f"wet_{k}.wav", w, SR, "FLOAT")
     _write(out_dir / "stems" / "inst_ducked.wav", inst_ducked, SR, "FLOAT")
@@ -131,9 +141,11 @@ def run_v8_automix_for_song(
         "ride": {k: v for k, v in ride_stats.items() if k != "phrases"},
         "ride_phrases": ride_stats["phrases"],
         "inst_duck": duck_stats,
+        "correction_eq": {"voice": voice, **ceq.report_entry(ceq_path, ceq_cfg),
+                          "lead_corrected_wav": None if ceq_flat else str(out_dir / "stems" / "lead_corrected.wav")},
         "mix_bus": mix_stats,
         "vocal_bus_note": (
-            "VocalBus = (lead_dry + all sends) x uniform gain (master LUFS - pre-bus LUFS = "
+            "VocalBus = (corrected lead + all sends) x uniform gain (master LUFS - pre-bus LUFS = "
             f"{bus_gain_db:.2f} dB); approximation, bus non-linearities not replayed. Stems are at pre-bus level."
         ),
         "metrics": metrics,

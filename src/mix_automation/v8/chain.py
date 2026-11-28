@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -27,6 +27,7 @@ from mix_automation.dsp.vst3_adapter import (
     configure_uad_pultec,
     set_vst3_param_strict,
 )
+from mix_automation.v8 import correction_eq as ceq
 from mix_automation.v8 import dsp
 from mix_automation.v8.knobs import DELAY_TYPES, R3_DELAY_TYPE, V8Knobs, pultec_air_kcs
 from mix_automation.v8.metrics._core import band_power, stft_power
@@ -70,7 +71,10 @@ _PLUGIN_CACHE: dict[str, Any] | None = None
 # iZotope Vocal Doubler too: a reused instance gave a different output on every call (same settings,
 # second call +2.2 dB apart), while fresh loads were bit-identical across processes
 # (scripts/match/parallel_safety.py, data/processed/v8r_match/parallel_safety/20261128-032827.json).
-_NO_CACHE_KEYS = frozenset({"phoenix_verb", "vocal_doubler"})
+# R5 correction EQ: same Persistent Q binary as the subtractive EQ under its own key, never reused: the
+# correction file may change global parameters (output gain, latency mode) that lead_tone does not reset.
+PERSISTENT_Q_CORRECTION_KEY = "persistent_q_correction"
+_NO_CACHE_KEYS = frozenset({"phoenix_verb", "vocal_doubler", PERSISTENT_Q_CORRECTION_KEY})
 
 # Calibration warm starts (R4b): last calibrated value per stage key, used as x0 for the next calibration.
 # Only active inside plugin_cache() (matching); None outside, so engine renders calibrate from the ends.
@@ -605,6 +609,36 @@ def build_sends(lead_dry: np.ndarray, sr: int, knobs: V8Knobs, tempo_bpm: float,
              "depth_db": knobs.fx_duck_db, "thr_db": round(thr, 2), "range_db": round(act - thr, 2),
              "measured": {"mean_gr_db": round(float(np.mean(gr)), 3), "max_gr_db": round(float(np.max(gr)), 3)}})
     return sends
+
+
+# ------------------------------------------------------------------ R5 correction EQ (end of the lead)
+
+
+def correction_eq(lead_dry: np.ndarray, sr: int, cfg: dict | None, log: StageLog) -> np.ndarray:
+    """Persistent Q set by ear (v8/correction_eq.py) on the lead after the phrase ride.
+
+    Flat (no file / no band that changes the sound): returns `lead_dry` itself, no plugin is loaded and
+    nothing is logged. Sends and the backing-track duck keep using the uncorrected lead."""
+    if ceq.is_flat(cfg):
+        return lead_dry
+    spec = replace(get_plugin_map()["persistent_q"], key=PERSISTENT_Q_CORRECTION_KEY)
+    plug, rec = load_stage_plugin(spec)
+    before = _snapshot(plug)
+    ceq.write_to_plugin(plug, cfg)
+    rec["params"] = _changed(before, plug)
+    y = run_plugin(plug, lead_dry, sr)
+    rec["measured"] = {"lufs_change_db": round(float(dsp.integrated_lufs(y, sr) - dsp.integrated_lufs(lead_dry, sr)), 3)}
+    rec["bands"] = ceq.active_bands(cfg)
+    log.add({"stage": "lead_correction_eq", **rec})
+    return y
+
+
+def vocal_bus(lead: np.ndarray, sends: dict[str, np.ndarray], n: int) -> np.ndarray:
+    """VocalBus before the 2mix bus: the lead on both channels plus every send (float64)."""
+    bus = np.stack([lead, lead]).astype(np.float64)
+    for w in sends.values():
+        bus += fit_len(w, n)
+    return bus
 
 
 # ------------------------------------------------------------------ backing track
