@@ -31,6 +31,8 @@ from mix_automation.v8.metrics._core import HOP, N_FFT, P56_HANGOVER_S, p56_acti
 ROOT = Path(__file__).resolve().parents[3]
 TARGETS = ROOT / "data" / "processed" / "v8r_targets"
 CACHE = ROOT / "data" / "processed" / "v8r_match"
+# R5 (補正 EQ ループ) writes here; the R4/R4b cache above is only read (front_*.npz, tempo.json).
+CACHE_R5 = ROOT / "data" / "processed" / "v8r_s1loop"
 SR = 44100
 EPS = 1e-12
 
@@ -568,6 +570,11 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 }
 # R4b (config): AFx-Rep enters with a modest weight; it is unvalidated against Ryo's ratings so far.
 WEIGHTS_R4B: dict[str, float] = {**DEFAULT_WEIGHTS, "afx": 0.25}
+# R5 (config): the pro covers are used only for the relation to the backing track (level, space,
+# width, dynamics, ducking). The voice-minus-backing spectral shape and AFx-Rep (timbre) are dropped:
+# R4 matched the timbre and Ryo heard it too bright and thin; R5 fixes the tone knobs (knobs.R5_TONE)
+# and Ryo corrects the timbre by ear in the correction EQ. Weight 0 = ignored by distance().
+WEIGHTS_R5: dict[str, float] = {**WEIGHTS_R4B, "spec": 0.0, "afx": 0.0}
 
 # AFx-Rep scale (a cosine distance, not squared): median over pro pairs; floored so that pros that
 # happen to embed almost identically do not blow the term up.
@@ -683,6 +690,8 @@ def aggregate(per_cover: dict[str, float]) -> float:
 
 STAGE_A = ("hpf_hz", "presence_hz", "presence_db", "brightness", "air_hz", "comp_total_gr_db", "deess_db",
            "saturation", "pre_level_strength", "par_comp_mix")
+# R5: tone knobs fixed (knobs.R5_TONE); stage A only moves the dynamics. Stage B = STAGE_B.
+STAGE_A_R5 = ("comp_total_gr_db", "pre_level_strength", "par_comp_mix")
 # glue_wet is not searched: the master bus is skipped in matching and, with the uniform-gain VocalBus
 # rule, the 2mix glue does not change any vocal-vs-backing measure.
 STAGE_B = ("vocal_offset_lu", "ride_tolerance_lu", "doubler_send_db", "room_send_db", "plate_send_db",
@@ -784,21 +793,29 @@ class SongMatch:
     """Everything for one song: regions, excerpts, cached front end, pro features, evaluation."""
 
     def __init__(self, song: str, refs: Sequence[str] | None = None, raw_root: Path = ROOT / "data" / "raw",
-                 cache_root: Path = CACHE, weights: dict[str, float] | None = None,
-                 log: Callable[[str], None] = print, r4b: bool = False) -> None:
+                 cache_root: Path | None = None, weights: dict[str, float] | None = None,
+                 log: Callable[[str], None] = print, r4b: bool = False, r5: bool = False) -> None:
         """r4b=False keeps the R4 definition (scripts/match/run_match.py). r4b=True adds the tail cuts and
         the AFx-Rep term (dist), also reports the R4-style distance (dist_r4), and writes its cache
-        files under new names (regions_r4b.json, scales_r4b.json)."""
+        files under new names (regions_r4b.json, scales_r4b.json).
+        r5=True (implies the R4b measurement): weights WEIGHTS_R5 (no spectral shape, no AFx-Rep; the
+        embedding is not computed), also reports dist_r4b (WEIGHTS_R4B on the same features, so without
+        the AFx-Rep term), cache under CACHE_R5 (regions_r5.json, scales_r5.json); front_*.npz and
+        tempo.json are also looked up (read only) in the R4/R4b cache."""
         self.song = song
-        self.r4b = r4b
-        self.sfx = "_r4b" if r4b else ""
-        self.terms = TERMS if r4b else TERMS_R4
+        self.r5 = r5
+        self.r4b = r4b or r5
+        self.afx = self.r4b and not r5  # AFx-Rep embedding computed
+        self.sfx = "_r5" if r5 else ("_r4b" if r4b else "")
+        self.terms = TERMS if self.r4b else TERMS_R4
         self.refs = tuple(refs or SONG_REFS[song])
         self.covers = [cover_name(p) for p in self.refs]
         self.song_folder = raw_root / song
-        self.dir = cache_root / song
+        self.dir = (cache_root or (CACHE_R5 if r5 else CACHE)) / song
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.weights = dict(weights or (WEIGHTS_R4B if r4b else DEFAULT_WEIGHTS))
+        # caches that may be read: own dir first, then (R5) the R4/R4b dir. Writes go to self.dir only.
+        self.read_dirs = [self.dir] + ([CACHE / song] if r5 and cache_root is None else [])
+        self.weights = dict(weights or (WEIGHTS_R5 if r5 else WEIGHTS_R4B if r4b else DEFAULT_WEIGHTS))
         self.log = log
 
     def __getstate__(self) -> dict:  # match_pool sends prepared songs to spawn workers
@@ -847,6 +864,8 @@ class SongMatch:
         info: dict = {"source": self.scale_source, "scales": self.scales, "weights": self.weights}
         if self.r4b:
             self.scales_r4, _ = pro_scales({c: r4_view(f) for c, f in self.pro.items()}, TERMS_R4)
+            if self.r5:
+                info["weights_r4b"] = WEIGHTS_R4B
             info |= {"scales_r4": self.scales_r4, "weights_r4": DEFAULT_WEIGHTS,
                      "pro_tail_by_spot": {c: f.get("tail_by_spot") for c, f in self.pro.items()},
                      "pro_late_by_spot": {c: f.get("late_by_spot") for c, f in self.pro.items()}}
@@ -906,10 +925,11 @@ class SongMatch:
     def _tempo(self, inst: np.ndarray) -> float:
         p = self.dir / "tempo.json"
         key = _hash(self.song, inst.shape)
-        if p.exists():
-            d = json.loads(p.read_text(encoding="utf-8"))
-            if d.get("key") == key:
-                return float(d["tempo_bpm"])
+        for q in (d / "tempo.json" for d in self.read_dirs):
+            if q.exists():
+                d = json.loads(q.read_text(encoding="utf-8"))
+                if d.get("key") == key:
+                    return float(d["tempo_bpm"])
         from mix_automation.v8.engine import estimate_tempo_bpm
 
         bpm, nb = estimate_tempo_bpm(inst, SR)
@@ -924,9 +944,10 @@ class SongMatch:
             parts += [list(self.layout.tails), self.layout.n]
         key = _hash(*parts)
         p = self.dir / f"front_{key}.npz"
-        if p.exists():
-            z = np.load(p)
-            return z["x"], z["mask"]
+        for q in (d / f"front_{key}.npz" for d in self.read_dirs):
+            if q.exists():
+                z = np.load(q)
+                return z["x"], z["mask"]
         x, mask = chain.lead_front(self.lead_cut, SR, chain.StageLog())
         np.savez(p, x=x, mask=mask)
         return x, mask
@@ -961,7 +982,7 @@ class SongMatch:
             t_starts, valid = self._tail_cover_starts(pair, n_cover)
             starts += t_starts
         sig = [self.layout.cut(a, starts) for a in files]
-        return features(sig[0], sig[1], sig[2], self.layout, afx=self.r4b, tail_valid=valid)
+        return features(sig[0], sig[1], sig[2], self.layout, afx=self.afx, tail_valid=valid)
 
     # ------------------------------------------------------------ evaluation
     def tone(self, knobs: V8Knobs, log=None) -> np.ndarray:
@@ -992,7 +1013,7 @@ class SongMatch:
 
         log = chain.StageLog()
         voice, inst_d, tone_out = self.render(knobs, tone, log)
-        f = features(voice, inst_d, self.inst_work, self.layout, afx=self.r4b)
+        f = features(voice, inst_d, self.inst_work, self.layout, afx=self.afx)
         per, terms = {}, {}
         for cov, pf in self.pro.items():
             per[cov], terms[cov] = distance(f, pf, self.scales, self.weights, self.terms)
@@ -1007,6 +1028,9 @@ class SongMatch:
                     # calibration renders per stage (R4b warm starts should lower these)
                     "calib_evals": {st["stage"]: st["calibration"]["iterations"] for st in log.stages
                                     if "calibration" in st}}
+        if self.r5:
+            per_r4b = {cov: distance(f, pf, self.scales, WEIGHTS_R4B, self.terms)[0] for cov, pf in self.pro.items()}
+            res |= {"dist_r4b": aggregate(per_r4b), "per_cover_r4b": per_r4b}
         return res, tone_out
 
 
@@ -1025,9 +1049,11 @@ def write_knobs_json(knobs: V8Knobs, out_dir: Path, name: str) -> Path:
 
 __all__ = [
     "SONG_REFS",
+    "STAGE_A_R5",
     "TERMS",
     "TERMS_R4",
     "WEIGHTS_R4B",
+    "WEIGHTS_R5",
     "Layout",
     "Region",
     "SongMatch",

@@ -13,6 +13,15 @@ delay types. One CMA generation is asked at once and evaluated on the pool. Dist
 Writes data/processed/v8r_match/<song>/{regions_r4b.json, scales_r4b.json, front_*.npz,
 evals_r4b_<time>.jsonl, result_r4b_<time>.json} and data/outputs_v8r4b/knobs/<song>[ _sharedA].json
 (new files only). Real VST3 plugins and the GPU: never next to a render or another matching run.
+
+--r5 (補正 EQ ループ一周目): tone knobs fixed at knobs.R5_TONE, stage A = STAGE_A_R5 (dynamics only),
+distance = SongMatch(r5=True) (WEIGHTS_R5; dist_r4b logged). Starting points: R4_default and R4_match
+as they are (comparison only) and with R5_TONE ("+tone"); only R5_TONE candidates can be the final.
+Writes data/processed/v8r_s1loop/<song>/{regions_r5.json, scales_r5.json, front_*.npz (when not
+already in v8r_match), evals_r5_<time>.jsonl, result_r5_<time>.json} and data/outputs_v8r5/knobs/<song>.json.
+
+    .venv\\Scripts\\python.exe scripts\\match\\run_match_fast.py エバ --r5 --budget-min 15
+    .venv\\Scripts\\python.exe scripts\\match\\run_match_fast.py エバ --r5 --max-gens-a 1 --max-gens-b 1 --no-knobs  # smoke
 """
 
 from __future__ import annotations
@@ -30,10 +39,11 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from mix_automation.v8.knobs import V8Knobs, load_knobs  # noqa: E402
+from mix_automation.v8.knobs import R5_TONE, V8Knobs, has_r5_tone, load_knobs, with_r5_tone  # noqa: E402
 from mix_automation.v8.match import (  # noqa: E402
     SONG_REFS,
     STAGE_A,
+    STAGE_A_R5,
     STAGE_B,
     SongMatch,
     append_jsonl,
@@ -47,6 +57,7 @@ from mix_automation.v8.match_pool import DEFAULT_WORKERS, EvalPool, finite_or, s
 
 KNOBS_OUT = ROOT / "data" / "outputs_v8r4b" / "knobs"
 KNOBS_R4 = ROOT / "data" / "outputs_v8r4" / "knobs"
+KNOBS_OUT_R5 = ROOT / "data" / "outputs_v8r5" / "knobs"
 ALIASES = {"eva": "エバ", "love": "ラブ&デストロイ", "fall": "Fall in Love"}
 CMA_SIGMA = 0.22  # as R4 (dsp/vst3_optimizer.py)
 # Time share of stage A in what is left after the starting evaluations: R4 Eva levelled off after
@@ -188,18 +199,18 @@ def knobs_of(rec: dict) -> V8Knobs:
     return replace(V8Knobs(), **{k: float(v) for k, v in rec["knobs"].items()})
 
 
-def resolve_init(arg: str | None) -> V8Knobs | None:
+def resolve_init(arg: str | None, dirs: tuple[Path, ...] = (KNOBS_OUT, KNOBS_R4)) -> V8Knobs | None:
     if not arg:
         return None
     p = Path(arg)
     if p.suffix == ".json" and p.exists():
         return load_knobs(p)
     song = ALIASES.get(arg.lower(), arg)
-    for d in (KNOBS_OUT, KNOBS_R4):
+    for d in dirs:
         if (d / f"{song}.json").exists():
             print(f"init-from: {d / f'{song}.json'}")
             return load_knobs(d / f"{song}.json")
-    raise SystemExit(f"--init-from: no knobs for {arg!r} in {KNOBS_OUT} or {KNOBS_R4}")
+    raise SystemExit(f"--init-from: no knobs for {arg!r} in {' or '.join(str(d) for d in dirs)}")
 
 
 def tail_summary(run: SongRun, rec: dict | None) -> dict:
@@ -263,6 +274,9 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--init-from", default=None, help="song name or knobs.json used as the stage A/B start")
     ap.add_argument("--shared-a", action="store_true", help="one stage A for all songs (mean distance)")
+    ap.add_argument("--r5", action="store_true",
+                    help="R5: tone fixed at knobs.R5_TONE, stage A = dynamics only, WEIGHTS_R5 (dist_r4b logged)")
+    ap.add_argument("--no-knobs", action="store_true", help="do not write the knobs JSON (smoke tests)")
     args = ap.parse_args()
     songs = [ALIASES.get(s.lower(), s) for s in args.songs]
     for s in songs:
@@ -270,25 +284,30 @@ def main() -> None:
             raise SystemExit(f"unknown song {s!r}; songs: {list(SONG_REFS)}")
     if args.shared_a and len(songs) < 2:
         raise SystemExit("--shared-a needs at least 2 songs")
-    pop = args.popsize or args.workers * math.ceil((4 + math.floor(3 * math.log(len(STAGE_A)))) / args.workers)
+    stage_a = STAGE_A_R5 if args.r5 else STAGE_A
+    knobs_out = KNOBS_OUT_R5 if args.r5 else KNOBS_OUT
+    pop = args.popsize or args.workers * math.ceil((4 + math.floor(3 * math.log(len(stage_a)))) / args.workers)
 
     t_start = time.time()
     deadline = t_start + args.budget_min * 60.0
     stamp = time.strftime("%Y%m%d-%H%M%S")
     runs: dict[str, SongRun] = {}
     for s in songs:
-        sm = SongMatch(s, r4b=True)
+        sm = SongMatch(s, r4b=True, r5=args.r5)
         sm.prepare()
-        info = json.loads((sm.dir / "regions_r4b.json").read_text(encoding="utf-8"))
+        info = json.loads((sm.dir / f"regions{sm.sfx}.json").read_text(encoding="utf-8"))
         n_valid = {c: int(np.sum(np.isfinite(np.asarray(sm.pro[c].get("tail_by_spot") or [], float))))
                    for c in sm.covers}
         print(f"{s}: regions={len(info['regions'])} eval_s={info['eval_s']} tail_spots={len(info['tail_spots'])} "
               f"pro tail spots found={n_valid} scales={sm.scale_source}")
-        runs[s] = SongRun(sm, sm.dir / f"evals_r4b_{stamp}.jsonl")
+        runs[s] = SongRun(sm, sm.dir / f"evals{sm.sfx}_{stamp}.jsonl")
     t_prep = time.time() - t_start
     print(f"prepare {t_prep:.0f}s; workers={args.workers} popsize={pop}", flush=True)
 
-    init = resolve_init(args.init_from)
+    init = resolve_init(args.init_from, (KNOBS_OUT_R5, KNOBS_OUT, KNOBS_R4) if args.r5 else (KNOBS_OUT, KNOBS_R4))
+    if args.r5 and init is not None:
+        init = with_r5_tone(init)
+    init_label = "init+tone" if args.r5 else "init"
     r4 = V8Knobs()
     with EvalPool({s: runs[s].sm for s in songs}, args.workers) as pool:
         t_pool = time.time()
@@ -296,34 +315,44 @@ def main() -> None:
         items = []
         for s in songs:
             items.append((s, r4, "start", "R4_default", None, True))
+            if args.r5:
+                items.append((s, with_r5_tone(r4), "start", "R4_default+tone", None, True))
             if (KNOBS_R4 / f"{s}.json").exists():
-                items.append((s, load_knobs(KNOBS_R4 / f"{s}.json"), "start", "R4_match", None, True))
+                r4m = load_knobs(KNOBS_R4 / f"{s}.json")
+                items.append((s, r4m, "start", "R4_match", None, True))
+                if args.r5:
+                    items.append((s, with_r5_tone(r4m), "start", "R4_match+tone", None, True))
             if init is not None:
-                items.append((s, init, "start", "init", None, True))
+                items.append((s, init, "start", init_label, None, True))
         recs = search.evaluate(items)
         for it, rec in zip(items, recs, strict=True):
-            print(f"  [{rec['label']} {it[0]}] dist={r(rec['dist'])} dist_r4={r(rec.get('dist_r4'))} "
+            extra = f"dist_r4b={r(rec.get('dist_r4b'))}" if args.r5 else f"dist_r4={r(rec.get('dist_r4'))}"
+            print(f"  [{rec['label']} {it[0]}] dist={r(rec['dist'])} {extra} "
                   f"{rec['sec']:.0f}s calib={rec.get('calib_evals')}", flush=True)
-        # stage A start: --init-from, else the better of R4_default and R4_match (mean over songs)
+        # stage A start: --init-from, else the better of R4_default and R4_match (mean over songs);
+        # R5: only the R5_TONE versions are eligible
         if init is not None:
-            start_label = "init"
+            start_label = init_label
         else:
-            labs = [lab for lab in ("R4_default", "R4_match")
+            starts = ("R4_default+tone", "R4_match+tone") if args.r5 else ("R4_default", "R4_match")
+            labs = [lab for lab in starts
                     if all(any(x["label"] == lab for x in runs[s].records) for s in songs)]
             start_label = min(labs, key=lambda lab: np.mean([finite_or(next(
                 x for x in runs[s].records if x["label"] == lab)["dist"]) for s in songs]))
         start_rec = {s: next(x for x in runs[s].records if x["label"] == start_label) for s in songs}
         base_a = init if init is not None else knobs_of(start_rec[songs[0]])
+        if args.r5 and not has_r5_tone(base_a):
+            raise SystemExit("R5: stage A must start from R5_TONE")
         print(f"stage A starts from {start_label}", flush=True)
         a_deadline = time.time() + SHARE_A * (deadline - time.time())
 
         # ---- stage A
         if args.shared_a:
-            probs_a = [Problem("A", STAGE_A, base_a, list(songs), args.seed,
+            probs_a = [Problem("A", stage_a, base_a, list(songs), args.seed,
                                float(np.mean([finite_or(start_rec[s]["dist"]) for s in songs])),
                                dict.fromkeys(songs), True, best_recs=dict(start_rec))]
         else:
-            probs_a = [Problem("A", STAGE_A, base_a, [s], args.seed, finite_or(start_rec[s]["dist"]),
+            probs_a = [Problem("A", stage_a, base_a, [s], args.seed, finite_or(start_rec[s]["dist"]),
                                {s: None}, True, best_recs={s: start_rec[s]}) for s in songs]
         search.cma(probs_a, a_deadline, args.max_gens_a)
         best_a = {s: p.best_recs[s] for p in probs_a for s in p.songs}
@@ -358,20 +387,29 @@ def main() -> None:
         searched = [x for x in recs if x["stage"] in ("A", "B", "delay") and np.isfinite(x["dist"])]
         cand = [x for x in recs if x["stage"] in ("B", "delay") and np.isfinite(x["dist"])] + [best_a[s]]
         r4m_rec = next((x for x in recs if x["label"] == "R4_match"), None)
-        if r4m_rec is not None and np.isfinite(r4m_rec["dist"]):
+        if args.r5:
+            # R5: R4_match+tone stays eligible; R4_match itself (other tone) is for comparison only
+            r4mt = next((x for x in recs if x["label"] == "R4_match+tone"), None)
+            if r4mt is not None and np.isfinite(r4mt["dist"]):
+                cand.append(r4mt)
+            cand = [x for x in cand if has_r5_tone(x["knobs"])]
+        elif r4m_rec is not None and np.isfinite(r4m_rec["dist"]):
             cand.append(r4m_rec)  # the R4 result stays eligible as the final choice
         final = min(cand, key=lambda x: x["dist"])
         search_best = min(searched, key=lambda x: x["dist"]) if searched else None
         rows = []
-        for lab, rec in (("R4_default", next((x for x in recs if x["label"] == "R4_default"), None)),
-                         ("R4_match", next((x for x in recs if x["label"] == "R4_match"), None)),
-                         ("init", next((x for x in recs if x["label"] == "init"), None)),
-                         ("best_A", best_a[s]), ("R4b_final", final)):
+        cmp_key = "dist_r4b" if args.r5 else "dist_r4"
+        start_labs = (("R4_default", "R4_default+tone", "R4_match", "R4_match+tone", init_label) if args.r5
+                      else ("R4_default", "R4_match", "init"))
+        for lab, rec in ([(lab, next((x for x in recs if x["label"] == lab), None)) for lab in start_labs]
+                         + [("best_A", best_a[s]), ("R5_final" if args.r5 else "R4b_final", final)]):
             if rec:
-                rows.append([lab, rec["i"], r(rec["dist"]), r(rec.get("dist_r4")), r(rec["v8"].get("tail"), 2)]
+                rows.append([lab, rec["i"], r(rec["dist"]), r(rec.get(cmp_key)), r(rec["v8"].get("tail"), 2)]
                             + [r(rec["per_cover"].get(c, float("nan"))) for c in run.sm.covers])
         print(f"--- {s}")
-        table(["setting", "i", "dist", "dist_r4", "v8_tail"] + run.sm.covers, rows)
+        table(["setting", "i", "dist", cmp_key, "v8_tail"] + run.sm.covers, rows)
+        table(["stage", "n_evals", "wall_s", "gens"],
+              [[st, v["n_evals"], v["wall_s"], v["gens"]] for st, v in search.stage_stats.items()])
         r4m = next((x for x in recs if x["label"] == "R4_match"), None)
         for lab, rec in (("R4_match", r4m), ("final", final)):
             if rec:
@@ -381,15 +419,19 @@ def main() -> None:
             "jsonl": str(run.jsonl), "n_evals": len(recs), "workers": args.workers, "popsize": pop,
             "budget_min": args.budget_min, "max_gens": {"A": args.max_gens_a, "B": args.max_gens_b},
             "init_from": args.init_from, "scale_source": run.sm.scale_source,
+            "definition": "r5" if args.r5 else "r4b", "stage_a_knobs": list(stage_a),
+            "tone_fixed": R5_TONE if args.r5 else None,
             "stages": search.stage_stats, "stop": {"A": [p.stopped for p in probs_a if s in p.songs],
                                                    "B": [p.stopped for p in probs_b if s in p.songs]},
             "prepare_s": round(t_prep, 1), "search_s": round(t_search, 1), "total_s": round(total, 1),
             "baselines": {lab: {"i": rec["i"], "dist": rec["dist"], "dist_r4": rec.get("dist_r4"),
+                                "dist_r4b": rec.get("dist_r4b"),
                                 "per_cover": rec["per_cover"], "per_cover_r4": rec.get("per_cover_r4")}
-                          for lab in ("R4_default", "R4_match", "init")
+                          for lab in start_labs
                           for rec in [next((x for x in recs if x["label"] == lab), None)] if rec},
             "best_A": {"i": best_a[s]["i"], "dist": best_a[s]["dist"]},
             "final": {"i": final["i"], "dist": final["dist"], "dist_r4": final.get("dist_r4"),
+                      "dist_r4b": final.get("dist_r4b"), "label": final["label"],
                       "per_cover": final["per_cover"], "knobs": final["knobs"]},
             "tail": {"final": tail_summary(run, final), "R4_match": tail_summary(run, r4m)},
             "start_A": start_label,
@@ -401,12 +443,12 @@ def main() -> None:
         pool_recs = [x for x in recs if x["stage"] != "start" and np.isfinite(x["dist"])]
         if len(run.sm.covers) >= 2 and pool_recs:
             out["loo"] = loo_select(pool_recs, run.sm.covers)
-        if any(x["stage"] in ("A", "B") for x in recs):
+        if any(x["stage"] in ("A", "B") for x in recs) and not args.no_knobs:
             name = f"{s}_sharedA" if args.shared_a else s
-            kp = write_knobs_json(knobs_of(final), KNOBS_OUT, name)
+            kp = write_knobs_json(knobs_of(final), knobs_out, name)
             out["knobs_json"] = str(kp)
             print(f"knobs -> {kp}")
-        rp = run.sm.dir / f"result_r4b_{stamp}.json"
+        rp = run.sm.dir / f"result{run.sm.sfx}_{stamp}.json"
         rp.write_text(json.dumps(out, indent=1, ensure_ascii=False, default=float), encoding="utf-8")
         print(f"result -> {rp}")
 

@@ -139,6 +139,35 @@ R3_DEFAULTS: dict[str, float] = {
 R3_DELAY_TYPE = -1  # allowed by validate_knobs in addition to the spec range
 
 
+# R5 (補正 EQ ループ): the tone knobs are fixed, not searched; Ryo corrects the timbre by ear with the
+# last Persistent Q (correction_eq.py). Reason: R4 matched the tone to the pro covers and came out too
+# bright and thin (docs/evaluations, R4 聴き比べ). V8Knobs defaults stay as they are (v8 engine default).
+R5_TONE: dict[str, float] = {
+    # Mo_qfyNdYQQ@2:38: HPF 119 Hz. R3's 140 Hz is high against Ryo's "芯が細い" (R4 聴き比べ).
+    "hpf_hz": 120.0,
+    # presence band off: rulebook RTVPdDmWrwo@34:37, a hissy 3 kHz is what makes a vocal sound cheap.
+    "presence_db": 0.0,
+    "presence_hz": 3000.0,  # unused while presence_db = 0; spec default (articles [3][8] middle)
+    # R4 matched 4.5-5.8 and Ryo heard it "シャリつく"; R3 had 2.5. One lower than R3: Ryo adds top end
+    # in the correction EQ if needed.
+    "brightness": 1.5,
+    # articles [8]: air 10-12 kHz; 10 kHz = above the sibilance band's lower part (R5 指示).
+    "air_hz": 10000.0,
+    "saturation": 1.5,  # R3 既定, 2afvdjOpVJQ@8:02 (light)
+    "deess_db": 3.0,  # R3 既定, RTVPdDmWrwo@26:38 (one de-esser, do not pull down hard)
+}
+
+
+def with_r5_tone(knobs: V8Knobs) -> V8Knobs:
+    """`knobs` with the tone knobs replaced by R5_TONE."""
+    return replace(knobs, **R5_TONE)
+
+
+def has_r5_tone(knobs: V8Knobs | dict[str, float]) -> bool:
+    d = knobs if isinstance(knobs, dict) else knobs.to_dict()
+    return all(abs(float(d[k]) - v) < 1e-9 for k, v in R5_TONE.items())
+
+
 def validate_knobs(knobs: V8Knobs) -> V8Knobs:
     for f in fields(knobs):
         spec = KNOB_SPEC_MAP[f.name]
