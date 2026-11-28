@@ -51,6 +51,16 @@ MIX_WORK_LUFS = -14.0
 # Landing loudness -10..-9 LUFS (RTVPdDmWrwo@20:10); aim at the middle.
 MASTER_TARGET_LUFS = -9.5
 MASTER_LUFS_RANGE = (-10.0, -9.0)
+# ---- 2mix bus plugin settings (shared with v8/s1_export.py, which rebuilds them for Studio One)
+# Saturation Knob light, KEEP LOW 0.8 (RTVPdDmWrwo@41:31-43:25, R3 既定).
+MASTER_SAT_AMOUNT = 0.8
+MASTER_SAT_TYPE = "KEEP LOW"
+# Parallel glue: Softube VCA ratio 3 (E8zUKz21S9c@14:17), attack 2.1 / release 0.7 / SC HPF 110 / drive 0.2
+# (existing v7 bus profile apply_2mix_bus_glue_and_safe_master).
+MASTER_GLUE_KW = {"ratio": 3.0, "attack_norm": 2.1, "release_norm": 0.7, "sc_hpf_hz": 110.0, "output_db": 0.0,
+                  "output_drive": 0.2}
+# Wave Breaker threshold -0.8 dB (existing v7 master profile).
+MASTER_LIMITER_THRESHOLD_DB = -0.8
 
 
 @dataclass
@@ -680,7 +690,7 @@ def master_bus(mix: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple
     # Saturation Knob light, KEEP LOW 0.8 (RTVPdDmWrwo@41:31-43:25, R3 既定).
     plug, rec = load_stage_plugin(pmap["saturation_knob"])
     before = _snapshot(plug)
-    configure_softube_saturation(plug, amount=0.8, sat_type="KEEP LOW")
+    configure_softube_saturation(plug, amount=MASTER_SAT_AMOUNT, sat_type=MASTER_SAT_TYPE)
     rec["params"] = _changed(before, plug) | {"saturation": str(plug.saturation)}
     y = run_plugin(plug, x, sr)
     rec["measured"] = {"level_change_db": round(-dsp.gr_db(x, y, mask, sr), 3)}
@@ -697,8 +707,7 @@ def master_bus(mix: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple
     # (existing v7 bus profile apply_2mix_bus_glue_and_safe_master). Wet-only GR calibrated to 4 dB (R3 既定), then dry/wet.
     plug, rec = load_stage_plugin(pmap["vca_compressor"])
     before = _snapshot(plug)
-    glue_kw = {"ratio": 3.0, "attack_norm": 2.1, "release_norm": 0.7, "sc_hpf_hz": 110.0, "output_db": 0.0, "output_drive": 0.2}
-    configure_softube_vca(plug, threshold_db=10.0, dry_wet=100.0, **glue_kw)
+    configure_softube_vca(plug, threshold_db=10.0, dry_wet=100.0, **MASTER_GLUE_KW)
     neutral = run_plugin(plug, x, sr)
 
     def render(thr: float) -> np.ndarray:
@@ -720,7 +729,7 @@ def master_bus(mix: np.ndarray, sr: int, knobs: V8Knobs, log: StageLog) -> tuple
     plug, rec = load_stage_plugin(pmap["wave_breaker"])
     before = _snapshot(plug)
     set_vst3_param_strict(plug, "bypass", False)
-    set_vst3_param_strict(plug, "threshold_db", -0.8)
+    set_vst3_param_strict(plug, "threshold_db", MASTER_LIMITER_THRESHOLD_DB)
     rec["params"] = _changed(before, plug) | {"threshold_db": str(plug.threshold_db), "normalize_db": str(plug.normalize_db)}
     lg = dsp.integrated_lufs(glued, sr)
     pre = MASTER_TARGET_LUFS - lg

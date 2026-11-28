@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -307,19 +308,150 @@ def bands_from_plugin(plug: Any, reference: dict[str, Any] | None = None, voice:
                      "global": g, "bands": bands})
 
 
+# ------------------------------------------------------------------ B4: averaging several settings (not used by the engine)
+
+# 20 Hz - 20 kHz at 1/24 octave (R5 part B instruction): 241 points.
+GRID_LO_HZ, GRID_HI_HZ, GRID_PER_OCT = 20.0, 20000.0, 24
+RESPONSE_FS = 48000.0  # rate the biquads are evaluated at (bilinear warping near Nyquist depends on it)
+AVERAGE_TYPES = ("Peaking", "LowShelf", "HighShelf")
+
+
+def log_grid(lo: float = GRID_LO_HZ, hi: float = GRID_HI_HZ, per_oct: int = GRID_PER_OCT):
+    import numpy as np
+
+    n = math.ceil(np.log2(hi / lo) * per_oct) + 1  # both ends included; step just under 1/per_oct oct
+    return np.geomspace(lo, hi, n)
+
+
+def _biquad_db(typ: str, f0: float, gain_db: float, q: float, f, fs: float):
+    """RBJ Audio EQ Cookbook peaking / shelf magnitude (dB) at f; shelves use the Q form of alpha."""
+    import numpy as np
+
+    a = 10.0 ** (gain_db / 40.0)
+    w0 = 2 * np.pi * min(f0, 0.49 * fs) / fs
+    cw, alpha = np.cos(w0), np.sin(w0) / (2 * q)
+    if typ == "Peaking":
+        b = [1 + alpha * a, -2 * cw, 1 - alpha * a]
+        den = [1 + alpha / a, -2 * cw, 1 - alpha / a]
+    else:
+        sa = 2 * np.sqrt(a) * alpha
+        if typ == "LowShelf":
+            b = [a * ((a + 1) - (a - 1) * cw + sa), 2 * a * ((a - 1) - (a + 1) * cw), a * ((a + 1) - (a - 1) * cw - sa)]
+            den = [(a + 1) + (a - 1) * cw + sa, -2 * ((a - 1) + (a + 1) * cw), (a + 1) + (a - 1) * cw - sa]
+        else:  # HighShelf
+            b = [a * ((a + 1) + (a - 1) * cw + sa), -2 * a * ((a - 1) + (a + 1) * cw), a * ((a + 1) + (a - 1) * cw - sa)]
+            den = [(a + 1) - (a - 1) * cw + sa, 2 * ((a - 1) - (a + 1) * cw), (a + 1) - (a - 1) * cw - sa]
+    z = np.exp(-1j * 2 * np.pi * np.asarray(f, dtype=float) / fs)
+    h = (b[0] + b[1] * z + b[2] * z * z) / (den[0] + den[1] * z + den[2] * z * z)
+    return 20 * np.log10(np.abs(h))
+
+
+def _check_averageable(cfg: dict) -> None:
+    g = cfg.get("global") or {}
+    if float(g.get("input_gain", 0.0)) != 0.0:
+        raise CorrectionEQError("average_profiles: input_gain is not supported")
+    for b in active_bands(cfg):
+        ex = b["extra"] or {}
+        if b["type"] not in AVERAGE_TYPES or ex.get("dynamic") or ex.get("spectral"):
+            raise CorrectionEQError(f"average_profiles: band {b['band']} ({b['type']}, extra {ex}) is not a "
+                                    f"static {AVERAGE_TYPES} band")
+        if b["placement"] != "Stereo":
+            raise CorrectionEQError(f"average_profiles: band {b['band']} placement {b['placement']} is not Stereo")
+
+
+def response_db(cfg: dict | None, f=None, fs: float = RESPONSE_FS):
+    """Static magnitude response (dB) of a correction EQ: its active Peaking / shelf bands (RBJ) plus
+    output gain. None / flat -> zeros."""
+    import numpy as np
+
+    f = log_grid() if f is None else np.asarray(f, dtype=float)
+    out = np.zeros_like(f)
+    if cfg is None or is_flat(cfg):
+        return out
+    _check_averageable(cfg)
+    for b in active_bands(cfg):
+        out += _biquad_db(b["type"], b["frequency_hz"], b["gain_db"], b["q"], f, fs)
+    return out + float((cfg.get("global") or {}).get("output_gain", 0.0))
+
+
+def _fit_bands(target, f, n_bands: int, fs: float, tol_db: float = 0.02) -> list[tuple[str, float, float, float]]:
+    """Greedy (best of Peaking / LowShelf / HighShelf on the residual), each step refitting all bands."""
+    import numpy as np
+    from scipy.optimize import least_squares
+
+    lf = np.log(f)
+    lo = [np.log(FREQ_RANGE_HZ[0]), GAIN_RANGE_DB[0], np.log(Q_RANGE[0])]
+    hi = [np.log(min(FREQ_RANGE_HZ[1], 0.45 * fs)), GAIN_RANGE_DB[1], np.log(10.0)]
+
+    def model(types, p):
+        y = np.zeros_like(f)
+        for i, t in enumerate(types):
+            y += _biquad_db(t, float(np.exp(p[3 * i])), float(p[3 * i + 1]), float(np.exp(p[3 * i + 2])), f, fs)
+        return y
+
+    def fit(types, p0):
+        r = least_squares(lambda p: model(types, p) - target, p0, bounds=(lo * len(types), hi * len(types)))
+        return r.x, float(np.sqrt(np.mean(r.fun ** 2)))
+
+    types: list[str] = []
+    p = np.zeros(0)
+    for _ in range(n_bands):
+        res = target - model(types, p)
+        if np.sqrt(np.mean(res ** 2)) < tol_db:
+            break
+        k = int(np.argmax(np.abs(res)))
+        cands = {"Peaking": [lf[k], res[k], 0.0], "LowShelf": [np.log(200.0), res[0], np.log(0.7)],
+                 "HighShelf": [np.log(8000.0), res[-1], np.log(0.7)]}
+        best = None
+        for t, init in cands.items():
+            x, err = fit([*types, t], np.concatenate([p, np.clip(init, lo, hi)]))
+            if best is None or err < best[2]:
+                best = (t, x, err)
+        types.append(best[0])
+        p = best[1]
+    return [(t, float(np.exp(p[3 * i])), float(p[3 * i + 1]), float(np.exp(p[3 * i + 2]))) for i, t in enumerate(types)]
+
+
+def average_profiles(profiles: list[dict | None], n_bands: int = 8, fs: float = RESPONSE_FS,
+                     voice: str | None = None) -> dict:
+    """Average several correction EQ settings: mean of their dB responses on the log grid (20 Hz-20 kHz,
+    1/24 oct), refitted with up to `n_bands` Peaking / shelf bands. Static Stereo bands only (pass filters,
+    dynamic and spectral bands raise). Output gain is folded into the bands. Not used by the engine (R5 B4)."""
+    import numpy as np
+
+    if not profiles:
+        raise CorrectionEQError("average_profiles: no profiles")
+    cfgs = [None if p is None else validate(p) for p in profiles]
+    f = log_grid()
+    target = np.mean([response_db(c, f, fs) for c in cfgs], axis=0)
+    bands = []
+    if np.max(np.abs(target)) >= 0.01:
+        for i, (t, f0, g, q) in enumerate(_fit_bands(target, f, n_bands, fs)):
+            if abs(g) >= 0.01:
+                bands.append({"band": i + 1, "type": t, "frequency_hz": round(f0, 2), "gain_db": round(g, 2),
+                              "q": round(q, 3)})
+    out = validate({"format": FORMAT, "voice": voice, "plugin": PLUGIN, "bands": bands,
+                    "source": {"averaged_from": len(cfgs), "method": "mean dB response, 1/24-oct grid, RBJ refit"}})
+    out["source"]["fit_rms_db"] = round(float(np.sqrt(np.mean((response_db(out, f, fs) - target) ** 2))), 4)
+    return out
+
+
 __all__ = [
     "DEFAULT_VOICE",
     "FORMAT",
     "PROFILE_DIR",
     "CorrectionEQError",
     "active_bands",
+    "average_profiles",
     "bands_from_plugin",
     "file_sha256",
     "fresh_reference",
     "is_flat",
     "load",
+    "log_grid",
     "report_entry",
     "resolve_path",
+    "response_db",
     "save",
     "validate",
     "write_to_plugin",
