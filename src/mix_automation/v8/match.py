@@ -26,7 +26,7 @@ import numpy as np
 from scipy import signal
 
 from mix_automation.v8.knobs import KNOB_SPEC_MAP, V8Knobs, load_knobs
-from mix_automation.v8.metrics._core import HOP, N_FFT, p56_activity
+from mix_automation.v8.metrics._core import HOP, N_FFT, P56_HANGOVER_S, p56_activity
 
 ROOT = Path(__file__).resolve().parents[3]
 TARGETS = ROOT / "data" / "processed" / "v8r_targets"
@@ -201,14 +201,73 @@ def select_regions(cands: Sequence[Region], sm_by_cover: dict[str, list[float]],
 
 # ======================================================================= excerpt layout
 
+# ----------------------------------------------------------------------- R4b: reverb-tail spots
+# R4 could not measure the tail inside the main-only regions (README 6 章: never 3 phrase ends in the
+# evaluated parts). R4b looks for main-only phrase ends over the whole song and appends short cuts.
+TAIL_PHRASE_MIN_S = 0.4  # R2 tail_db: phrases >= 0.4 s ...
+# ... followed by a lead pause >= 1.5 s, so that the "late" window (end + 1.0..1.5 s) lies inside the pause
+# (R2 used 0.6 s for its 100-500 ms window only; R4b 再設計 2026-11-28).
+TAIL_GAP_MIN_S = 1.5
+TAIL_MAX_SPOTS = 6       # R4b 指示: at most 6 phrase ends, longest pauses first
+TAIL_PRE_S = 1.5         # cut 1.5 s before the mark (>= the 0.4 s phrase window + compressor settling)
+# Fixed windows around end = mark + P.56 hangover (= end of the P.56 run), the same for v8 and the pros:
+TAIL_PHRASE_WIN_S = (-0.4, 0.0)  # reference: last 0.4 s of the phrase (R2 minimum phrase length)
+TAIL_WIN_S = (0.1, 0.5)          # R2 tail window (100-500 ms after the phrase end)
+TAIL_LATE_WIN_S = (1.0, 1.5)     # floor estimate: the R2 subtraction residual stays here when the reverb is gone
+TAIL_CUT_AFTER_END_S = 1.6       # cut runs 1.6 s past the end (late window + 0.1 s)
+TAIL_POST_S = P56_HANGOVER_S + TAIL_CUT_AFTER_END_S  # cut length after the mark
+# A pro spot counts as a real tail (two-sided term) when tail - late >= 6 dB. Reasoning (setting): a reverb
+# just as loud as the subtraction floor adds only +3 dB to it, so a 6 dB decay means the reverb is clearly
+# above the floor; below that the pro tail is only an upper bound for the reverb (one-sided term).
+# R4b run 2026-11-28 (Eva): the two-sided spots (KaguraNana -8.5 dB, Ryushen -11.8 dB with 9-10 dB decay) pulled
+# the plate/room sends up by 12 dB of tail. The pros are other singers with their own phrasing, so 100-500 ms
+# after 凌's phrase end the pro can still be singing; a large "decay" does not prove a reverb tail. Two-sided
+# comparison is therefore switched off (inf): every spot is an upper bound only.
+TAIL_DECAY_MIN_DB = float("inf")
+# R4b tail scale fixed to the R2 fallback (2 x 1.76^2), not the pro-pair median: most pro spots sit on the
+# subtraction floor and only bound the reverb from above (one-sided), the few two-sided spots differ a
+# lot between pros, so the pair median is unstable (R4b smoke 2026-11-28: pro-pair median 46.4).
+R4B_FIXED_SCALES = ("tail",)
+# The P.56 mask keeps P56_HANGOVER_S (0.2 s) after the last frame above its threshold, so the phrase
+# end is marked that much before the end of the activity run.
+
+
+def find_tail_spots(lead_act: np.ndarray, nonlead_act: np.ndarray, duration_s: float,
+                    frame_dt: float = FRAME_DT, max_spots: int = TAIL_MAX_SPOTS) -> list[dict]:
+    """Main-only phrase ends: a lead P.56 run >= TAIL_PHRASE_MIN_S, then a lead pause >= TAIL_GAP_MIN_S,
+    the non-lead stems inactive from the phrase start to the end of the pause, and the tail cut inside
+    the song. The `max_spots` with the longest pauses, returned in time order (original time, s)."""
+    n = min(len(lead_act), len(nonlead_act))
+    lead = np.asarray(lead_act[:n], bool)
+    non = np.asarray(nonlead_act[:n], bool)
+    runs = _runs(lead)
+    out = []
+    for i, (s, e) in enumerate(runs):
+        if (e - s) * frame_dt < TAIL_PHRASE_MIN_S - 1e-9:
+            continue
+        nxt = runs[i + 1][0] if i + 1 < len(runs) else n
+        gap = (nxt - e) * frame_dt
+        if gap < TAIL_GAP_MIN_S - 1e-9 or non[s:nxt].any():
+            continue
+        mark = e * frame_dt - P56_HANGOVER_S
+        if mark - TAIL_PRE_S < 0.0 or mark + TAIL_POST_S > duration_s:
+            continue
+        out.append({"t_start": round(s * frame_dt, 3), "t_end": round(e * frame_dt, 3),
+                    "mark": round(mark, 3), "gap_s": round(gap, 3)})
+    out.sort(key=lambda d: (-d["gap_s"], d["mark"]))
+    return sorted(out[:max_spots], key=lambda d: d["mark"])
+
+
 EDGE_FADE_S = 0.01  # 10 ms fades where padded excerpts are joined (avoid clicks into the chain)
 
 
 @dataclass(frozen=True)
 class Layout:
-    """Padded excerpts laid end to end. Slices are in samples of the concatenated signal."""
+    """Padded excerpts laid end to end, then (R4b) the tail cuts. Slices are in samples of the
+    concatenated signal. padded_slices / eval_slices cover the regions only; tail cuts have their own."""
     regions: tuple[Region, ...]
     sr: int = SR
+    tails: tuple[float, ...] = ()  # R4b: phrase-end marks, original time (s)
 
     def _lens(self) -> list[tuple[int, int, int]]:
         out = []
@@ -219,9 +278,27 @@ class Layout:
             out.append((pre, ev, post))
         return out
 
+    def _tail_len(self) -> int:
+        return round(TAIL_PRE_S * self.sr) + round(TAIL_POST_S * self.sr)
+
+    @property
+    def n_regions(self) -> int:
+        return sum(a + b + c for a, b, c in self._lens())
+
     @property
     def n(self) -> int:
-        return sum(a + b + c for a, b, c in self._lens())
+        return self.n_regions + len(self.tails) * self._tail_len()
+
+    def tail_slices(self) -> list[slice]:
+        s0, ln = self.n_regions, self._tail_len()
+        return [slice(s0 + i * ln, s0 + (i + 1) * ln) for i in range(len(self.tails))]
+
+    def tail_mark_offset(self) -> int:
+        """Sample offset of the phrase-end mark inside each tail cut."""
+        return round(TAIL_PRE_S * self.sr)
+
+    def _all_slices(self) -> list[slice]:
+        return self.padded_slices() + self.tail_slices()
 
     def padded_slices(self) -> list[slice]:
         out, s = [], 0
@@ -243,7 +320,7 @@ class Layout:
         parts = []
         fade = max(1, round(EDGE_FADE_S * self.sr))
         ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
-        for st, sl in zip(starts, self.padded_slices(), strict=True):
+        for st, sl in zip(starts, self._all_slices(), strict=True):
             ln = sl.stop - sl.start
             s0 = round(st)
             seg = np.zeros(a.shape[:-1] + (ln,), np.float32)
@@ -256,7 +333,7 @@ class Layout:
         return np.concatenate(parts, axis=-1)
 
     def orig_starts(self) -> list[float]:
-        return [r.pad0 * self.sr for r in self.regions]
+        return [r.pad0 * self.sr for r in self.regions] + [(t - TAIL_PRE_S) * self.sr for t in self.tails]
 
 
 # ======================================================================= 2b. features and distance
@@ -367,11 +444,44 @@ def _band_frames(x: np.ndarray, sr: int, lo: float, hi: float) -> np.ndarray:
     return tot
 
 
-def features(voice: np.ndarray, inst: np.ndarray, inst_raw: np.ndarray, lay: Layout, sr: int = SR) -> dict:
+def tail_windows_db(voice: np.ndarray, lay: Layout, sr: int = SR,
+                    valid: Sequence[bool] | None = None) -> tuple[list[float], list[float]]:
+    """R4b: per tail cut, (tail, late) = mean power of TAIL_WIN_S / TAIL_LATE_WIN_S after the phrase end
+    relative to TAIL_PHRASE_WIN_S, in dB, on the channel-mean mono. NaN where `valid` is False."""
+    m = _st(voice).mean(0)
+    end = lay.tail_mark_offset() + round(P56_HANGOVER_S * sr)
+
+    def pw(sl: slice, w: tuple[float, float]) -> float:
+        seg = m[sl.start + end + round(w[0] * sr): sl.start + end + round(w[1] * sr)]
+        return float(np.mean(seg * seg)) if seg.size else float("nan")
+
+    tails, lates = [], []
+    for i, sl in enumerate(lay.tail_slices()):
+        if valid is not None and not valid[i]:
+            tails.append(float("nan"))
+            lates.append(float("nan"))
+            continue
+        ph = pw(sl, TAIL_PHRASE_WIN_S) + EPS
+        tails.append(float(10 * np.log10(pw(sl, TAIL_WIN_S) / ph + EPS)))
+        lates.append(float(10 * np.log10(pw(sl, TAIL_LATE_WIN_S) / ph + EPS)))
+    return tails, lates
+
+
+def _spot_median(vals: Sequence[float]) -> float:
+    a = np.asarray(vals, float)
+    a = a[np.isfinite(a)]
+    return float(np.median(a)) if a.size >= TAIL_MIN_PHRASES else float("nan")
+
+
+def features(voice: np.ndarray, inst: np.ndarray, inst_raw: np.ndarray, lay: Layout, sr: int = SR,
+             afx: bool = False, tail_valid: Sequence[bool] | None = None) -> dict:
     """Measurements on the evaluated parts (padding cut away; ducking and tail also look at the padding).
 
     voice / inst / inst_raw are stereo and laid out by `lay`: v8 = (lead+sends, inst after duck,
-    inst before duck); pro = (target_vocal, inst_pro, inst_aligned) from R2."""
+    inst before duck); pro = (target_vocal, inst_pro, inst_aligned) from R2.
+    R4b: with tail cuts in `lay`, "tail" is measured in fixed windows after the marked phrase ends
+    ("tail_by_spot", "late_by_spot"; the R4 in-region value stays in "tail_r4"); `afx` adds the AFx-Rep
+    embedding of the voice."""
     voice, inst, inst_raw = _st(voice), _st(inst), _st(inst_raw)
     ev = lay.eval_slices()
     cat = np.concatenate
@@ -397,7 +507,16 @@ def features(voice: np.ndarray, inst: np.ndarray, inst_raw: np.ndarray, lay: Lay
     tails: list[float] = []
     for ps, es in zip(lay.padded_slices(), ev, strict=True):
         tails += tail_values(voice[:, ps], sr, es.start - ps.start, es.stop - ps.start)
-    f["tail"] = float(np.median(tails)) if len(tails) >= TAIL_MIN_PHRASES else float("nan")
+    f["tail_r4"] = float(np.median(tails)) if len(tails) >= TAIL_MIN_PHRASES else float("nan")
+    if lay.tails:
+        f["tail_by_spot"], f["late_by_spot"] = tail_windows_db(voice, lay, sr, tail_valid)
+        f["tail"] = _spot_median(f["tail_by_spot"])
+    else:
+        f["tail"] = f["tail_r4"]
+    if afx:
+        from mix_automation.v8 import afx_rep
+
+        f["afx"] = afx_rep.embed(v_e, sr) if afx_rep.available() else None
     f["inst_spec"] = _shape(third_oct_db(i_e, sr) - third_oct_db(r_e, sr))
     f["inst_sm"] = _sm_db(i_e, None) - _sm_db(r_e, None)
     pi, pr, act = [], [], []
@@ -420,7 +539,8 @@ def features(voice: np.ndarray, inst: np.ndarray, inst_raw: np.ndarray, lay: Lay
     return f
 
 
-TERMS = ("lu", "spec", "dyn", "crest", "sm", "tail", "inst_spec", "inst_sm", "duck")
+TERMS_R4 = ("lu", "spec", "dyn", "crest", "sm", "tail", "inst_spec", "inst_sm", "duck")
+TERMS = (*TERMS_R4, "afx")  # R4b: + AFx-Rep cosine distance of the voice embeddings
 
 # Pro-to-pro spread used when a song has fewer than 2 references (standard deviation over the 4 Eva
 # covers in R2 README 3 章 unless noted). The distance unit is the expected pro-to-pro squared
@@ -446,12 +566,61 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "lu": 2.0, "spec": 1.0, "dyn": 0.5, "crest": 0.5, "sm": 1.0, "tail": 1.0,
     "inst_spec": 0.5, "inst_sm": 0.5, "duck": 0.5,
 }
+# R4b (config): AFx-Rep enters with a modest weight; it is unvalidated against Ryo's ratings so far.
+WEIGHTS_R4B: dict[str, float] = {**DEFAULT_WEIGHTS, "afx": 0.25}
+
+# AFx-Rep scale (a cosine distance, not squared): median over pro pairs; floored so that pros that
+# happen to embed almost identically do not blow the term up.
+AFX_SCALE_FLOOR = 1e-4
+# Songs with one reference: median of the pro-pair cosine distances of Eva (6 pairs) and Love&Destroy
+# (3 pairs) on the R4b main-only regions, measured once on 2026-11-28: Eva 0.223-0.331 (median 0.309),
+# Love&Destroy 0.119-0.194 (median 0.148); median of all 9 pairs = 0.271.
+AFX_FALLBACK_SCALE = 0.271
 
 
-def term_raw(fa: dict, fb: dict) -> dict[str, float]:
-    """Mean squared difference per term (vectors element-wise); NaN when either side lacks it."""
+def tail_spot_terms(fa: dict, fb: dict) -> list[tuple[int, float, float, float, str]]:
+    """R4b per-spot tail comparison, fb = the reference (pro): (spot, a_tail, b_tail, b_decay, kind) for spots
+    where both tails and the reference late value exist. kind "two" when the reference decays by
+    >= TAIL_DECAY_MIN_DB (tail above the floor), else "one" (reference tail = upper bound only)."""
+    a, b = np.asarray(fa["tail_by_spot"], float), np.asarray(fb["tail_by_spot"], float)
+    late = np.asarray(fb.get("late_by_spot", [np.nan] * len(b)), float)
+    out = []
+    for i in range(min(len(a), len(b), len(late))):
+        if np.isfinite(a[i]) and np.isfinite(b[i]) and np.isfinite(late[i]):
+            dec = float(b[i] - late[i])
+            out.append((i, float(a[i]), float(b[i]), dec, "two" if dec >= TAIL_DECAY_MIN_DB else "one"))
+    return out
+
+
+def _tail_raw(fa: dict, fb: dict) -> float:
+    if fa.get("tail_by_spot") is not None and fb.get("tail_by_spot") is not None:
+        rows = tail_spot_terms(fa, fb)
+        if len(rows) < TAIL_MIN_PHRASES:
+            return float("nan")
+        return float(np.mean([(at - bt) ** 2 if kind == "two" else max(0.0, at - bt) ** 2
+                              for _, at, bt, _, kind in rows]))
+    a, b = float(fa.get("tail", np.nan)), float(fb.get("tail", np.nan))
+    return (a - b) ** 2 if np.isfinite(a - b) else float("nan")
+
+
+def term_raw(fa: dict, fb: dict, terms: Sequence[str] = TERMS) -> dict[str, float]:
+    """Mean squared difference per term (vectors element-wise); NaN when either side lacks it.
+    afx is the cosine distance of the embeddings (not squared). R4b tail: fb is the reference (pro);
+    per spot two-sided or one-sided (tail_spot_terms), mean over >= 3 spots."""
     out = {}
-    for t in TERMS:
+    for t in terms:
+        if t == "afx":
+            va, vb = fa.get("afx"), fb.get("afx")
+            if va is None or vb is None:
+                out[t] = float("nan")
+            else:
+                from mix_automation.v8.afx_rep import cos_dist
+
+                out[t] = cos_dist(np.asarray(va, float), np.asarray(vb, float))
+            continue
+        if t == "tail":
+            out[t] = _tail_raw(fa, fb)
+            continue
         a, b = np.asarray(fa.get(t, np.nan), float), np.asarray(fb.get(t, np.nan), float)
         if a.shape != b.shape:
             out[t] = float("nan")
@@ -461,30 +630,43 @@ def term_raw(fa: dict, fb: dict) -> dict[str, float]:
     return out
 
 
-def fallback_scales() -> dict[str, float]:
-    return {t: 2.0 * FALLBACK_SD[t] ** 2 for t in TERMS}
+def fallback_scales(terms: Sequence[str] = TERMS) -> dict[str, float]:
+    return {t: AFX_FALLBACK_SCALE if t == "afx" else 2.0 * FALLBACK_SD[t] ** 2 for t in terms}
 
 
-def pro_scales(pro_feats: dict[str, dict]) -> tuple[dict[str, float], str]:
-    """Scale^2 per term = median over pro pairs of term_raw (floored); R2 fallback with < 2 covers."""
-    fb = fallback_scales()
+def pro_scales(pro_feats: dict[str, dict], terms: Sequence[str] = TERMS,
+               fixed: Sequence[str] = ()) -> tuple[dict[str, float], str]:
+    """Scale^2 per term = median over pro pairs of term_raw (floored); R2 fallback with < 2 covers.
+    Terms in `fixed` always use the fallback scale."""
+    fb = fallback_scales(terms)
     if len(pro_feats) < 2:
         return fb, "fallback_R2"
     out = {}
-    for t in TERMS:
-        vals = [term_raw(a, b)[t] for a, b in combinations(pro_feats.values(), 2)]
+    for t in terms:
+        if t in fixed:
+            out[t] = fb[t]
+            continue
+        vals = [term_raw(a, b, (t,))[t] for a, b in combinations(pro_feats.values(), 2)]
         vals = [v for v in vals if np.isfinite(v)]
-        floor = 2.0 * (SCALE_FLOOR_RATIO * FALLBACK_SD[t]) ** 2
+        floor = AFX_SCALE_FLOOR if t == "afx" else 2.0 * (SCALE_FLOOR_RATIO * FALLBACK_SD[t]) ** 2
         out[t] = max(float(np.median(vals)), floor) if vals else fb[t]
     return out, "pro_pairs"
 
 
-def distance(fa: dict, fb: dict, scales: dict[str, float], weights: dict[str, float] | None = None) -> tuple[float, dict]:
+def r4_view(f: dict) -> dict:
+    """Features as R4 measured them: in-region tail, no per-spot tails, no AFx-Rep."""
+    out = {k: v for k, v in f.items() if k not in ("tail_by_spot", "late_by_spot", "afx")}
+    out["tail"] = f.get("tail_r4", f.get("tail", float("nan")))
+    return out
+
+
+def distance(fa: dict, fb: dict, scales: dict[str, float], weights: dict[str, float] | None = None,
+             terms: Sequence[str] = TERMS) -> tuple[float, dict]:
     """Weighted mean of normalised terms over the terms both sides have."""
     w = weights or DEFAULT_WEIGHTS
-    raw = term_raw(fa, fb)
-    norm = {t: raw[t] / scales[t] for t in TERMS}
-    ok = [t for t in TERMS if np.isfinite(norm[t]) and w.get(t, 0.0) > 0]
+    raw = term_raw(fa, fb, terms)
+    norm = {t: raw[t] / scales.get(t, float("nan")) for t in terms}
+    ok = [t for t in terms if np.isfinite(norm[t]) and w.get(t, 0.0) > 0]
     if not ok:
         return float("nan"), norm
     d = sum(w[t] * norm[t] for t in ok) / sum(w[t] for t in ok)
@@ -603,15 +785,30 @@ class SongMatch:
 
     def __init__(self, song: str, refs: Sequence[str] | None = None, raw_root: Path = ROOT / "data" / "raw",
                  cache_root: Path = CACHE, weights: dict[str, float] | None = None,
-                 log: Callable[[str], None] = print) -> None:
+                 log: Callable[[str], None] = print, r4b: bool = False) -> None:
+        """r4b=False keeps the R4 definition (scripts/match/run_match.py). r4b=True adds the tail cuts and
+        the AFx-Rep term (dist), also reports the R4-style distance (dist_r4), and writes its cache
+        files under new names (regions_r4b.json, scales_r4b.json)."""
         self.song = song
+        self.r4b = r4b
+        self.sfx = "_r4b" if r4b else ""
+        self.terms = TERMS if r4b else TERMS_R4
         self.refs = tuple(refs or SONG_REFS[song])
         self.covers = [cover_name(p) for p in self.refs]
         self.song_folder = raw_root / song
         self.dir = cache_root / song
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.weights = dict(weights or DEFAULT_WEIGHTS)
+        self.weights = dict(weights or (WEIGHTS_R4B if r4b else DEFAULT_WEIGHTS))
         self.log = log
+
+    def __getstate__(self) -> dict:  # match_pool sends prepared songs to spawn workers
+        d = dict(self.__dict__)
+        d.pop("log", None)
+        return d
+
+    def __setstate__(self, d: dict) -> None:
+        self.__dict__.update(d)
+        self.log = print
 
     # ------------------------------------------------------------ preparation
     def prepare(self) -> None:
@@ -635,8 +832,10 @@ class SongMatch:
         self.n = n
         self.duration_s = n / SR
         self.stem_roles = stems.stem_roles_summary
+        self.tail_spots: list[dict] = []
         self.regions_info = self._regions(lead, nonlead)
-        self.layout = Layout(tuple(d["region"] for d in self.regions_info))
+        self.layout = Layout(tuple(d["region"] for d in self.regions_info),
+                             tails=tuple(d["mark"] for d in self.tail_spots))
         lay = self.layout
         log = chain.StageLog()
         self.inst_work = lay.cut(chain.prepare_inst(inst, SR, log), lay.orig_starts())
@@ -644,9 +843,14 @@ class SongMatch:
         self.tempo_bpm = self._tempo(inst)
         self.front_x, self.front_mask = self._front()
         self.pro = {cover_name(p): self._pro_features(p) for p in self.refs}
-        self.scales, self.scale_source = pro_scales(self.pro)
-        (self.dir / "scales.json").write_text(json.dumps({"source": self.scale_source, "scales": self.scales,
-                                                           "weights": self.weights}, indent=1), encoding="utf-8")
+        self.scales, self.scale_source = pro_scales(self.pro, self.terms, R4B_FIXED_SCALES if self.r4b else ())
+        info: dict = {"source": self.scale_source, "scales": self.scales, "weights": self.weights}
+        if self.r4b:
+            self.scales_r4, _ = pro_scales({c: r4_view(f) for c, f in self.pro.items()}, TERMS_R4)
+            info |= {"scales_r4": self.scales_r4, "weights_r4": DEFAULT_WEIGHTS,
+                     "pro_tail_by_spot": {c: f.get("tail_by_spot") for c, f in self.pro.items()},
+                     "pro_late_by_spot": {c: f.get("late_by_spot") for c, f in self.pro.items()}}
+        (self.dir / f"scales{self.sfx}.json").write_text(json.dumps(info, indent=1), encoding="utf-8")
 
     def _regions(self, lead: np.ndarray, nonlead: np.ndarray) -> list[dict]:
         lead_act, _, _ = p56_activity(lead, SR)
@@ -655,6 +859,8 @@ class SongMatch:
         else:
             non_act = np.zeros_like(lead_act)
         cands = candidate_regions(lead_act, non_act, self.duration_s)
+        if self.r4b:
+            self.tail_spots = find_tail_spots(lead_act, non_act, self.duration_s)
         sm_by, ref_by = {}, {}
         for p in self.refs:
             cov = cover_name(p)
@@ -684,7 +890,15 @@ class SongMatch:
             "eval_s": round(sum(d["region"].t1 - d["region"].t0 for d in chosen), 2),
             "excerpt_s": round(sum(d["region"].padded_s for d in chosen), 2),
         }
-        (self.dir / "regions.json").write_text(json.dumps(info, indent=1, ensure_ascii=False), encoding="utf-8")
+        if self.r4b:
+            info["tail_spots"] = self._tail_spot_info()
+            info["tail_criteria"] = {"phrase_min_s": TAIL_PHRASE_MIN_S, "gap_min_s": TAIL_GAP_MIN_S,
+                                     "max_spots": TAIL_MAX_SPOTS, "cut_s": [TAIL_PRE_S, TAIL_POST_S],
+                                     "mark": "end of the lead P.56 run - hangover (end = mark + hangover)",
+                                     "windows_after_end_s": {"phrase": TAIL_PHRASE_WIN_S, "tail": TAIL_WIN_S,
+                                                             "late": TAIL_LATE_WIN_S},
+                                     "decay_min_db": TAIL_DECAY_MIN_DB}
+        (self.dir / f"regions{self.sfx}.json").write_text(json.dumps(info, indent=1, ensure_ascii=False), encoding="utf-8")
         if not chosen:
             raise RuntimeError(f"R4: no main-only region found for {self.song}")
         return chosen
@@ -705,7 +919,10 @@ class SongMatch:
     def _front(self) -> tuple[np.ndarray, np.ndarray]:
         from mix_automation.v8 import chain
 
-        key = _hash([asdict(r) for r in self.layout.regions], float(np.sum(self.lead_cut ** 2)))
+        parts: list = [[asdict(r) for r in self.layout.regions], float(np.sum(self.lead_cut ** 2))]
+        if self.layout.tails:  # R4b: the cut length changes with the tail windows, the energy may not
+            parts += [list(self.layout.tails), self.layout.n]
+        key = _hash(*parts)
         p = self.dir / f"front_{key}.npz"
         if p.exists():
             z = np.load(p)
@@ -714,26 +931,52 @@ class SongMatch:
         np.savez(p, x=x, mask=mask)
         return x, mask
 
+    def _tail_cover_starts(self, pair: str, n_cover: int) -> tuple[list[float], list[bool]]:
+        """Cover-time start of each tail cut and whether the cut lies inside that cover's audio."""
+        curve = load_drift_curve(pair)
+        starts, valid = [], []
+        for t in self.layout.tails:
+            c = float(orig_to_cover(t * SR, curve))
+            ok = c - TAIL_PRE_S * SR >= 0 and c + TAIL_POST_S * SR <= n_cover
+            starts.append(c - TAIL_PRE_S * SR if ok else 0.0)
+            valid.append(bool(ok))
+        return starts, valid
+
+    def _tail_spot_info(self) -> list[dict]:
+        out = []
+        for d in self.tail_spots:
+            row = dict(d)
+            row["cover_mark_s"] = {cover_name(p): round(float(orig_to_cover(d["mark"] * SR, load_drift_curve(p))) / SR, 3)
+                                   for p in self.refs}
+            out.append(row)
+        return out
+
     def _pro_features(self, pair: str) -> dict:
         curve = load_drift_curve(pair)
         starts = [float(orig_to_cover(r.pad0 * SR, curve)) for r in self.layout.regions]
-        sig = [self.layout.cut(_load_st(TARGETS / pair / f), starts)
-               for f in ("target_vocal.wav", "inst_pro.wav", "inst_aligned.wav")]
-        return features(sig[0], sig[1], sig[2], self.layout)
+        files = [_load_st(TARGETS / pair / f) for f in ("target_vocal.wav", "inst_pro.wav", "inst_aligned.wav")]
+        valid = None
+        if self.layout.tails:
+            n_cover = min(a.shape[-1] for a in files)
+            t_starts, valid = self._tail_cover_starts(pair, n_cover)
+            starts += t_starts
+        sig = [self.layout.cut(a, starts) for a in files]
+        return features(sig[0], sig[1], sig[2], self.layout, afx=self.r4b, tail_valid=valid)
 
     # ------------------------------------------------------------ evaluation
-    def tone(self, knobs: V8Knobs) -> np.ndarray:
+    def tone(self, knobs: V8Knobs, log=None) -> np.ndarray:
         from mix_automation.v8 import chain
 
-        return chain.lead_tone(self.front_x, self.front_mask, SR, knobs, chain.StageLog())
+        return chain.lead_tone(self.front_x, self.front_mask, SR, knobs, log or chain.StageLog())
 
-    def render(self, knobs: V8Knobs, tone: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def render(self, knobs: V8Knobs, tone: np.ndarray | None = None,
+               log=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """(voice, inst_after_duck, tone) on the excerpt layout; the master bus is not applied."""
         from mix_automation.v8 import chain
 
-        log = chain.StageLog()
+        log = log or chain.StageLog()
         if tone is None:
-            tone = self.tone(knobs)
+            tone = self.tone(knobs, log)
         lead_dry, _ = chain.lead_ride(tone, self.inst_work, SR, knobs, log)
         sends = chain.build_sends(lead_dry, SR, knobs, self.tempo_bpm, log)
         inst_d, _ = chain.duck_inst(self.inst_work, lead_dry, SR, knobs, log)
@@ -745,14 +988,25 @@ class SongMatch:
 
     def evaluate(self, knobs: V8Knobs, tone: np.ndarray | None = None) -> tuple[dict, np.ndarray]:
         t0 = time.time()
-        voice, inst_d, tone_out = self.render(knobs, tone)
-        f = features(voice, inst_d, self.inst_work, self.layout)
+        from mix_automation.v8 import chain
+
+        log = chain.StageLog()
+        voice, inst_d, tone_out = self.render(knobs, tone, log)
+        f = features(voice, inst_d, self.inst_work, self.layout, afx=self.r4b)
         per, terms = {}, {}
         for cov, pf in self.pro.items():
-            per[cov], terms[cov] = distance(f, pf, self.scales, self.weights)
+            per[cov], terms[cov] = distance(f, pf, self.scales, self.weights, self.terms)
         res = {"dist": aggregate(per), "per_cover": per, "terms": terms,
-               "v8": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in f.items()},
+               "v8": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in f.items() if k != "afx"},
                "sec": round(time.time() - t0, 2)}
+        if self.r4b:
+            fr = r4_view(f)
+            per_r4 = {cov: distance(fr, r4_view(pf), self.scales_r4, DEFAULT_WEIGHTS, TERMS_R4)[0]
+                      for cov, pf in self.pro.items()}
+            res |= {"dist_r4": aggregate(per_r4), "per_cover_r4": per_r4,
+                    # calibration renders per stage (R4b warm starts should lower these)
+                    "calib_evals": {st["stage"]: st["calibration"]["iterations"] for st in log.stages
+                                    if "calibration" in st}}
         return res, tone_out
 
 
@@ -770,7 +1024,28 @@ def write_knobs_json(knobs: V8Knobs, out_dir: Path, name: str) -> Path:
 
 
 __all__ = [
-    "SONG_REFS", "Layout", "Region", "SongMatch", "aggregate", "best_record", "candidate_regions",
-    "distance", "features", "from_unit", "loo_select", "orig_to_cover", "pro_scales", "select_regions",
-    "term_raw", "to_unit", "write_knobs_json",
+    "SONG_REFS",
+    "TERMS",
+    "TERMS_R4",
+    "WEIGHTS_R4B",
+    "Layout",
+    "Region",
+    "SongMatch",
+    "aggregate",
+    "best_record",
+    "candidate_regions",
+    "distance",
+    "features",
+    "find_tail_spots",
+    "from_unit",
+    "loo_select",
+    "orig_to_cover",
+    "pro_scales",
+    "r4_view",
+    "select_regions",
+    "tail_spot_terms",
+    "tail_windows_db",
+    "term_raw",
+    "to_unit",
+    "write_knobs_json",
 ]

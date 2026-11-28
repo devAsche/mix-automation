@@ -474,26 +474,36 @@ def calibrate(
     hi: float,
     iters: int = 4,
     tol: float = 0.25,
+    x0: float | None = None,
+    step: float | None = None,
+    increasing: bool = True,
 ) -> CalibResult:
     """Find param in [lo, hi] with measure(render(param)) ~= target for a monotonic response.
 
     Evaluates both ends, then up to `iters` Illinois (regula falsi) steps inside the bracket.
     If the target is outside the reachable range the nearer end is returned with converged=False.
+
+    Warm start (R4b, only when `x0` is given; without it the behaviour above is unchanged): evaluate x0
+    (clipped to the range); if it is off target, step towards the target (`increasing` = the measure
+    grows with the parameter), doubling the step up to 2 times until the target is bracketed, then
+    Illinois inside that bracket; if it never brackets, fall back to the two ends as above.
     """
     hist: list[tuple[float, float]] = []
     best: dict[str, Any] = {}
+    seen: dict[float, float] = {}
 
     def ev(p: float) -> float:
+        if x0 is not None and p in seen:  # warm start may have evaluated an end already
+            return seen[p]
         audio = render(p)
         m = float(measure(audio))
         hist.append((p, m))
+        seen[p] = m - target
         if not best or abs(m - target) < abs(best["m"] - target):
             best.update(p=p, m=m, audio=audio)  # keep only the best render in memory
         return m - target
 
-    a, b = lo, hi
-    fa, fb = ev(a), ev(b)
-    if fa * fb < 0:
+    def illinois(a: float, fa: float, b: float, fb: float) -> None:
         for _ in range(iters):
             if min(abs(fa), abs(fb)) <= tol or fb == fa:
                 break
@@ -506,7 +516,36 @@ def calibrate(
             else:
                 fa *= 0.5  # Illinois modification
             b, fb = c, fc
-    return CalibResult(best["p"], best["m"], target, abs(best["m"] - target) <= tol, hist, best["audio"])
+
+    def result() -> CalibResult:
+        return CalibResult(best["p"], best["m"], target, abs(best["m"] - target) <= tol, hist, best["audio"])
+
+    if x0 is not None:
+        p_lo, p_hi = min(lo, hi), max(lo, hi)
+        s = float(step) if step else 0.1 * (p_hi - p_lo)
+        p0 = float(np.clip(x0, p_lo, p_hi))
+        f0 = ev(p0)
+        if abs(f0) <= tol:
+            return result()
+        for _ in range(3):  # first step + up to 2 doublings
+            direction = (1.0 if f0 < 0 else -1.0) * (1.0 if increasing else -1.0)
+            p1 = float(np.clip(p0 + direction * s, p_lo, p_hi))
+            if p1 == p0:  # already at the end of the range in that direction
+                break
+            f1 = ev(p1)
+            if abs(f1) <= tol:
+                return result()
+            if f0 * f1 < 0:
+                illinois(p0, f0, p1, f1)
+                return result()
+            p0, f0 = p1, f1
+            s *= 2.0
+
+    a, b = lo, hi
+    fa, fb = ev(a), ev(b)
+    if fa * fb < 0:
+        illinois(a, fa, b, fb)
+    return result()
 
 
 def active_mask(x: np.ndarray, sr: int) -> np.ndarray:
